@@ -73,12 +73,12 @@ log() {
     local timestamp=$(get_timestamp)
 
     case "$level" in
-        "INFO")    echo -e "${CYAN}${timestamp} [${level}] ${message}${NC}" ;;
-        "WARN")    echo -e "${YELLOW}${timestamp} [${level}] ${message}${NC}" ;;
-        "ERROR")   echo -e "${RED}${timestamp} [${level}] ${message}${NC}" ;;
-        "SUCCESS") echo -e "${GREEN}${timestamp} [${level}] ${message}${NC}" ;;
-        "REVIEW")  echo -e "${MAGENTA}${timestamp} [${level}] ${message}${NC}" ;;
-        *)         echo -e "${timestamp} [${level}] ${message}" ;;
+        "INFO")    echo -e "${CYAN}${timestamp} [${level}] *claude* ${message}${NC}" ;;
+        "WARN")    echo -e "${YELLOW}${timestamp} [${level}] *claude* ${message}${NC}" ;;
+        "ERROR")   echo -e "${RED}${timestamp} [${level}] *claude* ${message}${NC}" ;;
+        "SUCCESS") echo -e "${GREEN}${timestamp} [${level}] *claude* ${message}${NC}" ;;
+        "REVIEW")  echo -e "${MAGENTA}${timestamp} [${level}] *claude* ${message}${NC}" ;;
+        *)         echo -e "${timestamp} [${level}] *claude* ${message}" ;;
     esac
 
     echo "${timestamp} [${level}] ${message}" >> "$LOG_FILE"

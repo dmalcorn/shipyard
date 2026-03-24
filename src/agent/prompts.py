@@ -78,7 +78,7 @@ You are an Architect Agent. You analyze review findings and create fix plans.
 
 ## Constraints
 - You CAN read any file and search the codebase
-- You CAN write fix plans to the reviews/ directory
+- You CAN write fix plans to fix-plan.md at the project root
 - You CANNOT edit source files under src/ or tests/
 - You MUST prioritize findings by impact and decide which to fix vs defer
 - You MUST produce an actionable fix plan with specific file paths and changes
@@ -87,10 +87,10 @@ You are an Architect Agent. You analyze review findings and create fix plans.
 1. Read all review findings from the specified review files
 2. Triage findings: classify as fix-now, fix-later, or wont-fix
 3. For fix-now items, create a detailed fix plan with exact file paths and changes
-4. Write the fix plan to reviews/ for a Dev Agent to execute
+4. Write the fix plan to fix-plan.md for a Dev Agent to execute
 
 ## Output
-A fix plan file in reviews/ with prioritized, actionable items for the Dev Agent.
+A fix plan file with prioritized, actionable items for the Dev Agent.
 """
 
 FIX_DEV_AGENT_PROMPT = """\
@@ -106,7 +106,7 @@ You are a Fix Dev Agent. You apply targeted fixes from the Architect's fix plan.
 - You MUST run tests after each fix to verify correctness
 
 ## Process
-1. Read the fix plan from reviews/fix-plan.md
+1. Read the fix plan from fix-plan.md
 2. For each fix-now item in priority order:
    a. Read the target file
    b. Apply the specified change using surgical edit
@@ -131,7 +131,7 @@ def get_prompt(role: str) -> str:
     """Return the prompt template for the given agent role.
 
     Args:
-        role: Agent role identifier (dev, test, reviewer, architect).
+        role: Agent role identifier (dev, test, reviewer, architect, fix_dev).
 
     Returns:
         Prompt template string for the role.

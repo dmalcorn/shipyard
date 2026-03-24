@@ -1262,6 +1262,58 @@ EOF
 }
 
 # =============================================================================
+# Stage only files belonging to the current epic
+# =============================================================================
+stage_epic_files() {
+    cd "$PROJECT_ROOT"
+
+    # Epic-specific source and config paths
+    local -a paths=()
+    case "$EPIC_NUMBER" in
+        1)
+            paths=(
+                src/__init__.py src/agent/ src/tools/ src/context/ src/main.py
+                tests/__init__.py tests/conftest.py tests/test_scaffold.py tests/test_main.py
+                tests/test_agent/ tests/test_tools/ tests/test_context/
+                pyproject.toml requirements.txt requirements-dev.txt
+                Dockerfile docker-compose.yml .env.example .gitignore
+                README.md CLAUDE.md scripts/
+            )
+            ;;
+        2)
+            paths=(
+                src/logging/ tests/test_logging/
+                docs/ CODEAGENT.md
+            )
+            ;;
+        3)
+            paths=(
+                src/multi_agent/ tests/test_multi_agent/
+            )
+            ;;
+        *)
+            log "WARN" "No file mapping for epic $EPIC_NUMBER — staging all changes"
+            git add .
+            return
+            ;;
+    esac
+
+    # Stage epic source/config paths
+    for p in "${paths[@]}"; do
+        [[ -e "$p" ]] && git add "$p"
+    done
+
+    # Always stage this epic's story specs and looper artifacts
+    local f
+    for f in _bmad-output/implementation-artifacts/"${EPIC_NUMBER}"-*.md; do
+        [[ -e "$f" ]] && git add "$f"
+    done
+    for f in looper/epic"${EPIC_NUMBER}"-*; do
+        [[ -e "$f" ]] && git add "$f"
+    done
+}
+
+# =============================================================================
 # Git Commit with Pre-commit Hook Retry Logic
 # =============================================================================
 git_commit_changes() {
@@ -1278,10 +1330,10 @@ git_commit_changes() {
     fi
 
     while [[ $retry_count -lt $max_retries ]]; do
-        git add .
+        stage_epic_files
 
-        local has_changes=$(git status --porcelain)
-        if [[ -z "$has_changes" ]]; then
+        local has_staged=$(git diff --cached --name-only)
+        if [[ -z "$has_staged" ]]; then
             log "INFO" "No changes to commit"
             return 0
         fi
@@ -1291,10 +1343,14 @@ git_commit_changes() {
 
         commit_output=$(git commit -m "$commit_msg" 2>&1) || exit_code=$?
 
+        # Always write full output to log; show only first 8 lines on terminal
+        echo "$commit_output" >> "$LOG_FILE"
         if [[ $retry_count -eq 0 ]]; then
-            echo "$commit_output" | tee -a "$LOG_FILE"
-        else
-            echo "$commit_output" >> "$LOG_FILE"
+            local total_lines=$(echo "$commit_output" | wc -l)
+            echo "$commit_output" | head -8
+            if [[ $total_lines -gt 8 ]]; then
+                echo "  ... ($((total_lines - 8)) more lines in log file)"
+            fi
         fi
 
         if [[ $exit_code -eq 0 ]]; then
@@ -1588,9 +1644,9 @@ EOF
             phase_result[fix]=true
         else
             phase_result[fix]=false
-            # Fix failure is non-fatal for the pipeline — architect + CI can still run
+            failed=true
         fi
-        [[ $multi_phase -eq 1 ]] && sleep $sleep_between
+        [[ $multi_phase -eq 1 && "$failed" == "false" ]] && sleep $sleep_between
     fi
 
     # Phase 3: Architect

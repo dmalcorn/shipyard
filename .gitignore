@@ -21,6 +21,7 @@ logs/
 reviews/
 checkpoints/
 fix-plan.md
+target/
 
 # Node modules & package files (gauntlet_docs PDF tooling)
 gauntlet_docs/node_modules/
