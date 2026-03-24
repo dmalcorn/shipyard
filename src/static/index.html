@@ -894,7 +894,7 @@ function startStagePoller(sessionId, pipelineType, onDone) {
     } catch {
       // Network error during poll — ignore, retry on next tick
     }
-  }, 1500);
+  }, 15000);
 
   return interval;
 }
