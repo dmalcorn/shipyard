@@ -21,8 +21,10 @@ logs/
 reviews/
 checkpoints/
 
-# Node modules (gauntlet_docs PDF tooling)
+# Node modules & package files (gauntlet_docs PDF tooling)
 gauntlet_docs/node_modules/
+gauntlet_docs/package.json
+gauntlet_docs/package-lock.json
 
 # IDE
 .vscode/
