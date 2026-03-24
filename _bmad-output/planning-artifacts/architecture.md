@@ -49,7 +49,7 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 
 - **LangGraph mandatory** — only practical choice given LangSmith tracing requirement and one-week timeline
 - **Claude via Anthropic SDK** — required by PRD; model routing across Haiku 4.5 / Sonnet 4.6 / Opus 4.6
-- **Python 3.11+** — LangGraph Python ecosystem is most mature
+- **Python 3.13+** — LangGraph Python ecosystem is most mature
 - **Docker** — container is the deployment unit (local for MVP, Railway for Final)
 - **SQLite checkpointing** — lightweight persistence for MVP, upgradeable to Postgres later
 - **No GitHub Actions** — all CI runs locally via bash scripts to conserve quota
@@ -73,7 +73,7 @@ Agent infrastructure / developer tooling (Python) — this is not a web applicat
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| Language | Python 3.11+ | LangGraph Python ecosystem is most mature; more examples and better LangSmith integration than JS |
+| Language | Python 3.13+ | LangGraph Python ecosystem is most mature; more examples and better LangSmith integration than JS |
 | Agent Framework | LangGraph | Mandatory — only practical choice given LangSmith tracing requirement |
 | LLM Integration | `langchain-anthropic` (ChatAnthropic) | Required by PRD; provides Claude tool-use via LangGraph |
 | Server | FastAPI | Lightweight, async, well-suited for agent instruction endpoint |
@@ -137,7 +137,7 @@ shipyard/
 
 **Architectural Decisions Provided by This Approach:**
 
-- **Language & Runtime:** Python 3.11+, no TypeScript
+- **Language & Runtime:** Python 3.13+, no TypeScript
 - **Build Tooling:** pip for dependencies, no complex build step (Python is interpreted)
 - **Testing Framework:** pytest (standard Python, added when Test Agent work begins)
 - **Code Organization:** `src/` layout with domain-based modules (agent, tools, multi_agent, context)
@@ -544,8 +544,7 @@ shipyard/
 │
 └── gauntlet_docs/                  # Assignment docs, PRESEARCH, PRD
     ├── PRESEARCH.md
-    ├── shipyard_prd.pdf
-    └── ai-prompts/                 # Prompt logging (per CLAUDE.md)
+    └── shipyard_prd.pdf
 ```
 
 ### Architectural Boundaries

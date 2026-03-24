@@ -63,7 +63,7 @@ LANGCHAIN_PROJECT=shipyard
 
 ### Python Version
 
-Python 3.11+ recommended.
+Python 3.13+ recommended.
 
 ---
 
