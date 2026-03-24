@@ -1,0 +1,56 @@
+%%{init: {'theme': 'default', 'themeVariables': {'lineColor': '#333333'}, 'flowchart': {'curve': 'basis'}}}%%
+graph TD
+    %% === INTAKE & PLANNING ===
+    S1[Intake Specs] ==> S2[Create Epics and Stories]
+    S2 ==> S3{More epics?}
+    S3 ==>|yes — next epic| A
+    S3 ==>|no — all epics complete| DONE[Project Complete]
+
+    %% === DEV CYCLE — one epic per loop ===
+    A[Create All Detailed Stories for Epic] ==> B[Test Agent writes and verifies failing tests]
+    B ==> D[Dev Agent writes implementation]
+
+    D ==> E[Dev Agent runs unit tests]
+    E ==>|tests pass — GREEN| F[Bash: Local CI]
+    E ==>|tests fail| D
+
+    F ==>|pass| G[Bash: Git commit snapshot]
+    F ==>|fail| F2[Dev Agent fixes issues]
+    F2 ==> F
+
+    G ==> H[Spawn 2 Review Agents in parallel]
+    H ==> R1[Review Agent 1 writes analysis file]
+    H ==> R2[Review Agent 2 writes analysis file]
+    R1 ==> I[Architect Agent reviews both files]
+    R2 ==> I
+
+    I ==> J[Architect creates fix plan]
+    J ==> K[Fresh Dev Agent executes fixes]
+    K ==> L[Run unit tests]
+    L ==>|pass| M[Bash: Local CI]
+    L ==>|fail| K
+
+    M ==>|pass| O[Bash: Run system tests]
+    M ==>|fail| K2[Dev Agent fixes issues]
+    K2 ==> M
+
+    O ==>|pass| O2[Bash: Local CI — final gate]
+    O ==>|fail| Q[Error Handler]
+
+    O2 ==>|pass| P2[Bash: Git commit and push]
+    O2 ==>|fail| Q
+
+    P2 ==> S3
+
+    Q ==>|retriable| K
+    Q ==>|max retries exceeded| R[Fail with Report]
+
+    style S1 fill:#c9f,stroke:#333,stroke-width:2px
+    style S2 fill:#c9f,stroke:#333,stroke-width:2px
+    style B fill:#f96,stroke:#333,stroke-width:2px
+    style E fill:#ff9,stroke:#333,stroke-width:2px
+    style O fill:#69f,stroke:#333,stroke-width:2px
+    style DONE fill:#6f6,stroke:#333,stroke-width:2px
+    style R fill:#f33,stroke:#333,stroke-width:2px,color:#fff
+
+    linkStyle default stroke:#333,stroke-width:3px

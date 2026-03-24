@@ -1,0 +1,39 @@
+_bmad/
+.agents/
+.claude/
+.cursor/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Environment
+.env
+
+# Runtime artifacts (agent-generated)
+logs/
+reviews/
+checkpoints/
+
+# Node modules (gauntlet_docs PDF tooling)
+gauntlet_docs/node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite checkpoints
+*.db
+*.sqlite
