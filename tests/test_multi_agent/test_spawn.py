@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
+from src.multi_agent.roles import get_tools_for_role
 from src.multi_agent.spawn import (
-    MAX_RETRIES,
+    MAX_LLM_TURNS,
     _should_continue,
     create_agent_subgraph,
     run_sub_agent,
@@ -15,57 +18,61 @@ from src.multi_agent.spawn import (
 
 
 @pytest.fixture
-def checkpoints_db(tmp_path: object) -> str:
+def checkpoints_db(tmp_path: Path) -> str:
     """Provide a temporary SQLite database path for checkpointing."""
-    return str(tmp_path / "test_checkpoints.db")  # type: ignore[operator]
+    return str(tmp_path / "test_checkpoints.db")
 
 
 class TestCreateAgentSubgraph:
     """Tests for create_agent_subgraph() factory."""
 
-    def test_returns_compiled_graph_and_state(self, checkpoints_db: str) -> None:
-        """Factory returns a tuple of (compiled_graph, initial_state)."""
-        graph, state = create_agent_subgraph(
+    def test_returns_compiled_graph_state_and_conn(self, checkpoints_db: str) -> None:
+        """Factory returns a tuple of (compiled_graph, initial_state, connection)."""
+        graph, state, conn = create_agent_subgraph(
             role="dev",
             task_description="Write hello world",
             checkpoints_db=checkpoints_db,
         )
-        assert graph is not None
-        assert isinstance(state, dict)
+        try:
+            assert graph is not None
+            assert isinstance(state, dict)
+            assert conn is not None
+        finally:
+            conn.close()
 
     def test_dev_agent_tool_count(self, checkpoints_db: str) -> None:
         """Dev Agent subgraph has 6 tools bound."""
-        graph, _ = create_agent_subgraph(
+        _, _, conn = create_agent_subgraph(
             role="dev",
             task_description="task",
             checkpoints_db=checkpoints_db,
         )
+        conn.close()
         # The compiled graph's nodes include 'tools' which wraps the ToolNode
         # We verify by checking the tool count via the role config
-        from src.multi_agent.roles import get_tools_for_role
-
         tools = get_tools_for_role("dev")
         assert len(tools) == 6
 
     def test_reviewer_agent_tool_count(self, checkpoints_db: str) -> None:
         """Reviewer Agent subgraph has 4 tools bound."""
-        graph, _ = create_agent_subgraph(
+        _, _, conn = create_agent_subgraph(
             role="reviewer",
             task_description="review code",
             checkpoints_db=checkpoints_db,
         )
-        from src.multi_agent.roles import get_tools_for_role
+        conn.close()
 
         tools = get_tools_for_role("reviewer")
         assert len(tools) == 4
 
     def test_initial_state_has_fresh_messages(self, checkpoints_db: str) -> None:
         """Sub-agent receives fresh messages, not parent history."""
-        _, state = create_agent_subgraph(
+        _, state, conn = create_agent_subgraph(
             role="dev",
             task_description="Implement feature X",
             checkpoints_db=checkpoints_db,
         )
+        conn.close()
         messages = state["messages"]
         # Should have exactly 1 HumanMessage from inject_task_context
         assert len(messages) == 1
@@ -73,42 +80,46 @@ class TestCreateAgentSubgraph:
 
     def test_initial_state_has_zero_retry_count(self, checkpoints_db: str) -> None:
         """Sub-agent starts with retry_count=0."""
-        _, state = create_agent_subgraph(
+        _, state, conn = create_agent_subgraph(
             role="dev",
             task_description="task",
             checkpoints_db=checkpoints_db,
         )
+        conn.close()
         assert state["retry_count"] == 0
 
     def test_initial_state_has_role(self, checkpoints_db: str) -> None:
         """Sub-agent state has the correct agent_role."""
-        _, state = create_agent_subgraph(
+        _, state, conn = create_agent_subgraph(
             role="reviewer",
             task_description="task",
             checkpoints_db=checkpoints_db,
         )
+        conn.close()
         assert state["agent_role"] == "reviewer"
 
     def test_initial_state_empty_files_modified(self, checkpoints_db: str) -> None:
         """Sub-agent starts with empty files_modified list."""
-        _, state = create_agent_subgraph(
+        _, state, conn = create_agent_subgraph(
             role="dev",
             task_description="task",
             checkpoints_db=checkpoints_db,
         )
+        conn.close()
         assert state["files_modified"] == []
 
-    def test_context_files_injected(self, checkpoints_db: str, tmp_path: object) -> None:
+    def test_context_files_injected(self, checkpoints_db: str, tmp_path: Path) -> None:
         """Context files are included in the initial messages."""
-        ctx_file = tmp_path / "context.md"  # type: ignore[operator]
+        ctx_file = tmp_path / "context.md"
         ctx_file.write_text("# Context\nSome important info")
 
-        _, state = create_agent_subgraph(
+        _, state, conn = create_agent_subgraph(
             role="dev",
             task_description="Use the context",
             context_files=[str(ctx_file)],
             checkpoints_db=checkpoints_db,
         )
+        conn.close()
         msg_content = str(state["messages"][0].content)
         assert "Some important info" in msg_content
 
@@ -123,11 +134,12 @@ class TestCreateAgentSubgraph:
 
     def test_no_parent_messages_shared(self, checkpoints_db: str) -> None:
         """Sub-agent does not receive parent message history."""
-        _, state = create_agent_subgraph(
+        _, state, conn = create_agent_subgraph(
             role="test",
             task_description="Write tests for foo",
             checkpoints_db=checkpoints_db,
         )
+        conn.close()
         # Only the task instruction message, no prior conversation
         assert len(state["messages"]) == 1
         assert "Write tests for foo" in str(state["messages"][0].content)
@@ -137,32 +149,26 @@ class TestShouldContinue:
     """Tests for the _should_continue routing function."""
 
     def test_empty_messages_returns_end(self) -> None:
-        """No messages → end."""
+        """No messages -> end."""
         state: dict = {"messages": [], "retry_count": 0}
         assert _should_continue(state) == "end"  # type: ignore[arg-type]
 
     def test_retry_exceeded_returns_error(self) -> None:
-        """Retry count at max → error."""
-        from langchain_core.messages import AIMessage
-
+        """Retry count at max -> error."""
         state: dict = {
             "messages": [AIMessage(content="done")],
-            "retry_count": MAX_RETRIES,
+            "retry_count": MAX_LLM_TURNS,
         }
         assert _should_continue(state) == "error"  # type: ignore[arg-type]
 
     def test_tool_calls_returns_tools(self) -> None:
-        """AI message with tool calls → tools."""
-        from langchain_core.messages import AIMessage
-
+        """AI message with tool calls -> tools."""
         msg = AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "1"}])
         state: dict = {"messages": [msg], "retry_count": 0}
         assert _should_continue(state) == "tools"  # type: ignore[arg-type]
 
     def test_no_tool_calls_returns_end(self) -> None:
-        """AI message without tool calls → end."""
-        from langchain_core.messages import AIMessage
-
+        """AI message without tool calls -> end."""
         state: dict = {"messages": [AIMessage(content="all done")], "retry_count": 0}
         assert _should_continue(state) == "end"  # type: ignore[arg-type]
 
@@ -188,6 +194,7 @@ class TestRunSubAgent:
         with patch("src.multi_agent.spawn.create_agent_subgraph") as mock_create:
             mock_graph = MagicMock()
             mock_graph.invoke = mock_invoke
+            mock_conn = MagicMock()
             mock_create.return_value = (
                 mock_graph,
                 {
@@ -198,6 +205,7 @@ class TestRunSubAgent:
                     "agent_role": "dev",
                     "files_modified": [],
                 },
+                mock_conn,
             )
 
             run_sub_agent(
@@ -213,6 +221,7 @@ class TestRunSubAgent:
         assert captured_config["metadata"]["agent_role"] == "dev"
         assert captured_config["metadata"]["task_id"] == "story-1"
         assert captured_config["metadata"]["phase"] == "implementation"
+        mock_conn.close.assert_called_once()
 
     def test_sub_agent_thread_id_distinct_from_parent(self, checkpoints_db: str) -> None:
         """Sub-agent gets its own unique thread_id."""
@@ -232,6 +241,7 @@ class TestRunSubAgent:
         with patch("src.multi_agent.spawn.create_agent_subgraph") as mock_create:
             mock_graph = MagicMock()
             mock_graph.invoke = mock_invoke
+            mock_conn = MagicMock()
             mock_create.return_value = (
                 mock_graph,
                 {
@@ -242,6 +252,7 @@ class TestRunSubAgent:
                     "agent_role": "dev",
                     "files_modified": [],
                 },
+                mock_conn,
             )
 
             run_sub_agent(
@@ -269,6 +280,7 @@ class TestRunSubAgent:
                 "current_phase": "implementation",
                 "agent_role": "dev",
             }
+            mock_conn = MagicMock()
             mock_create.return_value = (
                 mock_graph,
                 {
@@ -279,6 +291,7 @@ class TestRunSubAgent:
                     "agent_role": "dev",
                     "files_modified": [],
                 },
+                mock_conn,
             )
 
             result = run_sub_agent(
@@ -294,8 +307,6 @@ class TestRunSubAgent:
 
     def test_returns_final_message(self, checkpoints_db: str) -> None:
         """run_sub_agent extracts final message content."""
-        from langchain_core.messages import AIMessage
-
         with patch("src.multi_agent.spawn.create_agent_subgraph") as mock_create:
             mock_graph = MagicMock()
             mock_graph.invoke.return_value = {
@@ -306,6 +317,7 @@ class TestRunSubAgent:
                 "current_phase": "implementation",
                 "agent_role": "dev",
             }
+            mock_conn = MagicMock()
             mock_create.return_value = (
                 mock_graph,
                 {
@@ -316,6 +328,7 @@ class TestRunSubAgent:
                     "agent_role": "dev",
                     "files_modified": [],
                 },
+                mock_conn,
             )
 
             result = run_sub_agent(
@@ -347,6 +360,7 @@ class TestRunSubAgent:
         with patch("src.multi_agent.spawn.create_agent_subgraph") as mock_create:
             mock_graph = MagicMock()
             mock_graph.invoke = mock_invoke
+            mock_conn = MagicMock()
             mock_create.return_value = (
                 mock_graph,
                 {
@@ -357,6 +371,7 @@ class TestRunSubAgent:
                     "agent_role": "architect",
                     "files_modified": [],
                 },
+                mock_conn,
             )
 
             run_sub_agent(
@@ -364,8 +379,45 @@ class TestRunSubAgent:
                 task_id="t",
                 role="architect",
                 task_description="triage reviews",
-                current_phase="review",
+                current_phase="architect",
                 checkpoints_db=checkpoints_db,
             )
 
         assert captured_config["metadata"]["model_tier"] == "opus"
+
+    def test_connection_closed_after_invoke(self, checkpoints_db: str) -> None:
+        """SQLite connection is closed after sub-agent completes."""
+        with patch("src.multi_agent.spawn.create_agent_subgraph") as mock_create:
+            mock_graph = MagicMock()
+            mock_graph.invoke.return_value = {
+                "messages": [],
+                "files_modified": [],
+                "retry_count": 1,
+                "task_id": "t",
+                "current_phase": "test",
+                "agent_role": "dev",
+            }
+            mock_conn = MagicMock()
+            mock_create.return_value = (
+                mock_graph,
+                {
+                    "messages": [],
+                    "task_id": "",
+                    "retry_count": 0,
+                    "current_phase": "",
+                    "agent_role": "dev",
+                    "files_modified": [],
+                },
+                mock_conn,
+            )
+
+            run_sub_agent(
+                parent_session_id="p",
+                task_id="t",
+                role="dev",
+                task_description="task",
+                current_phase="implementation",
+                checkpoints_db=checkpoints_db,
+            )
+
+        mock_conn.close.assert_called_once()

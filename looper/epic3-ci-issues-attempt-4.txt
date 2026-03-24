@@ -1,0 +1,260 @@
+=== ruff check ===
+E501 Line too long (111 > 100)
+  --> src\intake\backlog.py:71:101
+   |
+69 |             # Save previous story if exists
+70 |             if current_story:
+71 |                 backlog.append(_make_entry(current_epic, current_story, current_description, current_criteria))
+   |                                                                                                     ^^^^^^^^^^^
+72 |             current_epic = epic_match.group(1).strip()
+73 |             current_story = ""
+   |
+
+E501 Line too long (111 > 100)
+  --> src\intake\backlog.py:84:101
+   |
+82 |             # Save previous story if exists
+83 |             if current_story:
+84 |                 backlog.append(_make_entry(current_epic, current_story, current_description, current_criteria))
+   |                                                                                                     ^^^^^^^^^^^
+85 |             current_story = story_match.group(1).strip()
+86 |             current_description = ""
+   |
+
+E501 Line too long (103 > 100)
+   --> src\intake\backlog.py:113:101
+    |
+111 |     # Save last story
+112 |     if current_story:
+113 |         backlog.append(_make_entry(current_epic, current_story, current_description, current_criteria))
+    |                                                                                                     ^^^
+114 |
+115 |     return backlog
+    |
+
+F401 [*] `uuid` imported but unused
+  --> src\intake\rebuild.py:14:8
+   |
+12 | import subprocess
+13 | import time
+14 | import uuid
+   |        ^^^^
+15 | from datetime import UTC, datetime
+16 | from typing import Any
+   |
+help: Remove unused import: `uuid`
+
+F401 [*] `datetime.UTC` imported but unused
+  --> src\intake\rebuild.py:15:22
+   |
+13 | import time
+14 | import uuid
+15 | from datetime import UTC, datetime
+   |                      ^^^
+16 | from typing import Any
+   |
+help: Remove unused import
+
+F401 [*] `datetime.datetime` imported but unused
+  --> src\intake\rebuild.py:15:27
+   |
+13 | import time
+14 | import uuid
+15 | from datetime import UTC, datetime
+   |                           ^^^^^^^^
+16 | from typing import Any
+   |
+help: Remove unused import
+
+F541 [*] f-string without any placeholders
+   --> src\intake\rebuild.py:387:18
+    |
+385 |         lines.append(f"- Story: {result['story']} — {status}{suffix}")
+386 |
+387 |     lines.append(f"\n## Summary\n")
+    |                  ^^^^^^^^^^^^^^^^^
+388 |     lines.append(f"Stories completed: {completed}/{total_stories}")
+389 |     lines.append(f"Stories failed: {failed}")
+    |
+help: Remove extraneous `f` prefix
+
+F541 [*] f-string without any placeholders
+   --> src\main.py:369:11
+    |
+367 |     )
+368 |
+369 |     print(f"\nRebuild complete.")
+    |           ^^^^^^^^^^^^^^^^^^^^^^
+370 |     print(f"  Stories: {result['stories_completed']}/{result['total_stories']} completed")
+371 |     print(f"  Failed: {result['stories_failed']}")
+    |
+help: Remove extraneous `f` prefix
+
+E501 Line too long (103 > 100)
+   --> src\main.py:403:101
+    |
+401 |     parser = argparse.ArgumentParser(description="Shipyard agent server")
+402 |     parser.add_argument("--cli", action="store_true", help="Run interactive CLI mode")
+403 |     parser.add_argument("--intake", metavar="SPEC_DIR", help="Run intake pipeline on a spec directory")
+    |                                                                                                     ^^^
+404 |     parser.add_argument("--rebuild", metavar="TARGET_DIR", help="Run autonomous rebuild on a target project")
+405 |     parser.add_argument("--target-dir", default="./target/", help="Target output directory (default: ./target/)")
+    |
+
+E501 Line too long (109 > 100)
+   --> src\main.py:404:101
+    |
+402 |     parser.add_argument("--cli", action="store_true", help="Run interactive CLI mode")
+403 |     parser.add_argument("--intake", metavar="SPEC_DIR", help="Run intake pipeline on a spec directory")
+404 |     parser.add_argument("--rebuild", metavar="TARGET_DIR", help="Run autonomous rebuild on a target project")
+    |                                                                                                     ^^^^^^^^^
+405 |     parser.add_argument("--target-dir", default="./target/", help="Target output directory (default: ./target/)")
+406 |     parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+    |
+
+E501 Line too long (113 > 100)
+   --> src\main.py:405:101
+    |
+403 |     parser.add_argument("--intake", metavar="SPEC_DIR", help="Run intake pipeline on a spec directory")
+404 |     parser.add_argument("--rebuild", metavar="TARGET_DIR", help="Run autonomous rebuild on a target project")
+405 |     parser.add_argument("--target-dir", default="./target/", help="Target output directory (default: ./target/)")
+    |                                                                                                     ^^^^^^^^^^^^^
+406 |     parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+407 |     parser.add_argument("--port", type=int, default=8000, help="Bind port")
+    |
+
+E501 Line too long (103 > 100)
+   --> src\multi_agent\orchestrator.py:357:101
+    |
+355 |             "review_file_paths": valid_paths,
+356 |             "error": f"Expected 2 review files, found {len(valid_paths)} valid",
+357 |             "error_log": [f"collect_reviews: Expected 2 review files, found {len(valid_paths)} valid"],
+    |                                                                                                     ^^^
+358 |         }
+    |
+
+E501 Line too long (101 > 100)
+  --> src\tools\scoped.py:64:101
+   |
+62 |             return f"SUCCESS: {content}"
+63 |         except FileNotFoundError:
+64 |             return f"ERROR: File not found: {file_path}. Use list_files to discover available files."
+   |                                                                                                     ^
+65 |         except Exception as e:
+66 |             return f"ERROR: Failed to read {file_path}: {e}"
+   |
+
+E501 Line too long (101 > 100)
+  --> src\tools\scoped.py:97:101
+   |
+95 |             return f"SUCCESS: Edited {file_path}"
+96 |         except FileNotFoundError:
+97 |             return f"ERROR: File not found: {file_path}. Use list_files to discover available files."
+   |                                                                                                     ^
+98 |         except Exception as e:
+99 |             return f"ERROR: Failed to edit {file_path}: {e}"
+   |
+
+E501 Line too long (104 > 100)
+   --> src\tools\scoped.py:122:101
+    |
+120 |             if not search_root.exists():
+121 |                 return f"ERROR: Path not found: {path}"
+122 |             matches = sorted(str(p.relative_to(root)) for p in search_root.glob(pattern) if p.is_file())
+    |                                                                                                     ^^^^
+123 |             if not matches:
+124 |                 return f"SUCCESS: No files matching '{pattern}' in {path}"
+    |
+
+E501 Line too long (101 > 100)
+   --> src\tools\scoped.py:166:101
+    |
+164 |             timeout_secs = int(timeout)
+165 |         except ValueError:
+166 |             return f"ERROR: Invalid timeout value '{timeout}'. Provide an integer number of seconds."
+    |                                                                                                     ^
+167 |         if timeout_secs <= 0:
+168 |             return "ERROR: Timeout must be a positive integer. Provide seconds > 0."
+    |
+
+F401 [*] `os` imported but unused
+ --> tests\test_intake\test_pipeline.py:5:8
+  |
+3 | from __future__ import annotations
+4 |
+5 | import os
+  |        ^^
+6 | from pathlib import Path
+7 | from typing import Any
+  |
+help: Remove unused import: `os`
+
+F401 [*] `typing.Any` imported but unused
+ --> tests\test_intake\test_pipeline.py:7:20
+  |
+5 | import os
+6 | from pathlib import Path
+7 | from typing import Any
+  |                    ^^^
+8 | from unittest.mock import MagicMock, patch
+  |
+help: Remove unused import: `typing.Any`
+
+F401 [*] `pytest` imported but unused
+  --> tests\test_intake\test_pipeline.py:10:8
+   |
+ 8 | from unittest.mock import MagicMock, patch
+ 9 |
+10 | import pytest
+   |        ^^^^^^
+11 |
+12 | from src.intake.pipeline import (
+   |
+help: Remove unused import: `pytest`
+
+E501 Line too long (101 > 100)
+   --> tests\test_intake\test_pipeline.py:166:101
+    |
+164 |         # Verify edges exist by checking the graph structure
+165 |         edges = graph.edges
+166 |         assert len(edges) >= 4  # START→read, read→intake, intake→backlog, backlog→output, output→END
+    |                                                                                                     ^
+    |
+
+E501 Line too long (105 > 100)
+   --> tests\test_intake\test_pipeline.py:190:101
+    |
+188 |                     "**As a** user, **I want** to create todos, **so that** I can track tasks.\n\n"
+189 |                     "**Acceptance Criteria:**\n"
+190 |                     "- **Given** I am on the app **When** I add a todo **Then** it appears in the list\n"
+    |                                                                                                     ^^^^^
+191 |                 ),
+192 |                 "files_modified": [],
+    |
+
+F401 [*] `pytest` imported but unused
+  --> tests\test_intake\test_rebuild.py:10:8
+   |
+ 8 | from unittest.mock import MagicMock, patch
+ 9 |
+10 | import pytest
+   |        ^^^^^^
+11 |
+12 | from src.intake.rebuild import (
+   |
+help: Remove unused import: `pytest`
+
+F401 [*] `pytest` imported but unused
+ --> tests\test_tools\test_scoped.py:7:8
+  |
+5 | from pathlib import Path
+6 |
+7 | import pytest
+  |        ^^^^^^
+8 |
+9 | from src.tools.scoped import get_scoped_tools
+  |
+help: Remove unused import: `pytest`
+
+Found 23 errors.
+[*] 10 fixable with the `--fix` option.

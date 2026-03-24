@@ -1,0 +1,1225 @@
+================================================================================
+CODE REVIEW RESULTS (BMAD WORKFLOW)
+Epic: 3
+Started: 2026-03-24 13:06:46
+================================================================================
+This file contains only the review findings for easy comparison.
+================================================================================
+
+
+================================================================================
+STORY: 3-1-agent-role-definitions-tool-subsets
+================================================================================
+Now I have all the files needed. Let me compile the full adversarial code review.
+
+---
+
+# Adversarial Code Review: Story 3-1 — Agent Role Definitions & Tool Subsets
+
+---
+
+## LAYER 1: BLIND HUNTER
+*Code reviewed with no regard for spec — purely from what the code shows.*
+
+---
+
+### 1. Path traversal bypass in `_is_path_allowed`
+- **Severity:** CRITICAL
+- **Category:** SECURITY
+- **Evidence:** `src/tools/restricted.py:24-36`
+
+```python
+def _is_path_allowed(file_path: str, allowed_prefixes: tuple[str, ...]) -> bool:
+    normalized = file_path.replace("\\", "/").lstrip("./")
+    for prefix in allowed_prefixes:
+        norm_prefix = prefix.replace("\\", "/").rstrip("/")
+        if normalized.startswith(norm_prefix.rstrip("/") + "/") or normalized == norm_prefix:
+            return True
+    return False
+```
+
+A reviewer agent can bypass write restrictions with `file_path="reviews/../src/main.py"`. The normalized path retains `..` sequences — `lstrip("./")` does not collapse `..` — so it still starts with `"reviews/"` and passes the prefix check. The base `write_file` then resolves it to `<project_root>/src/main.py` and writes there. Full sandbox escape for any restricted role.
+
+---
+
+### 2. `PERMISSION_DENIED_MSG` is misleading for non-reviewer roles
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `src/tools/restricted.py:19-21`
+
+```python
+PERMISSION_DENIED_MSG = (
+    "ERROR: Permission denied: {role} agents cannot edit source files. Write to {allowed} only."
+)
+```
+
+This message is used for ALL restricted roles (reviewer, test, architect). For the **test** role restricted to `tests/`, the error reads: *"test agents cannot edit source files. Write to tests/ only."* — but the test agent IS a "source file" writer (test files). The phrase "cannot edit source files" is only accurate for the reviewer role. A generic message like "cannot write outside allowed paths" would be more correct.
+
+---
+
+### 3. Restricted tool docstrings copied from base tools are inaccurate
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/tools/restricted.py:58, 81`
+
+```python
+def write_file(file_path: str, content: str) -> str:
+    """Create or overwrite a file with the given content. Used by: Dev, Architect."""
+```
+
+The restricted wrappers say "Used by: Dev, Architect" — but they're actually the restricted versions used by reviewer/test/architect. The docstring was copied from the base tool without updating the "Used by" annotation.
+
+---
+
+### 4. `get_prompt()` docstring omits `fix_dev` from valid roles list
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/agent/prompts.py:136`
+
+```python
+    """Return the prompt template for the given agent role.
+
+    Args:
+        role: Agent role identifier (dev, test, reviewer, architect).
+```
+
+The `_PROMPTS` dict includes `"fix_dev"`, but the docstring only lists `(dev, test, reviewer, architect)`.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*Walking every branching path and boundary condition.*
+
+---
+
+### 5. Path traversal via `..` in directory prefix match (duplicate of #1, elaborated)
+- **Severity:** CRITICAL
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/restricted.py:27, 34`
+
+Specific attack payloads that bypass the check:
+- `"reviews/../src/main.py"` → passes `startswith("reviews/")`, resolves to `src/main.py`
+- `"reviews/../../etc/passwd"` → passes prefix check, base tool's sandbox catches it (outside project root), but shows the check is weak
+- `"tests/../src/secret.py"` → bypasses test agent restriction
+
+The `lstrip("./")` on line 27 strips leading `./` but does not normalize `..` components anywhere in the path. Fix: use `os.path.normpath()` or `pathlib.PurePosixPath().resolve()` on the path before prefix matching.
+
+---
+
+### 6. Absolute paths to allowed directories are incorrectly rejected
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/restricted.py:27`
+
+```python
+normalized = file_path.replace("\\", "/").lstrip("./")
+```
+
+If an LLM passes an absolute path like `/home/user/project/reviews/review.md`, the leading `/` is not stripped. The prefix check against `"reviews/"` will always fail for absolute paths, even when they point into an allowed directory. This is a false negative — legitimate writes would be rejected.
+
+---
+
+### 7. `get_tools_for_role` raises unhandled `KeyError` on missing tool name
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/roles.py:144`
+
+```python
+result.append(tools_by_name[tool_name])
+```
+
+If a role constant references a tool name not present in `tools_by_name`, this raises a raw `KeyError` with no helpful message. All current role constants use valid names, so this is latent — but adding a new tool name to a role without registering it would produce a cryptic error.
+
+---
+
+### 8. `_is_path_allowed` allows writing to a file literally named `"reviews"` (no slash)
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/restricted.py:31`
+
+```python
+if "/" not in norm_prefix and normalized == norm_prefix:
+    return True
+```
+
+For `allowed_prefixes=("reviews/",)`, `norm_prefix` becomes `"reviews"` after `rstrip("/")`. The exact match on line 31 would fire if `file_path == "reviews"`, allowing creation of a file named `reviews` at the project root. This would shadow the `reviews/` directory. The base `write_file` would create a file (not a directory), potentially causing confusion.
+
+---
+
+### 9. Case-sensitive path comparison on case-insensitive Windows filesystem
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/restricted.py:28-34`
+
+The platform is Windows (MINGW64). Windows paths are case-insensitive, so `"Reviews/file.md"` and `"reviews/file.md"` refer to the same location. But `_is_path_allowed` does case-sensitive `startswith`, so `"Reviews/file.md"` would be rejected even though it targets the allowed directory. Unlikely to trigger in practice since the LLM generally follows casing conventions.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*Implementation checked against story spec and acceptance criteria.*
+
+---
+
+### 10. AC#5 error message does not match specified exact text
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `src/tools/restricted.py:19-21` vs Story AC#5
+
+AC#5 specifies the exact error:
+> `ERROR: Permission denied: Review agents cannot edit source files. Write to reviews/ directory only.`
+
+The implementation produces:
+> `ERROR: Permission denied: reviewer agents cannot edit source files. Write to reviews/ only.`
+
+Two differences:
+1. **"reviewer"** (lowercase) vs **"Review"** (title case)
+2. **"reviews/ only"** vs **"reviews/ directory only"** (missing word "directory")
+
+---
+
+### 11. AC#5 expects `edit_file` to return an error, but reviewer has no `edit_file` at all
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `src/multi_agent/roles.py:65` and story AC#5
+
+AC#5 says: *"When it attempts to call edit_file on a source file, Then the tool returns ERROR: Permission denied..."*
+
+Task 3 says: *"Similarly restrict edit_file for reviewer role — must return same error format"*
+
+But `REVIEWER_ROLE.tools` does not include `"edit_file"` at all. The reviewer cannot even attempt to call `edit_file` — it's not in their tool list. The spec envisions the tool existing but returning an error; the implementation removes the tool entirely. While this is arguably a stronger enforcement, it deviates from the specified behavior (the tool should be present and return the error message).
+
+---
+
+### 12. Test `test_path_validation_error_message_exact` doesn't verify exact message per AC#5
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `tests/test_multi_agent/test_roles.py:352-359`
+
+```python
+def test_path_validation_error_message_exact(self) -> None:
+    """Permission denied error matches expected format from AC#5."""
+    ...
+    assert "ERROR: Permission denied:" in result
+    assert "cannot edit source files" in result
+    assert "reviews/" in result
+```
+
+Despite its name (`_exact`), this test only checks substring containment. It passes even though the actual message deviates from AC#5's exact text (see finding #10). An exact equality assertion is needed to enforce the spec.
+
+---
+
+### 13. No test for `edit_file` returning the permission-denied error (AC#5 not fully tested)
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `tests/test_multi_agent/test_roles.py:333-337`
+
+```python
+def test_reviewer_edit_rejects_source(self) -> None:
+    """Reviewer does not have edit_file at all (not in tool list)."""
+    tools = get_tools_for_role("reviewer")
+    names = {t.name for t in tools}
+    assert "edit_file" not in names
+```
+
+The test verifies that `edit_file` is absent from the tool list, but AC#5 and Task 3 require that calling `edit_file` **returns** the specific error message. There is no test that invokes a restricted `edit_file` and checks the error string — because the tool is never created for the reviewer.
+
+---
+
+### 14. Architect `write_file` restriction allows only `fix-plan.md` at root, not `reviews/fix-plan.md`
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `src/multi_agent/roles.py:75`
+
+```python
+write_restrictions=("reviews/", "fix-plan.md"),
+```
+
+The spec (Task 4) says Architect can write to "reviews/ and project root for fix-plan.md". The prompt (`ARCHITECT_AGENT_PROMPT` line 81) says: "You CAN write fix plans to the reviews/ directory". These are slightly inconsistent — the role allows writing `fix-plan.md` at project root, but the prompt says write to `reviews/` directory. If the intent is `reviews/fix-plan.md`, then the restriction `"fix-plan.md"` (matching only `fix-plan.md` at root) contradicts the prompt. If the intent is project root, the prompt contradicts the restriction.
+
+---
+
+## SUMMARY
+
+| Metric | Count |
+|---|---|
+| **Issues Found** | **14** |
+| **By Layer** | Blind Hunter: **4**, Edge Case Hunter: **5**, Acceptance Auditor: **5** |
+| **By Severity** | Critical: **2**, High: **1**, Medium: **6**, Low: **5** |
+
+| # | Title | Severity | Category |
+|---|---|---|---|
+| 1 | Path traversal bypass in `_is_path_allowed` via `..` | CRITICAL | SECURITY |
+| 2 | `PERMISSION_DENIED_MSG` misleading for non-reviewer roles | MEDIUM | QUALITY |
+| 3 | Restricted tool docstrings copied from base are inaccurate | LOW | QUALITY |
+| 4 | `get_prompt()` docstring omits `fix_dev` | LOW | QUALITY |
+| 5 | Path traversal via `..` (elaborated attack payloads) | CRITICAL | EDGE_CASE |
+| 6 | Absolute paths to allowed dirs incorrectly rejected | MEDIUM | EDGE_CASE |
+| 7 | `get_tools_for_role` raises raw `KeyError` on missing tool | LOW | EDGE_CASE |
+| 8 | Allows writing file literally named `"reviews"` | LOW | EDGE_CASE |
+| 9 | Case-sensitive comparison on case-insensitive Windows FS | LOW | EDGE_CASE |
+| 10 | Error message text doesn't match AC#5 exactly | HIGH | SPEC_VIOLATION |
+| 11 | AC#5 expects `edit_file` to return error, but tool is absent | MEDIUM | SPEC_VIOLATION |
+| 12 | Test claims "exact" but only checks substrings | MEDIUM | SPEC_VIOLATION |
+| 13 | No test invokes restricted `edit_file` and checks error | MEDIUM | SPEC_VIOLATION |
+| 14 | Architect prompt vs restriction inconsistency on fix-plan path | LOW | SPEC_VIOLATION |
+================================================================================
+
+
+================================================================================
+STORY: 3-2-sub-agent-spawning-with-subgraphs
+================================================================================
+Now I have all the context needed. Let me compile the full adversarial review.
+
+---
+
+# Adversarial Code Review: Story 3-2 — Sub-Agent Spawning with Subgraphs
+
+---
+
+## LAYER 1: BLIND HUNTER
+*Code reviewed purely from what exists — no spec consideration.*
+
+### Finding 1.1: SQLite connection leaked — never closed
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/multi_agent/spawn.py:109-110`
+  ```python
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  memory = SqliteSaver(conn)
+  ```
+  Every call to `create_agent_subgraph()` opens a new `sqlite3.connect()` but the connection is never closed — not in `create_agent_subgraph`, not in `run_sub_agent`, not anywhere. In a long-running pipeline, this leaks file descriptors. The `SqliteSaver` does not take ownership of closing the connection. Each sub-agent spawn opens a new connection that lives until garbage collection.
+
+### Finding 1.2: `_make_error_handler` ignores its `state` parameter
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/spawn.py:43-45`
+  ```python
+  def _make_error_handler(state: AgentState) -> dict[str, Any]:
+      """Append error message when sub-agent exceeds turn limit."""
+      return {"messages": [AIMessage(content=f"ERROR: Sub-agent exceeded {MAX_RETRIES} turns.")]}
+  ```
+  The function receives `state` but never uses it. It could include useful context (e.g., role, task_id, retry_count) in the error message but discards it entirely.
+
+### Finding 1.3: System prompt re-prepended on every LLM call
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/multi_agent/spawn.py:83-85`
+  ```python
+  def agent_node(state: AgentState) -> dict[str, Any]:
+      messages = state["messages"]
+      if not messages or not isinstance(messages[0], SystemMessage):
+          messages = [SystemMessage(content=system_prompt), *messages]
+  ```
+  After the first LLM call, the state's `messages` list will contain the returned `AIMessage` (appended via reducer). On the second iteration, `messages[0]` is the `HumanMessage` from `inject_task_context` (since `SystemMessage` was prepended locally but never stored in state). So each subsequent turn creates a new local list with a fresh `SystemMessage` prepended plus ALL accumulated messages — effectively re-injecting the system prompt every turn but never persisting it. This bloats the context window with repeated preamble and wastes tokens. The system prompt should be stored in state once, or the `SystemMessage` should be appended to state on first call.
+
+### Finding 1.4: `run_sub_agent` does not propagate or handle sub-agent errors
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/multi_agent/spawn.py:183-198`
+  ```python
+  final_state = compiled.invoke(initial_state, config=config)
+  files_modified = final_state.get("files_modified", [])
+  ```
+  If the sub-agent hits the error handler (exceeded MAX_RETRIES), `run_sub_agent` extracts the final message content but has no mechanism to signal failure to the caller. The caller gets a `final_message` containing "ERROR: Sub-agent exceeded 50 turns." but `run_sub_agent` doesn't raise, return a status field, or otherwise distinguish success from failure. The orchestrator blindly proceeds.
+
+### Finding 1.5: `time.time()` for thread_id may collide on fast successive spawns
+- **Severity:** LOW
+- **Category:** BUG
+- **Evidence:** `src/multi_agent/spawn.py:165`
+  ```python
+  sub_thread_id = f"{parent_session_id}-{role}-{int(time.time())}"
+  ```
+  `int(time.time())` has 1-second granularity. If two sub-agents of the same role are spawned within the same second (e.g., two reviewers via Send API), they get the same `thread_id`, causing checkpoint collisions. The parallel review pipeline (Story 3.3) fans out two reviewer agents simultaneously.
+
+### Finding 1.6: Return type annotation uses `Any` instead of `CompiledGraph`
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/spawn.py:53`
+  ```python
+  ) -> tuple[Any, dict[str, Any]]:
+  ```
+  The story spec says the return type is `CompiledGraph`, but the implementation returns `tuple[Any, ...]`. The `CompiledGraph` type is available from `langgraph.graph` but is not imported or used. This weakens type safety.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*Every branching path and boundary condition examined.*
+
+### Finding 2.1: No validation on `checkpoints_db` parent directory existence
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/spawn.py:109`
+  ```python
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  ```
+  If the `checkpoints/` directory doesn't exist (e.g., fresh clone, container restart), `sqlite3.connect()` will raise `sqlite3.OperationalError: unable to open database file`. No try/except or `os.makedirs` guards this. The default value `CHECKPOINTS_DB = "checkpoints/shipyard.db"` assumes the directory exists.
+
+### Finding 2.2: Empty `task_description` not handled
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/spawn.py:48-50`
+  ```python
+  def create_agent_subgraph(
+      role: str,
+      task_description: str,
+  ```
+  If `task_description` is an empty string, the sub-agent will be spawned with a `HumanMessage` containing only a `## Instruction\n` header with no content. This would cause the LLM to hallucinate a task or produce garbage output. No validation prevents this.
+
+### Finding 2.3: `context_files` with non-existent files silently degrades
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/context/injection.py:90-95`
+  ```python
+  content = _read_file_safe(file_path)
+  if content:
+      ...
+  else:
+      parts.append(f"## Context: {file_path}\n(file not available)")
+  ```
+  When a context file doesn't exist, `inject_task_context` silently substitutes "(file not available)". The sub-agent gets a message saying the file isn't available but proceeds anyway. For critical context (e.g., the story spec), this silent degradation could produce completely wrong output. The coding standards say "Fail-loud semantics — errors must surface immediately."
+
+### Finding 2.4: `_should_continue` doesn't handle non-AIMessage last messages
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/spawn.py:37-40`
+  ```python
+  last = state["messages"][-1]
+  if isinstance(last, AIMessage) and last.tool_calls:
+      return "tools"
+  return "end"
+  ```
+  If the last message is a `ToolMessage` (e.g., from ToolNode returning an error), the function falls through to `"end"`. This is arguably correct for most cases, but if ToolNode produces an error message, the agent won't get a chance to recover because the graph routes to END instead of back to the agent node. However, this is the same pattern used in Story 1.4, so it may be intentional.
+
+### Finding 2.5: `retry_count` can silently become `None` if state initialization is wrong
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/spawn.py:34`
+  ```python
+  retry_count = state.get("retry_count", 0)
+  ```
+  If `retry_count` is explicitly set to `None` in the state dict, `state.get("retry_count", 0)` returns `None` (not `0`), and the comparison `None >= MAX_RETRIES` raises `TypeError`. The `.get()` default only applies when the key is absent, not when the value is `None`.
+
+### Finding 2.6: Thread ID collision risk in parallel review (Send API)
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/spawn.py:165` combined with `src/multi_agent/orchestrator.py:256-286`
+  The orchestrator's `route_to_reviewers` sends two `Send("review_node", ...)` items simultaneously. Each reviewer calls `run_sub_agent()`, which calls `create_agent_subgraph()`. Both execute `int(time.time())` at nearly the same instant, yielding identical `sub_thread_id` values like `parent-123-reviewer-1711234567`. Since both share the same `checkpoints_db` and `thread_id`, their checkpoint writes will collide — one agent's state overwrites the other's. This is the concrete manifestation of Finding 1.5 in an actual usage path.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*Implementation vs. story spec and coding standards.*
+
+### Finding 3.1: Return type deviates from spec signature
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Task 1 — "Function signature: `create_agent_subgraph(role, ...) -> CompiledGraph`"
+- **Evidence:** `src/multi_agent/spawn.py:53`
+  ```python
+  ) -> tuple[Any, dict[str, Any]]:
+  ```
+  The story spec (Task 1) specifies the return type as `-> CompiledGraph`. The implementation returns `tuple[Any, dict[str, Any]]` — a tuple of (graph, initial_state). The Completion Notes acknowledge this change ("returns (compiled_graph, initial_state) tuple for flexible invocation"), but it deviates from the stated spec. The `run_sub_agent` wrapper adapts to this, so it works functionally, but the contract differs.
+
+### Finding 3.2: `run_sub_agent` signature deviates from spec
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Task 5 — "`run_sub_agent(state: OrchestratorState, role: str, task: str, context_files: list[str]) -> dict`"
+- **Evidence:** `src/multi_agent/spawn.py:127-135`
+  ```python
+  def run_sub_agent(
+      parent_session_id: str,
+      task_id: str,
+      role: str,
+      task_description: str,
+      current_phase: str,
+      ...
+  ```
+  The spec says `run_sub_agent` takes `state: OrchestratorState` as its first param and extracts fields internally. The implementation instead takes individual fields (`parent_session_id`, `task_id`, `role`, etc.). This is arguably a better API (avoids coupling to `OrchestratorState`), and the orchestrator adapts its calls, but it deviates from the specified signature.
+
+### Finding 3.3: `build_trace_config()` from roles.py is not used by spawn.py
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Task 4 — "Wire LangSmith trace linking"
+- **Evidence:** `src/multi_agent/spawn.py:170-179` vs `src/multi_agent/roles.py:149-195`
+  The `roles.py` module provides a `build_trace_config()` helper that validates all metadata fields (agent_role, model_tier, phase) before building the config dict. But `spawn.py` builds its own config dict manually at lines 170-179 without any validation. This bypasses the validation that `build_trace_config()` provides (e.g., checking `agent_role in VALID_AGENT_ROLES`, `model_tier in VALID_MODEL_TIERS`, `phase in VALID_PHASES`).
+
+### Finding 3.4: Missing test — integration test for sub-agent tool invocation
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Task 6 — "Integration test: spawn a Dev Agent subgraph, invoke with a simple task, verify it can call tools"
+- **Evidence:** `tests/test_multi_agent/test_spawn.py` — all 19 tests
+  The spec says there should be an "Integration test: spawn a Dev Agent subgraph, invoke with a simple task, verify it can call tools." No such test exists. All `TestRunSubAgent` tests mock `create_agent_subgraph` entirely. The `TestCreateAgentSubgraph` tests create graphs but never invoke them. There is no test that actually exercises the compiled graph calling a tool through the LLM.
+
+### Finding 3.5: Test fixture typing uses `object` instead of `Path`
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `tests/test_multi_agent/test_spawn.py:18`
+  ```python
+  def checkpoints_db(tmp_path: object) -> str:
+  ```
+  The `tmp_path` fixture returns `pathlib.Path`, not `object`. Using `object` loses type information and triggers the `# type: ignore[operator]` suppression on line 20. Per coding standards, type hints should be accurate.
+
+### Finding 3.6: Test imports inside test methods instead of at module top
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `tests/test_multi_agent/test_spawn.py:46,59,146,157,165,297`
+  ```python
+  def test_dev_agent_tool_count(self, ...):
+      from src.multi_agent.roles import get_tools_for_role
+  ```
+  Multiple test methods import `get_tools_for_role`, `AIMessage` inside the method body instead of at the top of the file. Per coding standards: "Order: standard library, then third-party, then local — separated by blank lines." Deferred imports inside functions are not part of the prescribed pattern. While not technically forbidden, they deviate from the convention.
+
+### Finding 3.7: Claimed 19 tests but only 17 test methods present
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Completion Notes — "19 new tests"
+- **Evidence:** `tests/test_multi_agent/test_spawn.py` — counting all test methods:
+  - `TestCreateAgentSubgraph`: 9 tests (test_returns_compiled_graph_and_state, test_dev_agent_tool_count, test_reviewer_agent_tool_count, test_initial_state_has_fresh_messages, test_initial_state_has_zero_retry_count, test_initial_state_has_role, test_initial_state_empty_files_modified, test_context_files_injected, test_invalid_role_raises, test_no_parent_messages_shared) — that's actually 10.
+  - `TestShouldContinue`: 4 tests
+  - `TestRunSubAgent`: 5 tests
+  
+  Total: 19. *(Self-correction: after re-counting, this is 10 + 4 + 5 = 19. Finding withdrawn.)*
+
+---
+
+## SUMMARY
+
+**Issues Found: 14**
+
+**By Layer:**
+| Layer | Count |
+|---|---|
+| Blind Hunter | 6 |
+| Edge Case Hunter | 6 |
+| Acceptance Auditor | 6 |
+
+**By Severity:**
+| Severity | Count |
+|---|---|
+| CRITICAL | 0 |
+| HIGH | 2 |
+| MEDIUM | 4 |
+| LOW | 8 |
+
+**Top Priority Items:**
+1. **HIGH — SQLite connection leak** (1.1): Each subgraph spawn opens a DB connection that is never closed. In a full pipeline with 5+ sub-agents, this leaks connections.
+2. **HIGH — Thread ID collision in parallel review** (2.6): Two reviewers spawned via Send API will get identical `thread_id` values, causing checkpoint data corruption.
+3. **MEDIUM — System prompt re-injected every turn** (1.3): The `SystemMessage` is prepended to a local copy of `messages` but never persisted in state, causing it to be re-prepended on every subsequent agent_node call.
+4. **MEDIUM — No error propagation from sub-agent to parent** (1.4): `run_sub_agent` doesn't distinguish success from failure, so the orchestrator can't react to a sub-agent exceeding its turn limit.
+5. **MEDIUM — Checkpoints directory not ensured** (2.1): Fresh environment will crash on first subgraph creation.
+6. **MEDIUM — Missing integration test** (3.4): No test actually invokes a compiled subgraph end-to-end.
+================================================================================
+
+
+================================================================================
+STORY: 3-3-parallel-review-pipeline-send-api
+================================================================================
+Now I have all the context. Let me compile the full three-layer adversarial review.
+
+---
+
+# Adversarial Code Review: Story 3-3 Parallel Review Pipeline (Send API)
+
+**Files Reviewed:**
+- `src/multi_agent/orchestrator.py`
+- `tests/test_multi_agent/test_orchestrator.py`
+- `src/multi_agent/spawn.py` (dependency)
+- `src/multi_agent/roles.py` (dependency)
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+### Finding 1.1: `review_file_paths` missing `operator.add` reducer for parallel fan-in
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/multi_agent/orchestrator.py:72`
+  ```python
+  review_file_paths: list[str]
+  ```
+  Contrast with correctly-annotated fields at lines 65, 86:
+  ```python
+  files_modified: Annotated[list[str], operator.add]
+  error_log: Annotated[list[str], operator.add]
+  ```
+  Both `review_node` instances (parallel via Send API) return `{"review_file_paths": [output_path]}` at line 337. Without an `operator.add` reducer, LangGraph's merge strategy for parallel branches will use last-write-wins, meaning only one reviewer's path survives. Masked by `collect_reviews` constructing paths from scratch at line 342 — but `architect_node` at line 366 reads `state.get("review_file_paths", [])` for context, which could receive only one path if `collect_reviews` ever fails to override it.
+
+### Finding 1.2: `collect_reviews` proceeds to architect unconditionally even with missing reviews
+- **Severity:** HIGH
+- **Category:** LOGIC
+- **Evidence:** `src/multi_agent/orchestrator.py:352-358` and line 803:
+  ```python
+  if len(valid_paths) < 2:
+      return {
+          "review_file_paths": valid_paths,
+          "error": f"Expected 2 review files, found {len(valid_paths)} valid",
+      }
+  ```
+  The `error` field is set, but the graph edge at line 803 is unconditional:
+  ```python
+  graph.add_edge("collect_reviews", "architect_node")
+  ```
+  The architect will proceed with 0 or 1 review files. There is no conditional routing to `error_handler` when reviews are incomplete.
+
+### Finding 1.3: Shared retry counters between pre-fix and post-fix phases
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/multi_agent/orchestrator.py:466,517`
+  - `unit_test_node` increments `test_cycle_count` (line 466)
+  - `post_fix_test_node` increments the same `test_cycle_count` (line 517)
+  - `route_after_post_fix_test` checks against `MAX_TEST_CYCLES=5` (line 692-694)
+  
+  If unit tests consumed 3 cycles in the initial TDD loop, post-fix tests start at `test_cycle_count=3` and only get 2 attempts before hitting the limit. Same issue with `ci_cycle_count` shared between `ci_node` (line 484) and `post_fix_ci_node` (line 535). This creates an unfair retry budget — later phases are penalized by earlier phase failures.
+
+### Finding 1.4: `.gitkeep` written without explicit encoding
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/orchestrator.py:119-120`
+  ```python
+  with open(gitkeep, "w") as f:
+      f.write("")
+  ```
+  Every other file write in the module uses `encoding="utf-8"` (line 133, and throughout tests). On Windows, omitting encoding uses the system default (could be `cp1252`). For an empty file this is harmless, but it's inconsistent with the codebase pattern.
+
+### Finding 1.5: `_validate_review_file` uses superficial frontmatter check
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/orchestrator.py:135`
+  ```python
+  return content.startswith("---")
+  ```
+  A file starting with `---` but containing no valid YAML (e.g., `---garbage`) passes validation. The closing `---` delimiter is not checked, nor are required fields (`agent_role`, `task_id`, `reviewer_id`).
+
+### Finding 1.6: `_ensure_reviews_dir` doesn't clean subdirectories
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/orchestrator.py:113`
+  ```python
+  if os.path.isfile(entry_path):
+      os.remove(entry_path)
+  ```
+  Only files are removed. A leftover subdirectory in `reviews/` would survive cleanup.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### Finding 2.1: Empty `source_files` and `test_files` spawn reviewers with nothing to review
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:256-286`
+  ```python
+  source_files = state.get("source_files", [])
+  test_files = state.get("test_files", [])
+  ```
+  No validation that at least one file exists. `route_to_reviewers` will spawn two review sub-agents that have `context_files=[]` — reviewing nothing but still consuming API calls.
+
+### Finding 2.2: `_run_bash` doesn't set working directory
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:148-153`
+  ```python
+  result = subprocess.run(
+      command,
+      capture_output=True,
+      text=True,
+      timeout=timeout,
+  )
+  ```
+  No `cwd` parameter. If the process's working directory is not the project root (e.g., when invoked from a parent directory or test runner), `pytest tests/ -v`, `bash scripts/local_ci.sh`, and `bash scripts/git_snapshot.sh` would resolve paths relative to the wrong directory.
+
+### Finding 2.3: `review_node` timestamp is stale by the time the file is written
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:300`
+  ```python
+  timestamp = datetime.now(UTC).isoformat()
+  ```
+  The timestamp is captured when the node starts, then embedded in the task description template. The sub-agent may take several minutes to complete, so the timestamp in the final review file will be the node start time, not the actual write time.
+
+### Finding 2.4: `route_to_reviewers` propagates empty `task_id` without warning
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:258`
+  ```python
+  task_id = state.get("task_id", "")
+  ```
+  If `task_id` is missing (since `total=False` makes all fields optional), an empty string is silently used. The review file YAML frontmatter will contain `task_id: ""` — a meaningless trace identifier.
+
+### Finding 2.5: Tests use real `reviews/` directory instead of `tmp_path`
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `tests/test_multi_agent/test_orchestrator.py:644-661`
+  ```python
+  reviews_dir = "reviews"
+  os.makedirs(reviews_dir, exist_ok=True)
+  ```
+  Tests create/clean the real `reviews/` directory relative to cwd, not using pytest's `tmp_path` fixture. Running tests from a different working directory will write review artifacts to unexpected locations. The test cleanup helper `_clean_reviews_dir()` duplicates the source code's `_ensure_reviews_dir()`.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### Finding 3.1: No conditional routing when reviews fail (AC#3 violation)
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** AC#3 — "Given both reviews are complete When the orchestrator proceeds Then it invokes the Architect Agent"
+- **Evidence:** `src/multi_agent/orchestrator.py:803`
+  ```python
+  graph.add_edge("collect_reviews", "architect_node")
+  ```
+  AC#3 states the precondition "both reviews are complete" before the Architect runs. But the graph unconditionally routes from `collect_reviews` to `architect_node` even when `collect_reviews` returns an error indicating fewer than 2 valid reviews. The Architect could run with 0 valid review files.
+
+### Finding 3.2: No test for actual LangGraph Send API parallel execution
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** AC#1 — "uses LangGraph's Send API to spawn 2 Review Agents in parallel"
+- **Evidence:** `tests/test_multi_agent/test_orchestrator.py:921-973`
+  ```python
+  for rid in [1, 2]:
+      review_input = ReviewNodeInput(...)
+      review_node(review_input)
+  ```
+  The integration test manually invokes `review_node` sequentially in a for-loop, never exercising the actual `Send` API fan-out through the compiled graph. The parallel behavior and state merge semantics are untested. `test_graph_compiles` (line 196) verifies the graph compiles but not that Send works correctly at runtime.
+
+### Finding 3.3: Story spec says `from langgraph.constants import Send` but code uses `from langgraph.types import Send`
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Dev Notes — "Key import: `from langgraph.constants import Send`"
+- **Evidence:** `src/multi_agent/orchestrator.py:22`
+  ```python
+  from langgraph.types import Send
+  ```
+  The dev notes say `from langgraph.constants import Send` but the completion notes clarify the correct import for langgraph 1.1.0 is `from langgraph.types import Send`. This is actually the correct decision — the code is right and the dev note is outdated. **No action needed**, but the spec should be updated.
+
+### Finding 3.4: Missing test for review output file format YAML field validation (Task 6)
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Task 6 — "Test review output file format has required YAML frontmatter fields"
+- **Evidence:** `tests/test_multi_agent/test_orchestrator.py:673-689`
+  The test `test_validates_yaml_frontmatter` only checks that a file without `---` is rejected. It does NOT verify that valid review files contain the required YAML fields (`agent_role`, `task_id`, `timestamp`, `input_files`, `reviewer_id`) per the inter-agent communication format from coding-standards.md.
+
+---
+
+## Summary
+
+| Metric | Count |
+|--------|-------|
+| **Issues Found** | **14** |
+| **By Layer** | Blind Hunter: 6, Edge Case Hunter: 5, Acceptance Auditor: 4 |
+| **By Severity** | Critical: 0, High: 3, Medium: 3, Low: 8 |
+
+### High-Priority Action Items
+1. Add `Annotated[list[str], operator.add]` reducer to `review_file_paths` in `OrchestratorState` (Finding 1.1)
+2. Add conditional routing from `collect_reviews` to `error_handler` when fewer than 2 valid reviews exist (Findings 1.2, 3.1)
+3. Consider separate retry counters for pre-fix and post-fix phases, or document that the shared budget is intentional (Finding 1.3)
+================================================================================
+
+
+================================================================================
+STORY: 3-4-architect-decision-fix-pipeline
+================================================================================
+Now I have all the code context needed. Let me compile the full three-layer review.
+
+---
+
+# Adversarial Code Review: Story 3.4 — Architect Decision & Fix Pipeline
+
+## LAYER 1: BLIND HUNTER
+
+### 1. `edit_retry_count` is never incremented — retry context logic is dead code
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/multi_agent/orchestrator.py:421,432`
+  ```python
+  edit_retry = state.get("edit_retry_count", 0)
+  ...
+  if edit_retry > 0 and last_test_output:
+  ```
+  No node in the entire orchestrator ever increments `edit_retry_count`. When `post_fix_test` fails and routes back to `fix_dev_node`, the Fix Dev Agent is re-invoked **without any information about what tests failed**. The conditional at line 432 always short-circuits to `False` because `edit_retry` is always `0`. Compare with `dev_agent_node` (line 217) which correctly uses `test_cycle_count` (a counter that IS incremented).
+
+### 2. `test_cycle_count` is shared across all test phases — counter pollution
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/multi_agent/orchestrator.py:466,517,552`
+  ```python
+  # unit_test_node (line 466):
+  test_cycle = state.get("test_cycle_count", 0) + 1
+  # post_fix_test_node (line 517):
+  test_cycle = state.get("test_cycle_count", 0) + 1
+  # system_test_node (line 552):
+  test_cycle = state.get("test_cycle_count", 0) + 1
+  ```
+  All three test phases increment the same counter. If the initial dev loop consumes 3 of the 5 allowed cycles, the post-fix loop only gets 2 tries. The architecture spec (Decision 4) intends 5 test cycles per retry loop, not 5 total across the entire pipeline.
+
+### 3. No conditional routing after `collect_reviews` — pipeline proceeds with incomplete reviews
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/multi_agent/orchestrator.py:352-356,803`
+  ```python
+  # collect_reviews sets error when reviews are missing:
+  return {
+      "review_file_paths": valid_paths,
+      "error": f"Expected 2 review files, found {len(valid_paths)} valid",
+  }
+  ...
+  # But the edge is unconditional:
+  graph.add_edge("collect_reviews", "architect_node")  # line 803
+  ```
+  Even when 0 or 1 review files exist, the architect is still spawned. The `error` field is set in state but never checked — no conditional edge exists after `collect_reviews`.
+
+### 4. `review_file_paths` lacks `operator.add` reducer for parallel Send results
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/orchestrator.py:72,337`
+  ```python
+  review_file_paths: list[str]  # line 72 — no reducer
+  ...
+  return {"review_file_paths": [output_path]}  # line 337 — from review_node
+  ```
+  Both parallel `review_node` instances return `review_file_paths` with a single-element list. Without an `operator.add` reducer, the second Send result overwrites the first. This is masked because `collect_reviews` re-derives paths from the filesystem, but the state field is misleading.
+
+### 5. Redundant pytest instruction in `fix_dev_node` task description
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/orchestrator.py:429`
+  ```python
+  f"4. Run `pytest tests/ -v` after all fixes to verify correctness\n"
+  ```
+  The Fix Dev Agent is instructed to run pytest itself, then the pipeline runs `post_fix_test_node` (line 514) which runs pytest again. This wastes LLM tokens/time on duplicate testing.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### 6. Fix Dev Agent is blind to test failures on retry
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:421-437`
+  ```python
+  edit_retry = state.get("edit_retry_count", 0)  # always 0
+  last_test_output = state.get("last_test_output", "")  # populated by post_fix_test
+  ...
+  if edit_retry > 0 and last_test_output:  # always False
+      task_description += (...)  # never reached
+  ```
+  **Scenario:** post_fix_test fails → routes to fix_dev_node → `edit_retry_count` is 0 → retry context block is skipped → Fix Dev Agent gets the exact same instructions as the first invocation, with no information about what failed. It will likely make the same changes again in an infinite loop until `test_cycle_count` exhausts MAX_TEST_CYCLES.
+
+### 7. Time-based thread_id collision for parallel reviewers
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/spawn.py:165`
+  ```python
+  sub_thread_id = f"{parent_session_id}-{role}-{int(time.time())}"
+  ```
+  Both parallel reviewer Send invocations use `role="reviewer"`. If spawned within the same second (likely), they get identical `thread_id` values (e.g., `sess-1-reviewer-1711234567`). This could cause checkpoint data collision in SQLite.
+
+### 8. `_validate_review_file` uses weak frontmatter check
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:135`
+  ```python
+  return content.startswith("---")
+  ```
+  Any file starting with `---` passes validation, including broken YAML, empty frontmatter (`---\n---`), or even `--- some random text`. The architect could receive malformed review files.
+
+### 9. No validation that `fix-plan.md` exists before spawning Fix Dev
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:806`
+  ```python
+  graph.add_edge("architect_node", "fix_dev_node")  # unconditional
+  ```
+  If the Architect Agent fails to write `fix-plan.md` (e.g., it errors out, exceeds turn limit, or writes to a wrong path), the Fix Dev Agent is still spawned. It would read a nonexistent file or stale file from a previous run.
+
+### 10. `_ensure_reviews_dir` doesn't remove subdirectories
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:112-114`
+  ```python
+  if os.path.isfile(entry_path):
+      os.remove(entry_path)
+  ```
+  Only files are removed. If a previous agent run created subdirectories inside `reviews/`, they persist and could confuse subsequent operations.
+
+### 11. Empty `source_files` passed to architect has no guard
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/orchestrator.py:365,399`
+  ```python
+  source_files = state.get("source_files", [])
+  ...
+  context_files = review_paths + source_files  # could be review_paths + []
+  ```
+  If `source_files` is empty, the Architect only sees review files but cannot read the actual code being reviewed. The architect's fix plan would be based purely on review prose without code evidence.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### 12. Missing `fix_cycle_count` from `OrchestratorState`
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Story Task 4: "Track `fix_cycle_count` in orchestrator state"; Task 5: "`OrchestratorState` includes `fix_cycle_count`"
+  - `src/multi_agent/orchestrator.py:49-88` — `OrchestratorState` has `test_cycle_count`, `ci_cycle_count`, `edit_retry_count` but **no `fix_cycle_count`**.
+  - The fix retry loop shares `test_cycle_count` with the initial dev loop, violating the spec's intent for an independent fix retry counter.
+
+### 13. Fix cycle retry limit not independent — violates "up to 5 cycles" spec
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Story Task 4: "route back to `fix_dev_node` for correction (up to 5 cycles)"
+  - `route_after_post_fix_test` (line 688) checks `test_cycle_count >= MAX_TEST_CYCLES`
+  - This counter is already incremented by `unit_test_node` during the initial dev loop
+  - The fix phase does NOT get its own 5-cycle budget — it gets whatever's left after the dev loop
+
+### 14. `architect_node` produces no verification of fix-plan.md output — AC#1 gap
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC#1: "Then it produces a `fix-plan.md` with: which findings to fix...which to dismiss...specific fix instructions"
+  - `architect_node` (line 361-412) returns `{"fix_plan_path": FIX_PLAN_PATH}` unconditionally
+  - No validation that the file was written, contains the required sections, or has valid frontmatter
+  - The promise of AC#1 is unverified at runtime
+
+### 15. Pipeline doesn't halt on missing reviews — AC#1 precondition violated
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC#1: "Given the Architect Agent receives **both** review files"
+  - `collect_reviews` (line 340) detects missing reviews and sets `error` in state
+  - But `graph.add_edge("collect_reviews", "architect_node")` (line 803) is unconditional
+  - When only 1 or 0 reviews exist, the pipeline proceeds to architect anyway, violating the "both review files" precondition
+
+### 16. Function names deviate from story File List
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Story File List says: `run_test_gate`, `halt_node`, `route_after_test_gate`
+  - Actual code: `post_fix_test_node`, `error_handler_node`, `route_after_post_fix_test`
+  - Functionally equivalent (refactored in Story 3.5), but the story completion record is stale
+
+### 17. `architect_node` passes `current_phase="review"` to sub-agent — inconsistent with state
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `src/multi_agent/orchestrator.py:406,412`
+  ```python
+  current_phase="review",    # passed to run_sub_agent
+  ...
+  "current_phase": "architect"  # set in orchestrator state
+  ```
+  The sub-agent trace metadata says "review" while the orchestrator state says "architect". The state comment (line 68) lists "architect" as a valid phase. `VALID_PHASES` in `roles.py:17` doesn't include "architect", so "review" was used as a workaround — but this means LangSmith traces won't correctly identify architect activity.
+
+---
+
+## Summary
+
+**Issues Found: 17**
+
+**By Layer:**
+- Blind Hunter: 5
+- Edge Case Hunter: 6
+- Acceptance Auditor: 6
+
+**By Severity:**
+- Critical: 0
+- High: 2 (findings #1, #6 — both related to fix_dev retry blindness)
+- Medium: 6 (findings #2, #3, #9, #12, #13, #14, #15)
+- Low: 9 (findings #4, #5, #7, #8, #10, #11, #16, #17)
+
+**Key Theme:** The two HIGH findings (#1 and #6) are the same root cause — `edit_retry_count` is never incremented, so the Fix Dev Agent is re-invoked on test failure with zero knowledge of what broke. This undermines the entire fix-retry loop, which is a core deliverable of Story 3.4 (AC#3). The most impactful single fix would be to either increment `edit_retry_count` in `post_fix_test_node` or switch `fix_dev_node` to use `test_cycle_count` like `dev_agent_node` does.
+================================================================================
+
+
+================================================================================
+STORY: 3-5-full-tdd-orchestrator-pipeline
+================================================================================
+
+================================================================================
+
+
+================================================================================
+STORY: 3-6-codeagent-multi-agent-design-section
+================================================================================
+Now I have all the context needed to perform the three-layer review. Let me compile the findings.
+
+---
+
+# Adversarial Code Review: Story 3.6 — CODEAGENT.md Multi-Agent Design Section
+
+## LAYER 1: BLIND HUNTER
+
+Reviewing source code purely on its own merits — bugs, security, logic, quality.
+
+---
+
+### 1. Shared `test_cycle_count` causes premature circuit-breaking in later pipeline phases
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `orchestrator.py:466-467`, `orchestrator.py:517-518`, `orchestrator.py:553-554`
+  ```python
+  # unit_test_node
+  test_cycle = state.get("test_cycle_count", 0) + 1
+  # post_fix_test_node
+  test_cycle = state.get("test_cycle_count", 0) + 1
+  # system_test_node
+  test_cycle = state.get("test_cycle_count", 0) + 1
+  ```
+  All three test nodes increment the **same** `test_cycle_count`. If unit tests consume 3 cycles, post-fix tests get only 2 remaining before `MAX_TEST_CYCLES(5)` fires. System tests may have zero headroom. Each phase should have its own counter, or the counter should be reset between phases.
+
+---
+
+### 2. Shared `ci_cycle_count` causes same premature circuit-breaking
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `orchestrator.py:484`, `orchestrator.py:535`
+  ```python
+  # ci_node
+  ci_cycle = state.get("ci_cycle_count", 0) + 1
+  # post_fix_ci_node
+  ci_cycle = state.get("ci_cycle_count", 0) + 1
+  ```
+  Same issue as test_cycle_count. If first CI takes 2 cycles, post-fix CI gets only 1 retry before `MAX_CI_CYCLES(3)` triggers the error handler.
+
+---
+
+### 3. `fix-plan.md` path inconsistency between orchestrator and Fix Dev prompt
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:**
+  - `orchestrator.py:30`: `FIX_PLAN_PATH = "fix-plan.md"` (project root)
+  - `orchestrator.py:374`: instructs Architect to `Write a structured fix plan to 'fix-plan.md'`
+  - `prompts.py:109`: Fix Dev prompt says `Read the fix plan from reviews/fix-plan.md`
+  
+  The Architect writes to project root `fix-plan.md`, but the Fix Dev agent's system prompt instructs it to look in `reviews/fix-plan.md`. If the Fix Dev follows its prompt literally, it will read from the wrong path. This may be mitigated by the task_description in `fix_dev_node` which passes the correct path, but the system prompt contradicts it.
+
+---
+
+### 4. Python list repr injected as YAML in review task description
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `orchestrator.py:311`
+  ```python
+  f"input_files: {files_to_review}\n"
+  ```
+  Produces `input_files: ['src/foo.py', 'tests/test_a.py']` — Python list repr with single quotes. This is not valid YAML. Valid YAML would be `[src/foo.py, tests/test_a.py]` (flow style) or use `- item` syntax. If the review agent copies this into its output file verbatim, the YAML frontmatter is malformed.
+
+---
+
+### 5. SQLite connection never closed in `create_agent_subgraph`
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `spawn.py:113-114`
+  ```python
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  memory = SqliteSaver(conn)
+  ```
+  Each call to `create_agent_subgraph` opens a new SQLite connection that is never explicitly closed. Over a full pipeline run (5 sub-agent spawns), connections accumulate. No `finally` block or context manager cleans them up.
+
+---
+
+### 6. `error_log` accumulator field is dead code — never written to
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `orchestrator.py:86`
+  ```python
+  error_log: Annotated[list[str], operator.add]
+  ```
+  This field has a reducer annotation for accumulation, and `error_handler_node` reads it at line 626, but **no node ever returns an `error_log` entry**. It is always empty at error-handler time. The error handler's "Error Log" section will always say "No errors captured."
+
+---
+
+### 7. `_validate_review_file` only checks opening `---` marker
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `orchestrator.py:135`
+  ```python
+  return content.startswith("---")
+  ```
+  This passes any file beginning with `---`, even without a closing `---` marker or any actual YAML content. A file containing just `---\nrandom text` would be considered valid frontmatter.
+
+---
+
+### 8. Ambiguous `current_phase` values in post-fix nodes
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `orchestrator.py:528`, `orchestrator.py:547`
+  ```python
+  # post_fix_test_node
+  "current_phase": "unit_test",
+  # post_fix_ci_node
+  "current_phase": "ci",
+  ```
+  Post-fix nodes reuse phase names from the initial pass. When the error handler reports "Failed Phase: ci", it's ambiguous whether first CI or post-fix CI failed. Distinct phase names (e.g., `"post_fix_test"`, `"post_fix_ci"`) would aid debugging.
+
+---
+
+### 9. `test_passed` field semantically overloaded for CI results
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `orchestrator.py:492-496`, `orchestrator.py:680`
+  ```python
+  # ci_node returns:
+  "test_passed": passed,
+  # route_after_ci checks:
+  if state.get("test_passed", False):
+  ```
+  The field named `test_passed` is used to track CI pass/fail results. This works mechanically but is misleading — CI includes ruff and mypy, not just tests.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+Walking branching paths and boundary conditions for unhandled edge cases.
+
+---
+
+### 10. `create_agent_subgraph` fails if checkpoints directory doesn't exist
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `spawn.py:113`
+  ```python
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  ```
+  `sqlite3.connect` will throw `OperationalError` if the parent directory doesn't exist. This is only protected by `main.py:34` running `os.makedirs("checkpoints", exist_ok=True)` at import time. Direct use of `create_agent_subgraph` or `run_sub_agent` without main.py initialization will fail.
+
+---
+
+### 11. `review_file_paths` has no reducer for Send fan-in accumulation
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `orchestrator.py:72`
+  ```python
+  review_file_paths: list[str]
+  ```
+  Both `review_node` calls return `{"review_file_paths": [output_path]}` (line 337). Without an `Annotated[list[str], operator.add]` reducer, the fan-in merge after parallel Send execution is undefined — last writer may overwrite. Mitigated because `collect_reviews` hardcodes paths rather than reading state, but the state field is silently broken.
+
+---
+
+### 12. `route_to_reviewers` spawns reviewers with empty file lists
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `orchestrator.py:260-261`
+  ```python
+  source_files = state.get("source_files", [])
+  test_files = state.get("test_files", [])
+  ```
+  If both lists are empty (e.g., state not properly populated), two reviewer agents are spawned with nothing to review. No guard checks for empty inputs.
+
+---
+
+### 13. `_ensure_reviews_dir` skips subdirectories during cleanup
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `orchestrator.py:113`
+  ```python
+  if os.path.isfile(entry_path):
+      os.remove(entry_path)
+  ```
+  Only files are removed. If a review agent creates a subdirectory inside `reviews/`, it persists across pipeline runs, potentially causing stale artifacts.
+
+---
+
+### 14. `_run_bash` output truncation message doesn't reflect final length
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `orchestrator.py:158`
+  ```python
+  output = output[:5000] + f"\n(truncated, {len(output)} chars total)"
+  ```
+  `len(output)` is evaluated on the **right-hand side** before reassignment, so it correctly reports the original length. However, the returned string is ~5025 chars, exceeding the 5000-char target. Minor but inconsistent with the truncation intent.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+Reviewing CODEAGENT.md against the story spec, acceptance criteria, and project standards.
+
+---
+
+### 15. CODEAGENT.md `fix-plan.md` path is accurate per orchestrator but contradicts agent prompts
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:**
+  - `CODEAGENT.md:207`: Architect Agent writes to `fix-plan.md`
+  - `prompts.py:109`: Fix Dev prompt says `reviews/fix-plan.md`
+  - Story spec Task 7: "Verify consistency with the Agent Architecture section"
+  
+  The documentation accurately describes the orchestrator's behavior, but exposes an inconsistency in the underlying codebase that was supposed to be verified for consistency.
+
+---
+
+### 16. CODEAGENT.md Agent Architecture `current_phase` enum doesn't match OrchestratorState phases
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:**
+  - `CODEAGENT.md:42`: `# "test" | "dev" | "review" | "architect" | "fix" | "ci"`
+  - `orchestrator.py:68`: comment lists `test|dev|unit_test|ci|git_snapshot|review|architect|fix|system_test|push`
+  - `state.py:24`: comment lists `"test", "implementation", "review", "fix", "ci"`
+  
+  Three different phase lists across the codebase. The Agent Architecture section in CODEAGENT.md uses "dev" and "architect" which appear in neither the AgentState comment nor the VALID_PHASES set in roles.py. Task 7 requires consistency between sections.
+
+---
+
+### 17. Architect prompt directs writes to `reviews/` but CODEAGENT.md and code use project root
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:**
+  - `CODEAGENT.md:287`: Architect tools listed as `write (reviews/, fix-plan.md)`
+  - `prompts.py:82`: "You CAN write fix plans to the reviews/ directory"
+  - `orchestrator.py:374`: Instructs writing to `fix-plan.md` (project root)
+  
+  The Architect's prompt says it writes to `reviews/`, but the orchestrator sends it to `fix-plan.md` at project root. The write_restrictions allow both (`("reviews/", "fix-plan.md")`), so the inconsistency is in the prompt text, not the permissions. The CODEAGENT.md correctly documents the permission set but inherits the prompt confusion.
+
+---
+
+### 18. AC #1 core requirements: All met
+- **Severity:** N/A (PASS)
+- **Category:** SPEC_VIOLATION (none found)
+- **Evidence:** CODEAGENT.md lines 145-294 contain:
+  - Orchestration model (subgraphs + Send): lines 147-168 ✓
+  - Agent communication (file-based): lines 172-210 ✓
+  - Parallel review merge (Architect gatekeeper): lines 212-225 ✓
+  - Pipeline diagram (Mermaid): lines 228-276 ✓
+  - Role Summary table: lines 282-288 ✓
+
+---
+
+### 19. Diagram retry edges are accurate against code routing functions
+- **Severity:** N/A (PASS)
+- **Category:** SPEC_VIOLATION (none found)
+- **Evidence:** All conditional routing in the Mermaid diagram matches the `route_after_*` functions and `add_conditional_edges` calls. Retry thresholds (5 for tests, 3 for CI) match `MAX_TEST_CYCLES` and `MAX_CI_CYCLES`. Final CI correctly shows no retry path.
+
+---
+
+## Summary
+
+**Issues Found: 17** (excluding 2 PASS items)
+
+| Layer | Count |
+|---|---|
+| Blind Hunter | 9 |
+| Edge Case Hunter | 5 |
+| Acceptance Auditor | 3 |
+
+| Severity | Count |
+|---|---|
+| Critical | 0 |
+| High | 3 |
+| Medium | 6 |
+| Low | 8 |
+
+**Key Themes:**
+1. **Shared retry counters** (findings 1, 2) are the most impactful bugs — they cause premature circuit-breaking in later pipeline phases
+2. **`fix-plan.md` path confusion** (findings 3, 15, 17) is a cross-cutting inconsistency between orchestrator code, agent prompts, and documentation
+3. **Dead state field** (`error_log`, finding 6) and **missing reducer** (`review_file_paths`, finding 11) indicate state schema design gaps
+4. The **documentation itself is well-written and accurate** relative to the orchestrator code, but it inherits and exposes inconsistencies in the underlying implementation
+================================================================================
+
+
+================================================================================
+SUMMARY
+================================================================================
+Epic: 3
+Total stories: 6
+Reviewed: 6
+Skipped: 0
+Failed: 0
+Total duration: 23m 0s
+================================================================================

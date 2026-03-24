@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from src.logging.audit import get_logger
@@ -69,7 +70,7 @@ class OrchestratorState(TypedDict, total=False):
     pipeline_status: str  # running|completed|failed
 
     # Review pipeline state (Story 3.3-3.4)
-    review_file_paths: list[str]
+    review_file_paths: Annotated[list[str], operator.add]
     fix_plan_path: str
 
     # Retry counters for circuit breaking
@@ -116,7 +117,7 @@ def _ensure_reviews_dir() -> None:
         os.makedirs(REVIEWS_DIR, exist_ok=True)
     gitkeep = os.path.join(REVIEWS_DIR, ".gitkeep")
     if not os.path.exists(gitkeep):
-        with open(gitkeep, "w") as f:
+        with open(gitkeep, "w", encoding="utf-8") as f:
             f.write("")
 
 
@@ -307,7 +308,7 @@ def review_node(state: ReviewNodeInput) -> dict[str, Any]:
         f"agent_role: reviewer\n"
         f"task_id: {task_id}\n"
         f"timestamp: {timestamp}\n"
-        f"input_files: {files_to_review}\n"
+        f"input_files: [{', '.join(files_to_review)}]\n"
         f"reviewer_id: {reviewer_id}\n"
         f"---\n\n"
         f"# Code Review — Agent {reviewer_id}\n\n"
@@ -353,6 +354,9 @@ def collect_reviews(state: OrchestratorState) -> dict[str, Any]:
         return {
             "review_file_paths": valid_paths,
             "error": f"Expected 2 review files, found {len(valid_paths)} valid",
+            "error_log": [
+                f"collect_reviews: Expected 2 review files, found {len(valid_paths)} valid"
+            ],
         }
 
     return {"review_file_paths": valid_paths}
@@ -403,7 +407,7 @@ def architect_node(state: OrchestratorState) -> dict[str, Any]:
         task_id=task_id,
         role="architect",
         task_description=task_description,
-        current_phase="review",
+        current_phase="architect",
         context_files=context_files,
     )
 
@@ -426,7 +430,6 @@ def fix_dev_node(state: OrchestratorState) -> dict[str, Any]:
         f"1. Read the fix plan at `{fix_plan_path}`\n"
         f"2. For each approved fix: read the target file, make the surgical edit, verify\n"
         f"3. Do NOT attempt any fixes not in the plan — scope discipline is critical\n"
-        f"4. Run `pytest tests/ -v` after all fixes to verify correctness\n"
     )
 
     if edit_retry > 0 and last_test_output:
@@ -521,12 +524,18 @@ def post_fix_test_node(state: OrchestratorState) -> dict[str, Any]:
 
     logger.info("Post-fix tests: cycle=%d passed=%s", test_cycle, passed)
 
-    return {
+    result: dict[str, Any] = {
         "test_passed": passed,
         "test_cycle_count": test_cycle,
         "last_test_output": output,
-        "current_phase": "unit_test",
+        "current_phase": "post_fix_test",
     }
+
+    if not passed:
+        result["edit_retry_count"] = state.get("edit_retry_count", 0) + 1
+        result["error_log"] = [f"post_fix_test: Tests failed (cycle {test_cycle})"]
+
+    return result
 
 
 def post_fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
@@ -539,12 +548,17 @@ def post_fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
 
     logger.info("Post-fix CI: cycle=%d passed=%s", ci_cycle, passed)
 
-    return {
+    result: dict[str, Any] = {
         "test_passed": passed,
         "ci_cycle_count": ci_cycle,
         "last_ci_output": output,
-        "current_phase": "ci",
+        "current_phase": "post_fix_ci",
     }
+
+    if not passed:
+        result["error_log"] = [f"post_fix_ci: CI failed (cycle {ci_cycle})"]
+
+    return result
 
 
 def system_test_node(state: OrchestratorState) -> dict[str, Any]:
@@ -843,7 +857,7 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     return graph
 
 
-def build_orchestrator(checkpointer: Any = None) -> Any:
+def build_orchestrator(checkpointer: Any = None) -> CompiledStateGraph[Any]:
     """Build and compile the full orchestrator pipeline.
 
     Args:

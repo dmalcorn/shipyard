@@ -14,7 +14,18 @@ from langchain_core.tools import BaseTool
 
 VALID_AGENT_ROLES = frozenset({"dev", "test", "reviewer", "architect", "fix_dev"})
 VALID_MODEL_TIERS = frozenset({"haiku", "sonnet", "opus"})
-VALID_PHASES = frozenset({"test", "implementation", "review", "fix", "ci"})
+VALID_PHASES = frozenset(
+    {
+        "test",
+        "implementation",
+        "review",
+        "fix",
+        "ci",
+        "architect",
+        "post_fix_test",
+        "post_fix_ci",
+    }
+)
 
 # Model IDs per tier
 MODEL_IDS: dict[str, str] = {
@@ -110,14 +121,18 @@ def get_role(name: str) -> AgentRole:
     return role
 
 
-def get_tools_for_role(role: str) -> list[BaseTool]:
+def get_tools_for_role(role: str, working_dir: str | None = None) -> list[BaseTool]:
     """Return the correct tool list for the given agent role.
 
     For roles with write_restrictions, wraps write_file and edit_file with
     path-restricted versions. Unrestricted roles get the base tools directly.
 
+    When working_dir is provided, file and bash tools are wrapped to operate
+    relative to that directory instead of the project root.
+
     Args:
         role: Agent role identifier (dev, test, reviewer, architect, fix_dev).
+        working_dir: Optional working directory for tool operations.
 
     Returns:
         List of BaseTool instances for the role.
@@ -126,22 +141,44 @@ def get_tools_for_role(role: str) -> list[BaseTool]:
     from src.tools.restricted import create_restricted_edit_file, create_restricted_write_file
 
     role_config = get_role(role)
-    result: list[BaseTool] = []
+
+    # If working_dir is set, get working-dir-scoped tools
+    if working_dir:
+        from src.tools.scoped import get_scoped_tools
+
+        scoped = get_scoped_tools(working_dir)
+        result: list[BaseTool] = []
+        for tool_name in role_config.tools:
+            if tool_name in scoped:
+                result.append(scoped[tool_name])
+            else:
+                result.append(tools_by_name[tool_name])
+        return result
+
+    result = []
 
     for tool_name in role_config.tools:
         if role_config.write_restrictions:
             # Swap write_file/edit_file with restricted versions
+            # Use title-case role name for user-facing error messages
+            display_name = role_config.name.replace("_", " ").title()
             if tool_name == "write_file":
                 result.append(
-                    create_restricted_write_file(role_config.name, role_config.write_restrictions)
+                    create_restricted_write_file(display_name, role_config.write_restrictions)
                 )
                 continue
             if tool_name == "edit_file":
                 result.append(
-                    create_restricted_edit_file(role_config.name, role_config.write_restrictions)
+                    create_restricted_edit_file(display_name, role_config.write_restrictions)
                 )
                 continue
-        result.append(tools_by_name[tool_name])
+        try:
+            result.append(tools_by_name[tool_name])
+        except KeyError:
+            raise ValueError(
+                f"Tool {tool_name!r} referenced by role {role!r} not found in registered tools. "
+                f"Available: {', '.join(sorted(tools_by_name))}"
+            ) from None
 
     return result
 

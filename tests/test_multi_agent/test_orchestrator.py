@@ -4,9 +4,9 @@ Tests cover:
 - OrchestratorState schema fields (Task 1)
 - Pipeline node count and edge connections (Task 2)
 - Bash-based nodes do NOT invoke LLM (Task 3)
-- Conditional routing: unit test fail → dev retry (Task 4)
-- Conditional routing: CI fail → dev retry (Task 4)
-- Retry limit exceeded → error handler (Task 4)
+- Conditional routing: unit test fail -> dev retry (Task 4)
+- Conditional routing: CI fail -> dev retry (Task 4)
+- Retry limit exceeded -> error handler (Task 4)
 - Error handler produces structured failure report (Task 5)
 - Send API parallel review integration (Task 6)
 - Compiled orchestrator graph (Task 7)
@@ -18,11 +18,14 @@ Also preserves all Story 3.3-3.4 test coverage.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langgraph.types import Send
 
+import src.multi_agent.orchestrator as orch_module
 from src.multi_agent.orchestrator import (
     FIX_PLAN_PATH,
     MAX_CI_CYCLES,
@@ -60,22 +63,13 @@ from src.multi_agent.orchestrator import (
 from src.multi_agent.orchestrator import test_agent_node as spawn_test_agent
 
 
-def _clean_reviews_dir() -> None:
-    """Remove review artifacts but preserve .gitkeep."""
-    reviews_dir = "reviews"
-    if os.path.exists(reviews_dir):
-        for entry in os.listdir(reviews_dir):
-            if entry == ".gitkeep":
-                continue
-            path = os.path.join(reviews_dir, entry)
-            if os.path.isfile(path):
-                os.remove(path)
-    else:
-        os.makedirs(reviews_dir, exist_ok=True)
-    gitkeep = os.path.join(reviews_dir, ".gitkeep")
-    if not os.path.exists(gitkeep):
-        with open(gitkeep, "w") as f:
-            f.write("")
+@pytest.fixture
+def reviews_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Provide a temporary reviews directory and monkeypatch REVIEWS_DIR."""
+    reviews = tmp_path / "reviews"
+    reviews.mkdir()
+    monkeypatch.setattr(orch_module, "REVIEWS_DIR", str(reviews))
+    return reviews
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +588,8 @@ class TestReviewNode:
             reviewer_focus=REVIEWER_2_FOCUS,
         )
         result = review_node(state)
-        assert result["review_file_paths"] == ["reviews/review-agent-2.md"]
+        # Path depends on REVIEWS_DIR which may be monkeypatched
+        assert "review-agent-2.md" in result["review_file_paths"][0]
 
     @patch("src.multi_agent.orchestrator.run_sub_agent")
     def test_passes_context_files(self, mock_run: MagicMock) -> None:
@@ -639,79 +634,64 @@ class TestReviewNode:
 class TestCollectReviews:
     """Tests for collect_reviews (fan-in node)."""
 
-    def test_reads_both_review_files(self) -> None:
+    def test_reads_both_review_files(self, reviews_dir: Path) -> None:
         """collect_reviews reads both review files and updates state. (AC#3)"""
-        reviews_dir = "reviews"
-        os.makedirs(reviews_dir, exist_ok=True)
-        try:
-            for i in [1, 2]:
-                path = os.path.join(reviews_dir, f"review-agent-{i}.md")
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(
-                        f"---\nagent_role: reviewer\nreviewer_id: {i}\n---\n"
-                        f"# Review {i}\n## Summary\nFindings here.\n"
-                    )
+        for i in [1, 2]:
+            path = reviews_dir / f"review-agent-{i}.md"
+            path.write_text(
+                f"---\nagent_role: reviewer\nreviewer_id: {i}\n---\n"
+                f"# Review {i}\n## Summary\nFindings here.\n",
+                encoding="utf-8",
+            )
 
-            state: OrchestratorState = {"task_id": "t"}
-            result = collect_reviews(state)
+        state: OrchestratorState = {"task_id": "t"}
+        result = collect_reviews(state)
 
-            assert len(result["review_file_paths"]) == 2
-            assert "error" not in result
-        finally:
-            _clean_reviews_dir()
+        assert len(result["review_file_paths"]) == 2
+        assert "error" not in result
 
-    def test_reports_error_if_review_missing(self) -> None:
+    def test_reports_error_if_review_missing(self, reviews_dir: Path) -> None:
         """collect_reviews reports error when review files are missing."""
-        _clean_reviews_dir()
-
         state: OrchestratorState = {"task_id": "t"}
         result = collect_reviews(state)
 
         assert "error" in result
         assert "Expected 2" in result["error"]
 
-    def test_validates_yaml_frontmatter(self) -> None:
+    def test_validates_yaml_frontmatter(self, reviews_dir: Path) -> None:
         """collect_reviews rejects review files without YAML frontmatter."""
-        reviews_dir = "reviews"
-        os.makedirs(reviews_dir, exist_ok=True)
-        try:
-            with open(os.path.join(reviews_dir, "review-agent-1.md"), "w", encoding="utf-8") as f:
-                f.write("---\nagent_role: reviewer\n---\n# Review\n")
-            with open(os.path.join(reviews_dir, "review-agent-2.md"), "w", encoding="utf-8") as f:
-                f.write("# Review without frontmatter\n")
+        (reviews_dir / "review-agent-1.md").write_text(
+            "---\nagent_role: reviewer\n---\n# Review\n", encoding="utf-8"
+        )
+        (reviews_dir / "review-agent-2.md").write_text(
+            "# Review without frontmatter\n", encoding="utf-8"
+        )
 
-            state: OrchestratorState = {"task_id": "t"}
-            result = collect_reviews(state)
+        state: OrchestratorState = {"task_id": "t"}
+        result = collect_reviews(state)
 
-            assert len(result["review_file_paths"]) == 1
-            assert "error" in result
-        finally:
-            _clean_reviews_dir()
+        assert len(result["review_file_paths"]) == 1
+        assert "error" in result
 
 
 class TestPrepareReviews:
     """Tests for prepare_reviews_node (directory cleanup)."""
 
-    def test_creates_reviews_dir(self) -> None:
+    def test_creates_reviews_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """prepare_reviews_node creates the reviews/ directory."""
-        _clean_reviews_dir()
+        reviews = tmp_path / "fresh_reviews"
+        monkeypatch.setattr(orch_module, "REVIEWS_DIR", str(reviews))
 
         prepare_reviews_node({})
-        assert os.path.isdir("reviews")
+        assert reviews.is_dir()
 
-        _clean_reviews_dir()
-
-    def test_clears_existing_reviews(self) -> None:
+    def test_clears_existing_reviews(self, reviews_dir: Path) -> None:
         """prepare_reviews_node clears existing review files."""
-        os.makedirs("reviews", exist_ok=True)
-        with open("reviews/old-review.md", "w", encoding="utf-8") as f:
-            f.write("old content")
+        (reviews_dir / "old-review.md").write_text("old content", encoding="utf-8")
 
         prepare_reviews_node({})
-        assert os.path.isdir("reviews")
-        assert not os.path.exists("reviews/old-review.md")
-
-        _clean_reviews_dir()
+        assert reviews_dir.is_dir()
+        assert not (reviews_dir / "old-review.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -736,8 +716,7 @@ class TestArchitectNode:
         architect_node(state)
         assert mock_run.call_args.kwargs["role"] == "architect"
 
-    @patch("src.multi_agent.orchestrator.run_sub_agent")
-    def test_architect_uses_opus_model_tier(self, mock_run: MagicMock) -> None:
+    def test_architect_uses_opus_model_tier(self) -> None:
         """Architect spawns with Opus model tier (via role config)."""
         from src.multi_agent.roles import get_role
 
@@ -775,6 +754,20 @@ class TestArchitectNode:
         }
         result = architect_node(state)
         assert result["fix_plan_path"] == FIX_PLAN_PATH
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_architect_uses_architect_phase(self, mock_run: MagicMock) -> None:
+        """architect_node passes current_phase='architect' to sub-agent."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": [],
+            "review_file_paths": [],
+        }
+        architect_node(state)
+        assert mock_run.call_args.kwargs["current_phase"] == "architect"
 
 
 class TestFixDevNode:
@@ -825,6 +818,22 @@ class TestFixDevNode:
         }
         fix_dev_node(state)
         assert mock_run.call_args.kwargs["parent_session_id"] == "parent-123"
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_no_redundant_pytest_instruction(self, mock_run: MagicMock) -> None:
+        """fix_dev_node task description does not instruct to run pytest."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": [],
+            "fix_plan_path": FIX_PLAN_PATH,
+        }
+        fix_dev_node(state)
+
+        task_desc = mock_run.call_args.kwargs["task_description"]
+        assert "pytest" not in task_desc.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -918,8 +927,9 @@ class TestIntegrationReviewPipeline:
     """Integration test: review pipeline with mock agent (Story 3.3)."""
 
     @patch("src.multi_agent.orchestrator.run_sub_agent")
-    def test_two_review_files_created(self, mock_run: MagicMock) -> None:
+    def test_two_review_files_created(self, mock_run: MagicMock, reviews_dir: Path) -> None:
         """Pipeline creates 2 review files via mock agent. (AC#1, #2)"""
+        rd = str(reviews_dir)
 
         def _mock_review(
             parent_session_id: str,
@@ -932,13 +942,13 @@ class TestIntegrationReviewPipeline:
         ) -> dict[str, Any]:
             for rid in [1, 2]:
                 if f"review-agent-{rid}.md" in task_description:
-                    path = f"reviews/review-agent-{rid}.md"
+                    path = os.path.join(rd, f"review-agent-{rid}.md")
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(
                             f"---\nagent_role: reviewer\n"
                             f"task_id: {task_id}\n"
                             f"reviewer_id: {rid}\n---\n"
-                            f"# Code Review — Agent {rid}\n"
+                            f"# Code Review - Agent {rid}\n"
                             f"## Summary\nNo issues found.\n"
                             f"## Findings\nNone.\n"
                         )
@@ -970,16 +980,17 @@ class TestIntegrationReviewPipeline:
         assert len(result["review_file_paths"]) == 2
         assert "error" not in result
 
-        _clean_reviews_dir()
-
 
 class TestIntegrationFullPipeline:
     """Integration test: full pipeline execution with mocked LLM and bash."""
 
     @patch("src.multi_agent.orchestrator._run_bash")
     @patch("src.multi_agent.orchestrator.run_sub_agent")
-    def test_happy_path_node_sequence(self, mock_agent: MagicMock, mock_bash: MagicMock) -> None:
+    def test_happy_path_node_sequence(
+        self, mock_agent: MagicMock, mock_bash: MagicMock, reviews_dir: Path
+    ) -> None:
         """Verify pipeline executes nodes in correct order (happy path). (AC#1)"""
+        rd = str(reviews_dir)
 
         def _mock_agent_side_effect(**kwargs: Any) -> dict[str, Any]:
             """Mock that writes review files when role=reviewer."""
@@ -988,8 +999,7 @@ class TestIntegrationFullPipeline:
             if role == "reviewer":
                 for rid in [1, 2]:
                     if f"review-agent-{rid}.md" in task_desc:
-                        path = f"reviews/review-agent-{rid}.md"
-                        os.makedirs("reviews", exist_ok=True)
+                        path = os.path.join(rd, f"review-agent-{rid}.md")
                         with open(path, "w", encoding="utf-8") as f:
                             f.write(
                                 f"---\nagent_role: reviewer\nreviewer_id: {rid}\n---\n"
@@ -1001,78 +1011,74 @@ class TestIntegrationFullPipeline:
         mock_agent.side_effect = _mock_agent_side_effect
         mock_bash.return_value = (True, "ok")
 
-        try:
-            # Simulate the pipeline nodes in order (without LangGraph runtime)
-            state: OrchestratorState = {
-                "task_id": "t",
-                "session_id": "s",
-                "task_description": "Build feature",
-                "context_files": [],
-                "source_files": [],
-                "test_files": [],
-                "test_cycle_count": 0,
-                "ci_cycle_count": 0,
-                "edit_retry_count": 0,
-            }
+        # Simulate the pipeline nodes in order (without LangGraph runtime)
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "task_description": "Build feature",
+            "context_files": [],
+            "source_files": [],
+            "test_files": [],
+            "test_cycle_count": 0,
+            "ci_cycle_count": 0,
+            "edit_retry_count": 0,
+        }
 
-            # Phase 1: TDD
-            spawn_test_agent(state)
-            dev_agent_node(state)
+        # Phase 1: TDD
+        spawn_test_agent(state)
+        dev_agent_node(state)
 
-            # Phase 2: Validation
-            ut_result = unit_test_node(state)
-            assert ut_result["test_passed"] is True
+        # Phase 2: Validation
+        ut_result = unit_test_node(state)
+        assert ut_result["test_passed"] is True
 
-            ci_result = ci_node(state)
-            assert ci_result["test_passed"] is True
+        ci_result = ci_node(state)
+        assert ci_result["test_passed"] is True
 
-            git_snapshot_node(state)
+        git_snapshot_node(state)
 
-            # Phase 3: Review
-            prepare_reviews_node(state)
-            for rid in [1, 2]:
-                review_input = ReviewNodeInput(
-                    reviewer_id=rid,
-                    task_id="t",
-                    session_id="s",
-                    source_files=[],
-                    test_files=[],
-                    reviewer_focus=REVIEWER_1_FOCUS if rid == 1 else REVIEWER_2_FOCUS,
-                )
-                review_node(review_input)
-            collect_result = collect_reviews(state)
-            assert "error" not in collect_result
+        # Phase 3: Review
+        prepare_reviews_node(state)
+        for rid in [1, 2]:
+            review_input = ReviewNodeInput(
+                reviewer_id=rid,
+                task_id="t",
+                session_id="s",
+                source_files=[],
+                test_files=[],
+                reviewer_focus=REVIEWER_1_FOCUS if rid == 1 else REVIEWER_2_FOCUS,
+            )
+            review_node(review_input)
+        collect_result = collect_reviews(state)
+        assert "error" not in collect_result
 
-            # Phase 4: Architect + Fix
-            state["review_file_paths"] = collect_result["review_file_paths"]
-            architect_node(state)
-            fix_dev_node(state)
+        # Phase 4: Architect + Fix
+        state["review_file_paths"] = collect_result["review_file_paths"]
+        architect_node(state)
+        fix_dev_node(state)
 
-            # Phase 5: Post-fix validation
-            pft_result = post_fix_test_node(state)
-            assert pft_result["test_passed"] is True
+        # Phase 5: Post-fix validation
+        pft_result = post_fix_test_node(state)
+        assert pft_result["test_passed"] is True
 
-            pfci_result = post_fix_ci_node(state)
-            assert pfci_result["test_passed"] is True
+        pfci_result = post_fix_ci_node(state)
+        assert pfci_result["test_passed"] is True
 
-            # Phase 6: System tests + final
-            st_result = system_test_node(state)
-            assert st_result["test_passed"] is True
+        # Phase 6: System tests + final
+        st_result = system_test_node(state)
+        assert st_result["test_passed"] is True
 
-            fci_result = final_ci_node(state)
-            assert fci_result["test_passed"] is True
+        fci_result = final_ci_node(state)
+        assert fci_result["test_passed"] is True
 
-            # Phase 7: Push
-            push_result = git_push_node(state)
-            assert push_result["pipeline_status"] == "completed"
+        # Phase 7: Push
+        push_result = git_push_node(state)
+        assert push_result["pipeline_status"] == "completed"
 
-            # Verify agents were called with correct roles
-            agent_roles = [c.kwargs["role"] for c in mock_agent.call_args_list]
-            assert "test" in agent_roles
-            assert "dev" in agent_roles
-            assert "reviewer" in agent_roles
-            assert "architect" in agent_roles
-            assert "fix_dev" in agent_roles
-
-        finally:
-            _clean_reviews_dir()
+        # Verify agents were called with correct roles
+        agent_roles = [c.kwargs["role"] for c in mock_agent.call_args_list]
+        assert "test" in agent_roles
+        assert "dev" in agent_roles
+        assert "reviewer" in agent_roles
+        assert "architect" in agent_roles
+        assert "fix_dev" in agent_roles

@@ -143,7 +143,16 @@ class TestBuildTraceConfig:
 
     def test_all_valid_phases(self) -> None:
         """All defined phases are accepted."""
-        for phase in ("test", "implementation", "review", "fix", "ci"):
+        for phase in (
+            "test",
+            "implementation",
+            "review",
+            "fix",
+            "ci",
+            "architect",
+            "post_fix_test",
+            "post_fix_ci",
+        ):
             result = build_trace_config(
                 session_id="s",
                 agent_role="dev",
@@ -354,6 +363,8 @@ class TestGetToolsForRole:
         tools = get_tools_for_role("reviewer")
         write_tool = [t for t in tools if t.name == "write_file"][0]
         result = write_tool.invoke({"file_path": "src/foo.py", "content": "x"})
-        assert "ERROR: Permission denied:" in result
-        assert "cannot edit source files" in result
-        assert "reviews/" in result
+        expected = (
+            "ERROR: Permission denied: Reviewer agents cannot edit source files. "
+            "Write to reviews/ directory only."
+        )
+        assert result == expected

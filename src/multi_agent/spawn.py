@@ -15,15 +15,16 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
 from src.agent.state import AgentState
 from src.context.injection import build_system_prompt, inject_task_context
-from src.multi_agent.roles import MODEL_IDS, get_role, get_tools_for_role
+from src.multi_agent.roles import MODEL_IDS, build_trace_config, get_role, get_tools_for_role
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 50
+MAX_LLM_TURNS = 50
 CHECKPOINTS_DB = "checkpoints/shipyard.db"
 
 
@@ -32,7 +33,7 @@ def _should_continue(state: AgentState) -> str:
     if not state.get("messages"):
         return "end"
     retry_count = state.get("retry_count", 0)
-    if retry_count >= MAX_RETRIES:
+    if retry_count >= MAX_LLM_TURNS:
         return "error"
     last = state["messages"][-1]
     if isinstance(last, AIMessage) and last.tool_calls:
@@ -42,7 +43,7 @@ def _should_continue(state: AgentState) -> str:
 
 def _make_error_handler(state: AgentState) -> dict[str, Any]:
     """Append error message when sub-agent exceeds turn limit."""
-    return {"messages": [AIMessage(content=f"ERROR: Sub-agent exceeded {MAX_RETRIES} turns.")]}
+    return {"messages": [AIMessage(content=f"ERROR: Sub-agent exceeded {MAX_LLM_TURNS} turns.")]}
 
 
 def create_agent_subgraph(
@@ -50,25 +51,29 @@ def create_agent_subgraph(
     task_description: str,
     context_files: list[str] | None = None,
     checkpoints_db: str = CHECKPOINTS_DB,
-) -> tuple[Any, dict[str, Any]]:
+    working_dir: str | None = None,
+) -> tuple[CompiledStateGraph[Any], dict[str, Any], sqlite3.Connection]:
     """Create a compiled sub-agent subgraph with fresh context.
 
     Builds a 2-node StateGraph (agent_node + tool_node) with the role's
-    tool subset, model tier, and system prompt. Returns the compiled graph
-    and the initial state for invocation.
+    tool subset, model tier, and system prompt. Returns the compiled graph,
+    the initial state for invocation, and the SQLite connection (caller must close).
 
     Args:
         role: Agent role identifier (dev, test, reviewer, architect, fix_dev).
         task_description: Task instruction for the sub-agent.
         context_files: Optional file paths to inject as Layer 2 context.
         checkpoints_db: Path to SQLite database for checkpointing.
+        working_dir: Optional working directory for tool operations.
+            When set, file and bash tools operate relative to this directory
+            instead of the project root.
 
     Returns:
-        Tuple of (compiled_graph, initial_state_dict).
+        Tuple of (compiled_graph, initial_state_dict, sqlite_connection).
     """
     role_config = get_role(role)
     model_id = MODEL_IDS[role_config.model_tier]
-    tools = get_tools_for_role(role)
+    tools = get_tools_for_role(role, working_dir=working_dir)
 
     # Build LLM with role's tools bound
     llm = ChatAnthropic(model=model_id, temperature=0)  # type: ignore[call-arg]
@@ -121,7 +126,7 @@ def create_agent_subgraph(
         "files_modified": [],
     }
 
-    return compiled, initial_state
+    return compiled, initial_state, conn
 
 
 def run_sub_agent(
@@ -132,6 +137,7 @@ def run_sub_agent(
     current_phase: str,
     context_files: list[str] | None = None,
     checkpoints_db: str = CHECKPOINTS_DB,
+    working_dir: str | None = None,
 ) -> dict[str, Any]:
     """Spawn and run a sub-agent, returning state updates for the parent.
 
@@ -147,6 +153,8 @@ def run_sub_agent(
         current_phase: Current pipeline phase (test, implementation, review, fix, ci).
         context_files: Optional file paths to inject as context.
         checkpoints_db: Path to SQLite database for checkpointing.
+        working_dir: Optional working directory for tool operations.
+            When set, file and bash tools operate relative to this directory.
 
     Returns:
         Dict with keys: files_modified (list[str]), final_message (str).
@@ -154,11 +162,12 @@ def run_sub_agent(
     role_config = get_role(role)
 
     # Create subgraph and initial state
-    compiled, initial_state = create_agent_subgraph(
+    compiled, initial_state, conn = create_agent_subgraph(
         role=role,
         task_description=task_description,
         context_files=context_files,
         checkpoints_db=checkpoints_db,
+        working_dir=working_dir,
     )
 
     # Set task metadata in initial state
@@ -167,20 +176,21 @@ def run_sub_agent(
     initial_state["current_phase"] = current_phase
 
     # Build config with trace metadata (AC#4 — parent_session linking)
-    config: dict[str, Any] = {
-        "configurable": {"thread_id": sub_thread_id},
-        "metadata": {
-            "agent_role": role,
-            "task_id": task_id,
-            "model_tier": role_config.model_tier,
-            "phase": current_phase,
-            "parent_session": parent_session_id,
-        },
-    }
+    config = build_trace_config(
+        session_id=sub_thread_id,
+        agent_role=role,
+        task_id=task_id,
+        model_tier=role_config.model_tier,
+        phase=current_phase,
+        parent_session=parent_session_id,
+    )
 
     # Invoke the sub-agent
     logger.info("Spawning sub-agent: role=%s thread=%s", role, sub_thread_id)
-    final_state = compiled.invoke(initial_state, config=config)
+    try:
+        final_state = compiled.invoke(initial_state, config=config)  # type: ignore[call-overload]
+    finally:
+        conn.close()
 
     # Extract results
     files_modified = final_state.get("files_modified", [])
