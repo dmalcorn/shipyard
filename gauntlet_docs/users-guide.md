@@ -46,7 +46,7 @@ Shipyard supports three modes: interactive CLI, HTTP API server, and Docker.
 Start an interactive session:
 
 ```bash
-python src/main.py --cli
+python -m src.main --cli
 ```
 
 ```
@@ -76,7 +76,7 @@ uvicorn src.main:app --reload --port 8000
 Or with built-in options:
 
 ```bash
-python src/main.py --host 0.0.0.0 --port 8000 --reload
+python -m src.main --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Docker
@@ -254,7 +254,7 @@ Submit a human intervention during an active rebuild session when the pipeline e
 Parse project specifications and generate a structured backlog:
 
 ```bash
-python src/main.py --intake /path/to/specs --target-dir ./target/
+python -m src.main --intake /path/to/specs --target-dir ./target/
 ```
 
 This reads all `.md` and `.txt` files from the spec directory, summarizes them, and produces:
@@ -267,7 +267,7 @@ This reads all `.md` and `.txt` files from the spec directory, summarizes them, 
 Rebuild a project from a generated backlog:
 
 ```bash
-python src/main.py --rebuild ./target/
+python -m src.main --rebuild ./target/
 ```
 
 The rebuild loop:
