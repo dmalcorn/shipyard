@@ -87,11 +87,75 @@ docker compose up
 
 The server is available at `http://localhost:8000`.
 
+### Cloud Deployment (Railway)
+
+Shipyard is deployed on Railway at:
+
+**https://shipyard-production-29ae.up.railway.app/**
+
+The Dockerfile builds and deploys automatically when you push to the `main` branch on GitHub. Railway injects the `PORT` environment variable — the Dockerfile CMD uses `${PORT:-8000}` to respect it.
+
+Required environment variables (set in Railway dashboard):
+
+| Variable | Purpose |
+|----------|---------|
+| `ANTHROPIC_API_KEY` | Claude model access |
+| `LANGCHAIN_TRACING_V2` | `true` to enable LangSmith tracing |
+| `LANGCHAIN_API_KEY` | LangSmith trace collection |
+| `LANGCHAIN_PROJECT` | Project name for traces |
+
+## Web Dashboard
+
+Visiting the root URL (`/`) serves an interactive **Command Bridge** dashboard with four panels:
+
+- **Health Status** — header badge polls `GET /health` every 30 seconds (green = nominal, red = offline)
+- **Agent Terminal** — send instructions via `POST /instruct`, view responses with session persistence
+- **Spec Intake** — trigger the intake pipeline via `POST /intake` with configurable paths
+- **Rebuild Control** — start rebuilds via `POST /rebuild`, view story progress stats, submit interventions
+
+### Pipeline Flow Graph
+
+The bottom of the dashboard displays a live **Pipeline Flow** visualization showing all three pipelines:
+
+- **Instruct**: User Input → Agent Node → Should Continue? → Tool Calls → Response
+- **Intake**: Read Specs → Summarize → Gen Backlog → Write Output → Complete
+- **Rebuild**: Load Backlog → Init Project → [TDD → Test → Review → Git Tag] → Complete
+
+Flow nodes are driven by **real server-side state** — the dashboard polls `GET /pipeline/{session_id}/stage` every 15 seconds while a pipeline is running. Nodes light up amber (active), green (completed), or red (failed). The rebuild lane includes a dashed "per story" bracket showing which story is currently being processed.
+
 ## API Reference
 
 ### `GET /health`
 
 Health check. Returns `{"status": "ok"}`.
+
+### `GET /pipeline/{session_id}/stage`
+
+Poll the current stage of a running pipeline. Used by the dashboard flow graph.
+
+**Response (running):**
+
+```json
+{
+  "pipeline": "intake",
+  "stage": "summarizing",
+  "stage_index": 1,
+  "total_stages": 5,
+  "stages": ["reading_specs", "summarizing", "generating_backlog", "writing_output", "complete"],
+  "status": "running",
+  "error": "",
+  "story_progress": {},
+  "elapsed_seconds": 12.3
+}
+```
+
+For rebuild pipelines, `story_progress` includes the current epic, story name, and index.
+
+**Response (unknown session):**
+
+```json
+{"status": "unknown", "error": "No such session"}
+```
 
 ### `POST /instruct`
 
@@ -354,12 +418,14 @@ All three (ruff, mypy, pytest) must pass before committing.
 shipyard/
 +-- src/
 |   +-- main.py              # FastAPI server + CLI entry point
+|   +-- pipeline_tracker.py  # In-memory pipeline stage tracker
 |   +-- agent/               # LangGraph graph, state, prompts
 |   +-- tools/               # File ops, search, execution tools
 |   +-- context/             # Context injection system
-|   +-- logging/             # LangSmith tracing + audit logger
+|   +-- audit_log/           # LangSmith tracing + audit logger
 |   +-- multi_agent/         # Sub-agent spawning + orchestration
 |   +-- intake/              # Spec intake + autonomous rebuild
+|   +-- static/              # Web dashboard (index.html)
 +-- tests/                   # Test suite (mirrors src/ structure)
 +-- scripts/                 # CI, testing, and git helper scripts
 +-- coding-standards.md      # Conventions enforced by all agents
