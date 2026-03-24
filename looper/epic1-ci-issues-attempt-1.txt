@@ -1,0 +1,2 @@
+=== ruff check ===
+/c/alcorn/Gauntlet/6-Shipyard/shipyard/scripts/local_ci.sh: line 6: ruff: command not found

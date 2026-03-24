@@ -1,0 +1,763 @@
+================================================================================
+CODE REVIEW RESULTS (DIRECT CLAUDE)
+Epic: 1
+Started: 2026-03-23 22:19:56
+================================================================================
+This file contains only the review findings for easy comparison.
+================================================================================
+
+
+================================================================================
+STORY: 1-1-project-scaffold-dev-environment
+================================================================================
+I'll proceed with the review findings. The prompt log can be updated once write permissions are granted.
+
+---
+
+# Code Review: Story 1-1 — Project Scaffold & Dev Environment
+
+## Summary
+
+Story 1-1's scaffold is **well-executed overall**. The directory structure, configuration files, dependency pinning, and Docker setup all closely follow the architecture doc and coding standards. Most issues are LOW severity. Two MEDIUM issues relate to Docker security and a missing test directory.
+
+---
+
+## Issues Found
+
+### 1. Missing `tests/test_logging/` directory and `__init__.py`
+
+- **File:** `tests/` (directory level)
+- **Severity:** MEDIUM
+- **Rule violated:** coding-standards.md line 175: *"Tests live in `tests/` mirroring the `src/` structure (`test_tools/`, `test_agent/`, etc.)"*
+- **Detail:** `src/logging/__init__.py` exists, but there is no corresponding `tests/test_logging/` directory or `tests/test_logging/__init__.py`. All other `src/` subdirectories have test directory mirrors. The story spec (Task 1, subtask 4) also omits `test_logging/` from its list, suggesting the architecture doc and story spec both missed this.
+
+### 2. Dockerfile: non-root user cannot write to `/app` directory
+
+- **File:** `Dockerfile:10-11`
+- **Severity:** MEDIUM
+- **Rule violated:** project-context.md NFR6 (Reproducibility) — *"another engineer can clone, set env vars, and run locally in <10 minutes"*
+- **Detail:** The Dockerfile creates `appuser` (line 10) and switches to it (line 11), but `/app` is owned by `root`. Running the image standalone (`docker run`) without the docker-compose volume mount would fail if the application tries to create `checkpoints/` or `logs/` subdirectories, because `appuser` lacks write permissions to `/app`. The docker-compose volume mount works around this for `checkpoints/`, but the Dockerfile should be independently functional. Fix: add `RUN mkdir -p /app/checkpoints /app/logs && chown -R appuser:appuser /app/checkpoints /app/logs` before `USER appuser`.
+
+### 3. `docker-compose.yml` missing `logs/` volume mount
+
+- **File:** `docker-compose.yml:8-9`
+- **Severity:** LOW
+- **Rule violated:** architecture.md Decision 6 — audit logs are written to `logs/session-{id}.md`
+- **Detail:** Only `checkpoints/` has a persistent volume mount. The `logs/` directory (for audit log files per architecture Decision 6) has no volume mount, so container removal destroys all session logs. Note: project-context.md line 100 only mentions persisting `checkpoints/`, so this may be by design for MVP. However, it creates a silent data loss path.
+
+### 4. Story completion notes claim "44 pytest tests" but test file generates ~48
+
+- **File:** `_bmad-output/implementation-artifacts/1-1-project-scaffold-dev-environment.md:95`
+- **Severity:** LOW
+- **Detail:** The dev agent record says *"44 pytest tests written covering all 5 acceptance criteria"* but counting all parametrized test cases in `tests/test_scaffold.py` yields 48 tests (10 dirs + 11 inits + 3 gitkeeps + 1+4 env + 1+1+1 pyproject + 1+1 docker + 1+6+1+3 requirements + 1+1 main = 48). Either the file was modified after the initial count, or the count was wrong.
+
+### 5. `requirements-dev.txt` not listed in story file list
+
+- **File:** `_bmad-output/implementation-artifacts/1-1-project-scaffold-dev-environment.md:117`
+- **Severity:** LOW
+- **Detail:** The story File List section shows `requirements.txt (new)` but omits `requirements-dev.txt`, which was created to separate dev dependencies (pytest, ruff, mypy) from production deps. The implementation is actually better than the task spec (which said to put dev deps in `requirements.txt`), but the file list is incomplete. `tests/test_scaffold.py:143-151` even tests for this file's existence.
+
+### 6. Task 2 spec deviation: dev deps separated into `requirements-dev.txt`
+
+- **File:** `requirements-dev.txt:1-5`, story spec Task 2
+- **Severity:** LOW
+- **Detail:** Task 2 says *"Add dev dependencies: pytest, ruff, mypy"* as a subtask under *"Create requirements.txt"*. The implementation instead creates a separate `requirements-dev.txt` with `-r requirements.txt` at the top. This is better practice (prod image only installs `requirements.txt`; dev installs both), but it deviates from the literal task description. Tests validate the separation, so this was intentional.
+
+### 7. `src/main.py` expanded beyond "minimal stub" scope
+
+- **File:** `src/main.py:1-167`
+- **Severity:** LOW
+- **Detail:** Story Task 8 says *"Minimal stub with FastAPI app and CLI arg parsing so imports resolve"*. The current file is 167 lines with full Pydantic models (`InstructRequest`/`InstructResponse`), a `/instruct` POST endpoint, CLI interactive loop with session management, and imports from `src.agent.graph` (created in story 1-3/1-4). This is expected from iterative development (later stories built on the stub), but it means the current file cannot be evaluated against story 1-1's spec alone.
+
+---
+
+## Items Verified — No Issues
+
+- **Directory structure** — All required directories exist per architecture doc section "Complete Project Directory Structure"
+- **`__init__.py` files** — Present in all 11 required Python package directories (src and tests)
+- **`.gitkeep` files** — Present in `logs/`, `reviews/`, `checkpoints/`
+- **`requirements.txt`** — All 6 core dependencies pinned to exact versions matching project-context.md
+- **`pyproject.toml`** — Correct ruff config (line-length=100, correct lint rules), mypy strict mode, Python 3.13 target
+- **`.env.example`** — All 4 required variables present (ANTHROPIC_API_KEY, LANGCHAIN_TRACING_V2, LANGCHAIN_API_KEY, LANGCHAIN_PROJECT)
+- **`.gitignore`** — All required patterns present (logs/, reviews/, checkpoints/, .env, __pycache__/, .venv/, *.pyc via *.py[cod], .mypy_cache/, .ruff_cache/)
+- **`Dockerfile`** — Uses `python:3.13-slim` base image, exposes port 8000, installs deps, copies src, runs uvicorn
+- **`docker-compose.yml`** — Service `agent`, port 8000 mapping, env_file .env, checkpoints volume
+- **`scripts/local_ci.sh`** — Correct sequence (ruff check → ruff format --check → mypy → pytest), executable permissions, `set -euo pipefail`
+- **`tests/test_scaffold.py`** — Covers all 5 acceptance criteria with parametrized tests
+- **Coding standards compliance** — `from __future__ import annotations` used, Google-style docstrings, proper import ordering
+- **Architecture doc naming** — Uses `roles.py` (not `agents.py`) per the validated architecture doc correction
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-1-project-scaffold-dev-environment.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/planning-artifacts/architecture.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/main.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/context/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/logging/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/conftest.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_scaffold.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_tools/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_multi_agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_context/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/requirements.txt
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/requirements-dev.txt
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/pyproject.toml
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/.env.example
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/.gitignore
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/Dockerfile
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/docker-compose.yml
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/scripts/local_ci.sh
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/README.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/gauntlet_docs/ai-prompts/ai-prompt-2026-03-23.md
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 1-2-file-operation-tools
+================================================================================
+I've now read all the required files. Here is my complete code review.
+
+---
+
+# Code Review: Story 1-2 — File Operation Tools
+
+## Issues Found
+
+### 1. Resolved path not used for I/O operations (sandbox bypass)
+- **File:** `src/tools/file_ops.py`, lines 54, 76, 90, 107, 108
+- **Severity:** HIGH
+- **Rule violated:** `project-context.md` — "Sandbox all `run_command` tool execution — restrict to project working directory"; `coding-standards.md` — Tool Interface Contract safety
+- **Description:** `_validate_path()` resolves relative paths against `_PROJECT_ROOT` (line 24), but all three tools then use the original `file_path` string for actual `open()` and `os.makedirs()` calls. Python's `open()` resolves relative paths against CWD, not `_PROJECT_ROOT`. If CWD differs from `_PROJECT_ROOT` (e.g., during testing or non-standard invocations), a relative `file_path` like `"src/main.py"` could pass sandbox validation (resolves inside project root) while `open("src/main.py")` opens a completely different file relative to CWD. The resolved path should be used for all I/O operations, not just validation.
+
+### 2. Mock used for file I/O in tool test
+- **File:** `tests/test_tools/test_file_ops.py`, line 94
+- **Severity:** MEDIUM
+- **Rule violated:** `project-context.md` line 82 — "No mocks for file I/O in tool tests: Use temp directories (`tmp_path` fixture) with real file operations"
+- **Description:** `test_read_general_exception` patches `builtins.open` with `side_effect=PermissionError("denied")` to test the generic exception handler. The project rules explicitly prohibit mocking file I/O in tool tests. On Linux/macOS this could be achieved by creating a file and removing read permissions (`os.chmod`). On Windows this is admittedly harder, but the rule is stated without exceptions.
+
+### 3. `write_file` exception test actually exercises `_validate_path`, not `write_file`'s exception handler
+- **File:** `tests/test_tools/test_file_ops.py`, lines 190-197
+- **Severity:** MEDIUM
+- **Rule violated:** `project-context.md` line 80 — "Tool testing: Test both `SUCCESS:` and `ERROR:` return paths"
+- **Description:** `test_write_exception_returns_error` uses `"/\x00illegal"` as the file path. This path causes `Path.resolve()` to raise `ValueError` inside `_validate_path` (line 36), which catches it and returns an error before `write_file`'s own `except Exception` block (line 111-113) is ever reached. The test passes but does NOT actually exercise `write_file`'s exception handler — it tests `_validate_path`'s exception handler instead.
+
+### 4. No test for `edit_file` general exception path
+- **File:** `tests/test_tools/test_file_ops.py` (missing test)
+- **Severity:** LOW
+- **Rule violated:** `project-context.md` line 80 — "Tool testing: Test both `SUCCESS:` and `ERROR:` return paths"
+- **Description:** The `except Exception as e` handler in `edit_file` (line 95-97 of `file_ops.py`) has no dedicated test. There are tests for `FileNotFoundError`, no-match, and multiple-match error paths, but not for a generic exception during the read/write cycle. This means the `logger.exception` call and error format string are untested.
+
+### 5. No test for relative path handling
+- **File:** `tests/test_tools/test_file_ops.py` (missing test)
+- **Severity:** LOW
+- **Rule violated:** `project-context.md` line 80 — "Tool testing: Test both `SUCCESS:` and `ERROR:` return paths"
+- **Description:** All tests pass absolute paths (via `str(tmp_path / "...")`) to the tools. There are no tests with relative paths, so the security mismatch identified in Issue #1 (validated path vs. I/O path) is not caught by the test suite. At least one test should verify that a relative path resolves correctly through both validation AND file I/O.
+
+### 6. Test fixture type annotation is technically incorrect
+- **File:** `tests/test_tools/test_file_ops.py`, line 15
+- **Severity:** LOW
+- **Rule violated:** `coding-standards.md` — "Type hints: Required on all function signatures"
+- **Description:** The `_sandbox_to_tmp` fixture is annotated `-> None` but it `yield`s, making it a generator. The correct annotation would be `-> Iterator[None]` (from `collections.abc`). The `# type: ignore[misc]` comments on lines 15 and 18 suppress the mypy errors, but they mask a type annotation issue rather than fixing it. This is a common pytest pattern and the workaround is widely used, so the practical impact is minimal.
+
+---
+
+## Summary
+
+| Severity | Count | Categories |
+|----------|-------|------------|
+| HIGH     | 1     | Security (sandbox bypass with relative paths) |
+| MEDIUM   | 2     | Test rule violation, misleading test coverage |
+| LOW      | 3     | Missing test coverage, type annotation |
+
+The implementation quality is generally solid — the tool interface contract is followed correctly, error messages are self-correcting, the `@tool` decorator is used properly, and the code is clean. The **primary concern is Issue #1**: the sandbox validation is architecturally correct but the validated (resolved) path is discarded and the original string is used for I/O, creating a potential bypass when CWD differs from `_PROJECT_ROOT`.
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\_bmad-output\project-context.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\CLAUDE.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\coding-standards.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\_bmad-output\implementation-artifacts\1-2-file-operation-tools.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\tools\file_ops.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\tests\test_tools\test_file_ops.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\tools\__init__.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\gauntlet_docs\ai-prompts\ai-prompt-2026-03-23.md
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 1-3-search-execution-tools
+================================================================================
+I'll proceed with the review and log the prompt once permissions are available. Here is the complete code review:
+
+---
+
+# Code Review: Story 1-3 — Search & Execution Tools
+
+## Issues Found
+
+### 1. Missing logging in `search.py` — inconsistent with `file_ops.py` pattern
+- **File:** `src/tools/search.py` (entire file)
+- **Severity:** MEDIUM
+- **Rule violated:** `coding-standards.md` — Error Handling: "Log the exception before returning the error string"
+- **Detail:** `file_ops.py` imports `logging` and calls `logger.exception(...)` before returning error strings. Both `list_files` (line 27-31) and `search_files` (line 62-66) return `ERROR:` strings without any logging. The coding standard explicitly says "Log the exception before returning the error string."
+
+### 2. Missing logging in `bash.py` — same pattern violation
+- **File:** `src/tools/bash.py` (entire file)
+- **Severity:** MEDIUM
+- **Rule violated:** `coding-standards.md` — Error Handling: "Log the exception before returning the error string"
+- **Detail:** `run_command` returns error strings at lines 19, 31, 40-43, and 44-45 without any `logger.exception()` or `logger.error()` calls. The established pattern in `file_ops.py` uses `logger.exception()` in every error path.
+
+### 3. `search_files` — no path validation / sandbox enforcement
+- **File:** `src/tools/search.py`, line 35
+- **Severity:** HIGH
+- **Rule violated:** `project-context.md` — Security: "Sandbox all `run_command` tool execution — restrict to project working directory"; "Role-based write restrictions"
+- **Detail:** `file_ops.py` uses `_validate_path()` to ensure all paths resolve within the project root. `search_files` accepts any `path` parameter and walks it with `os.walk` — an agent could search `/etc/`, home directories, or any other location on the filesystem. While `search_files` is read-only, the architecture explicitly calls for sandboxing.
+
+### 4. `list_files` — no path validation / sandbox enforcement
+- **File:** `src/tools/search.py`, line 16
+- **Severity:** HIGH
+- **Rule violated:** `project-context.md` — Security: "Sandbox all `run_command` tool execution — restrict to project working directory"
+- **Detail:** Same issue as #3. `list_files` uses `Path(path).glob(pattern)` with no validation that `path` is within the project root. An agent could glob arbitrary filesystem locations.
+
+### 5. `run_command` — no working directory restriction
+- **File:** `src/tools/bash.py`, line 22
+- **Severity:** HIGH
+- **Rule violated:** `project-context.md` — Security: "Sandbox all `run_command` tool execution — restrict to project working directory"
+- **Detail:** `subprocess.run()` is called without a `cwd` parameter. Commands execute in whatever the current working directory happens to be. The project-context.md explicitly requires restricting to the project working directory. Should pass `cwd=PROJECT_ROOT` to constrain execution.
+
+### 6. `search_files` regex compilation is outside the main try/except
+- **File:** `src/tools/search.py`, lines 38-40 vs 43-66
+- **Severity:** LOW
+- **Rule violated:** `coding-standards.md` — Error Handling: "Tools: catch all exceptions internally, return `ERROR:` strings (never let exceptions escape)"
+- **Detail:** While `re.error` is caught, the `re.compile()` call at line 38 is outside the broader `try/except Exception` block (lines 43-66). If `re.compile` raised an unexpected non-`re.error` exception, it would escape the tool. This is a minor structural concern — in practice `re.compile` only raises `re.error`, but the coding standard says "catch all exceptions."
+
+### 7. `test_search_exception_returns_error` — weak assertion
+- **File:** `tests/test_tools/test_search.py`, lines 101-103
+- **Severity:** MEDIUM
+- **Rule violated:** `coding-standards.md` — Tool testing: "Test both `SUCCESS:` and `ERROR:` return paths; verify string output format"
+- **Detail:** The test asserts `result.startswith("ERROR:") or "No matches" in result`. This `or` condition means the test passes even if the tool returns a `SUCCESS:` response with "No matches" — it never actually verifies the error path. On some OSes, `os.walk` on a nonexistent path may silently return nothing rather than raise. This test should mock an actual exception to guarantee the `ERROR:` path is tested.
+
+### 8. `test_list_truncates_large_output` — conditional assertion may not trigger
+- **File:** `tests/test_tools/test_search.py`, lines 40-46
+- **Severity:** MEDIUM
+- **Rule violated:** `project-context.md` — Testing Rules: "Test both `SUCCESS:` and `ERROR:` return paths"
+- **Detail:** The truncation assertion is wrapped in `if "truncated" in result:`. If the 500 files don't produce >5000 chars of output, the test passes without actually testing truncation. The test should be deterministic — either guarantee the output exceeds 5000 chars or assert unconditionally.
+
+### 9. `test_search_truncates_large_output` — same conditional assertion issue
+- **File:** `tests/test_tools/test_search.py`, lines 92-99
+- **Severity:** MEDIUM
+- **Rule violated:** `project-context.md` — Testing Rules: "Test both `SUCCESS:` and `ERROR:` return paths"
+- **Detail:** Same as #8. The `if "truncated" in result:` guard means the truncation logic might never be tested if the output happens to be under 5000 chars.
+
+### 10. `test_search_skips_binary_files` — potentially unreliable assertion
+- **File:** `tests/test_tools/test_search.py`, lines 80-85
+- **Severity:** LOW
+- **Detail:** The test writes 6 bytes of binary data and asserts `binary.bin` is not in results. The `.*` regex matches any line. The test relies on `UnicodeDecodeError` being raised, which should happen for those bytes with UTF-8 encoding — this is acceptable but borderline; the bytes chosen (`\x00\x01\x02\xff\xfe\xfd`) will reliably fail UTF-8 decoding.
+
+### 11. `run_command` — no restriction on dangerous commands
+- **File:** `src/tools/bash.py`, lines 22-28
+- **Severity:** LOW
+- **Detail:** The story dev notes acknowledge `shell=True` is intentional. However, there is no deny-list or warning mechanism for destructive commands (`rm -rf`, `git push --force`, etc.). This is documented as acceptable for a dev tool agent, but worth noting for future hardening. The project-context.md mentions "Sandbox all `run_command` tool execution."
+
+### 12. `PermissionError` silently skipped in `search_files`
+- **File:** `src/tools/search.py`, line 52
+- **Severity:** LOW
+- **Detail:** `PermissionError` is caught alongside `UnicodeDecodeError` and silently skipped with `continue`. While this is reasonable behavior, there is no logging of permission-denied files. Per the coding standard's "Fail-loud semantics" rule, these should at minimum be logged so the agent knows files were skipped.
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| HIGH     | 3     |
+| MEDIUM   | 5     |
+| LOW      | 4     |
+
+The three HIGH issues (#3, #4, #5) all relate to **missing sandbox enforcement**. The `file_ops.py` module from Story 1-2 correctly implements `_validate_path()` with project-root checking, but the Story 1-3 tools (`list_files`, `search_files`, `run_command`) bypass this entirely. This is the most significant finding — agents can search/execute outside the project directory.
+
+The MEDIUM issues are split between **missing logging** (inconsistent with the `file_ops.py` pattern and the coding standard's explicit requirement) and **weak/conditional test assertions** that may not actually exercise the code paths they claim to test.
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\_bmad-output\project-context.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\CLAUDE.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\coding-standards.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\_bmad-output\implementation-artifacts\1-3-search-execution-tools.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\tools\search.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\tools\bash.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\tests\test_tools\test_search.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\tests\test_tools\test_bash.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\tools\__init__.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\tools\file_ops.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\__init__.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\tests\test_tools\__init__.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\pyproject.toml
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 1-4-core-agent-loop
+================================================================================
+I'll proceed with the review output. The prompt log edit was blocked by permissions; I'll note that and deliver the review.
+
+---
+
+# Code Review: Story 1-4 — Core Agent Loop (StateGraph)
+
+## Summary
+
+All 15 tests pass. Ruff passes clean. Mypy finds 2 errors (unused `type: ignore` comments). The implementation is solid overall and adheres to the architecture's key mandate (custom `StateGraph`, no `create_react_agent`). Below are the issues found.
+
+---
+
+## Issues
+
+### 1. mypy errors: unused `type: ignore` comments in test files
+- **File:** `tests/test_agent/test_state.py:35`
+- **File:** `tests/test_agent/test_nodes.py:19`
+- **Severity:** HIGH
+- **Rule violated:** `project-context.md` — "Quality gate: bash scripts/local_ci.sh runs ruff → mypy → pytest in sequence; all three must pass" and "Commit gate: All three checks must pass — no skipping"
+- **Detail:** Both files have `# type: ignore[typeddict-unknown-key]` comments that mypy strict mode reports as unused. This means `mypy` fails (exit code 1), which violates the commit gate. The local CI pipeline would reject this.
+
+### 2. `agent_node` creates a new `ChatAnthropic` instance on every invocation
+- **File:** `src/agent/nodes.py:42`
+- **Severity:** MEDIUM
+- **Detail:** Every call to `agent_node` instantiates `ChatAnthropic(model=DEFAULT_MODEL).bind_tools(tools)`. This means a new HTTP client and tool binding happens on every single LLM turn. For a 50-turn session, this creates 50 model instances. The model and tool binding should be created once (e.g., at module level or in a factory) and reused.
+
+### 3. `create_agent` opens a `sqlite3.Connection` that is never closed
+- **File:** `src/agent/graph.py:53`
+- **Severity:** MEDIUM
+- **Detail:** `conn = sqlite3.connect(checkpoints_db, check_same_thread=False)` creates a connection, but `create_agent` returns the compiled graph without any mechanism to close the connection. The connection will leak. The caller has no way to access `conn` to close it later. This could cause resource leaks and locked database files on Windows.
+
+### 4. `create_agent` does not ensure the `checkpoints/` directory exists
+- **File:** `src/agent/graph.py:53`
+- **Severity:** MEDIUM
+- **Detail:** The default path is `"checkpoints/checkpoints.db"` but if the `checkpoints/` directory doesn't exist, `sqlite3.connect` will raise `sqlite3.OperationalError: unable to open database file`. The function should ensure the parent directory exists before connecting.
+
+### 5. `should_continue` checks retry limit BEFORE checking tool calls — masks the error message
+- **File:** `src/agent/nodes.py:65-76`
+- **Severity:** LOW
+- **Detail:** When `retry_count >= MAX_RETRIES`, the function returns `"error"` which routes to `END`. However, no error message is actually appended to the messages. The conditional edge maps `"error" → END` (graph.py:37), but there is no error handler node that adds an error message. The story spec says AC#3: "the loop terminates with an error message rather than running indefinitely." The logging at line 69 is present, but no message is surfaced to the user/caller in the state. The agent just silently ends.
+
+### 6. `graph.py` imports `build_trace_config` from `src.multi_agent.roles` — tight coupling
+- **File:** `src/agent/graph.py:17`
+- **Severity:** LOW
+- **Detail:** The `create_trace_config` wrapper function in `graph.py` is a pass-through to `src.multi_agent.roles.build_trace_config`. While this works, it means the core agent module (`src/agent/`) depends on the multi-agent module (`src/multi_agent/`). Story 1-4 is about the single-agent core loop; multi-agent is Epic 3. This forward dependency could be a concern if someone tries to use the agent module without the multi-agent module. Not a blocker, but worth noting as an architectural coupling.
+
+### 7. `agent_node` accesses `state.get("context_files")` which is not in `AgentState`
+- **File:** `src/agent/nodes.py:46`
+- **Severity:** LOW
+- **Detail:** The `AgentState` TypedDict (state.py) does not define a `context_files` field. The code uses `state.get("context_files")` which will always return `None`. This isn't a bug (it falls through gracefully), but the `# type: ignore[assignment]` annotation on that line is a code smell — it's working around accessing a field that doesn't exist in the schema. If `context_files` is intended to be used, it should be added to `AgentState`.
+
+### 8. `agent_node` silently catches `ValueError` from `build_system_prompt` without reporting it
+- **File:** `src/agent/nodes.py:49-51`
+- **Severity:** LOW
+- **Rule violated:** `coding-standards.md` — "Graph nodes: let LangGraph handle retries via state — don't add try/except around node logic"
+- **Detail:** The `try/except ValueError` in `agent_node` catches errors from `build_system_prompt` and falls back to a generic prompt. While the coding standards say "don't add try/except around node logic," this is a deliberate fallback for unknown roles. However, it does swallow the error, which conflicts with the "fail-loud semantics" rule in `project-context.md`: "errors must surface immediately, never silently swallowed." The warning log is present, but the agent continues with a degraded prompt without the user/caller knowing.
+
+### 9. Conditional edge mapping uses `"tools"` instead of `"continue"` as specified in the story
+- **File:** `src/agent/graph.py:33-37`
+- **Severity:** LOW
+- **Detail:** The story spec Task 4 says: "Conditional edge from should_continue: `"continue" → "tools"`, `"end" → END`, `"error" → END`". The implementation maps `"tools" → "tools"` (the function returns `"tools"` and the mapping maps it to the `"tools"` node). This works because LangGraph allows the return value to be the node name directly, but it deviates from the spec which expected `"continue"` as the routing key. Functionally equivalent, but a spec deviation.
+
+### 10. System prompt injection only checks the first message
+- **File:** `src/agent/nodes.py:54-55`
+- **Severity:** LOW
+- **Detail:** `if not messages or not isinstance(messages[0], SystemMessage)` — if the first message happens to be a `SystemMessage` from a previous turn (not the role-specific one), the code will skip injecting the correct system prompt. On resumed sessions, the existing system message from a prior invocation persists, but if the role changed between invocations, the stale system prompt would remain.
+
+### 11. Story spec status not updated
+- **File:** `_bmad-output/implementation-artifacts/1-4-core-agent-loop.md:3`
+- **Severity:** LOW
+- **Detail:** The story status is `ready-for-dev` but the implementation is complete and tests pass. The "Dev Agent Record" section at the bottom is empty (no agent model, no debug log references, no completion notes, no file list).
+
+---
+
+## Quality Gate Status
+
+| Check | Result |
+|---|---|
+| ruff | PASS |
+| mypy | **FAIL** (2 errors: unused type-ignore comments) |
+| pytest | PASS (15/15) |
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-4-core-agent-loop.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/state.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/graph.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/nodes.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/prompts.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/file_ops.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/search.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/bash.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/context/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/context/injection.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/roles.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_agent/test_state.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_agent/test_graph.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_agent/test_nodes.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/pyproject.toml
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/gauntlet_docs/ai-prompts/ai-prompt-2026-03-23.md
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 1-5-context-injection-system
+================================================================================
+Now I have all the files I need. Let me compile the full review.
+
+---
+
+# Code Review: Story 1-5 — Context Injection System
+
+## Issues Found
+
+### 1. `context_files` field not defined in `AgentState` schema
+- **File:** `src/agent/state.py` (missing field) / `src/agent/nodes.py:46`
+- **Severity:** HIGH
+- **Rule violated:** project-context.md — "State schema: Extend `MessagesState` with custom fields: `task_id`, `retry_count`, `current_phase`, `agent_role`, `files_modified`"
+- **Detail:** `agent_node` accesses `state.get("context_files")` with a `# type: ignore[assignment]` comment, but `context_files` is never declared in the `AgentState` TypedDict. This means the field is untyped, invisible to mypy, and won't be validated by LangGraph's state schema. The `# type: ignore` suppresses the warning that should flag this. If a caller passes `context_files` in the invocation state, it will work by accident (dict passthrough), but this is fragile and bypasses the typed schema that every other state field uses.
+
+### 2. `CODING_STANDARDS_PATH` is a relative path — CWD-dependent
+- **File:** `src/context/injection.py:19`
+- **Severity:** HIGH
+- **Rule violated:** coding-standards.md — "Fail-loud semantics: Non-negotiable — errors must surface immediately, never silently swallowed"
+- **Detail:** `CODING_STANDARDS_PATH = "coding-standards.md"` resolves relative to the current working directory at runtime. If the process is started from a different directory (e.g., inside Docker, from `src/`, or from tests without `monkeypatch`), the file won't be found. When it fails, `_read_file_safe` logs a warning and silently drops the coding standards from the system prompt — the agent proceeds without coding standards and no error is raised. For the primary Layer 1 content that should be "always-present" per the architecture, silent failure is especially dangerous. The tests only pass because `tmp_coding_standards` monkeypatches the path.
+
+### 3. System prompt silently skipped if first message is a `SystemMessage`
+- **File:** `src/agent/nodes.py:54-55`
+- **Severity:** MEDIUM
+- **Rule violated:** Story AC #1 — "Layer 1 context is included in the system prompt for **every** invocation"
+- **Detail:** The guard `if not messages or not isinstance(messages[0], SystemMessage)` means that if the initial state contains a `SystemMessage` (e.g., a caller passes one), the entire role-aware context injection is silently skipped. The freshly built `system_prompt` is discarded and whatever SystemMessage was already there is used instead. There's no warning logged in this case. While the current codebase doesn't prepend SystemMessages to state, this is a latent bug that violates the "every invocation" guarantee.
+
+### 4. `inject_task_context` (Layer 2) is not wired into the graph
+- **File:** `src/agent/nodes.py` / `src/agent/graph.py`
+- **Severity:** MEDIUM
+- **Rule violated:** Story spec Task 4 — "Task context files (Layer 2) are injected into the human message"
+- **Detail:** `inject_task_context` exists in `src/context/injection.py` and works correctly in isolation, but it is never called from `agent_node`, `graph.py`, or any other wiring code. Layer 2 injection requires the caller to know they must call `inject_task_context` themselves before invoking the graph. The story spec Task 4 explicitly lists Layer 2 integration as a subtask of graph integration, and the completion notes claim it's done, but there's no actual call site. The function is tested but dead in the runtime path.
+
+### 5. `ChatAnthropic` re-instantiated on every agent turn
+- **File:** `src/agent/nodes.py:42`
+- **Severity:** MEDIUM
+- **Rule violated:** Story dev notes — "Keep system prompts concise to manage token costs — Opus context especially should be minimal (NFR5)"
+- **Detail:** `ChatAnthropic(model=DEFAULT_MODEL).bind_tools(tools)` creates a new LLM client object and rebinds all tools on every single `agent_node` invocation (i.e., every turn of the ReAct loop). This is wasteful — the model and tool bindings don't change between turns. The client should be created once at module level or in the graph builder and reused.
+
+### 6. Inconsistent missing-file behavior between Layer 1 and Layer 2
+- **File:** `src/context/injection.py:62-65` vs `src/context/injection.py:93-94`
+- **Severity:** MEDIUM
+- **Rule violated:** coding-standards.md — "Fail-loud semantics"
+- **Detail:** In `build_system_prompt` (Layer 1), a missing context file is silently skipped — no trace of it appears in the output. In `inject_task_context` (Layer 2), a missing file produces `"(file not available)"` in the message. This inconsistency means Layer 1 silently drops context while Layer 2 at least tells the agent something is missing. Both should follow the same strategy, and given the "fail-loud" rule, both should at minimum surface the failure to the agent.
+
+### 7. `tmp_path` typed as `object` instead of `pathlib.Path` in test fixtures
+- **File:** `tests/test_context/test_injection.py:32,44`
+- **Severity:** LOW
+- **Rule violated:** coding-standards.md — "Type hints: Required on all function signatures (parameters and return type)"
+- **Detail:** Both `tmp_coding_standards` and `tmp_context_file` fixtures annotate `tmp_path: object`. The correct type is `pathlib.Path` (pytest's built-in fixture type). Using `object` satisfies mypy technically but loses all type information, requiring `str(tmp_path)` casts that wouldn't be needed with the correct type annotation.
+
+### 8. No integration test for `agent_node` calling `build_system_prompt`
+- **File:** `tests/test_context/test_injection.py`
+- **Severity:** LOW
+- **Rule violated:** coding-standards.md — "Graph testing: Test node functions in isolation first, then test graph edges/routing with mock state"
+- **Detail:** All 23 tests exercise `build_system_prompt` and `inject_task_context` as standalone functions. There is no test verifying that `agent_node` actually calls `build_system_prompt` with the correct role from state, or that the fallback to `FALLBACK_SYSTEM_PROMPT` works when an unknown role is provided. The story spec Task 4 (integration) and Task 5 (testing) together imply this should be covered.
+
+### 9. Missing test coverage for `test` and `architect` roles through full `build_system_prompt`
+- **File:** `tests/test_context/test_injection.py`
+- **Severity:** LOW
+- **Detail:** `TestBuildSystemPrompt` tests `dev` and `reviewer` roles but never calls `build_system_prompt("test")` or `build_system_prompt("architect")`. While `get_prompt` is tested for all four roles, the full Layer 1 assembly (role prompt + coding standards + context files) is only validated for two of four roles.
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| HIGH     | 2     |
+| MEDIUM   | 4     |
+| LOW      | 3     |
+| **Total**| **9** |
+
+The two HIGH issues are the most actionable: (1) `context_files` should be added to `AgentState` as an optional field to get proper type safety, and (2) `CODING_STANDARDS_PATH` should be anchored to the project root (e.g., via `Path(__file__).resolve().parents[2] / "coding-standards.md"`) rather than relying on CWD.
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-5-context-injection-system.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/prompts.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/context/injection.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/nodes.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_context/test_injection.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/context/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/state.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/graph.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/pyproject.toml
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_context/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/gauntlet_docs/ai-prompts/ai-prompt-2026-03-23.md
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 1-6-persistent-server-cli-entry-point
+================================================================================
+Now I have all the information needed. Here is the complete code review.
+
+---
+
+# Code Review: Story 1-6 — Persistent Server & CLI Entry Point
+
+## Issues Found
+
+### 1. Async endpoint blocks the event loop
+- **File:** `src/main.py:70-85`
+- **Severity:** HIGH
+- **Detail:** `instruct()` is declared `async def` but calls the synchronous `graph.invoke()` at line 82. Synchronous calls inside `async def` endpoints block the FastAPI event loop, preventing all other requests from being serviced during LLM invocation (which can take many seconds). Either change to `def instruct(...)` (FastAPI auto-routes sync endpoints to a threadpool) or use `await asyncio.to_thread(graph.invoke, ...)`.
+- **Rule violated:** project-context.md — "Async: Follow LangGraph patterns — graph nodes can be sync or async; tools are sync unless IO-bound." The endpoint wrapper itself should handle the IO-bound call correctly.
+
+### 2. Checkpoint DB path deviates from story spec
+- **File:** `src/main.py:34` / `src/agent/graph.py:19`
+- **Severity:** MEDIUM
+- **Detail:** The story spec (line 44) explicitly says `SQLite checkpointer path: checkpoints/shipyard.db`. However, `graph.py:19` defines `CHECKPOINTS_DB = "checkpoints/checkpoints.db"` and `main.py:34` calls `create_agent()` with the default. The actual DB filename is `checkpoints.db`, not `shipyard.db` as specified.
+- **Rule violated:** Story spec acceptance criteria — implementation deviates from specified path.
+
+### 3. Module-level graph initialization runs at import time
+- **File:** `src/main.py:34`
+- **Severity:** MEDIUM
+- **Detail:** `graph = create_agent()` executes at module import time, immediately creating an SQLite connection and compiling the LangGraph graph. This means any test that imports from `src.main` triggers DB creation. The tests in `test_main.py` work around this with `patch("src.main.graph", mock_graph)`, but the real `create_agent()` still runs once at first import before patches take effect. This is fragile and couples test setup to filesystem state.
+- **Rule violated:** coding-standards.md — testing best practices. Module-level side effects make testing harder.
+
+### 4. SQLite connection is never closed
+- **File:** `src/agent/graph.py:53`
+- **Severity:** MEDIUM
+- **Detail:** `create_agent()` creates `conn = sqlite3.connect(checkpoints_db, check_same_thread=False)` and passes it to `SqliteSaver`, but neither the connection nor the saver are exposed for cleanup. For a long-running server, there is no shutdown hook to close this connection. On Windows specifically, this can cause locked database files.
+- **Rule violated:** project-context.md — "Fail-loud semantics" (silent resource leak).
+
+### 5. Relative paths for checkpoints directory
+- **File:** `src/main.py:31` and `src/agent/graph.py:19`
+- **Severity:** MEDIUM
+- **Detail:** `os.makedirs("checkpoints", exist_ok=True)` and `CHECKPOINTS_DB = "checkpoints/checkpoints.db"` both use relative paths. If the server is started from a directory other than the project root (e.g., inside Docker with a different WORKDIR, or during development), these resolve to unexpected locations.
+- **Rule violated:** coding-standards.md line 178 — "Configuration at project root". The paths assume CWD is project root but don't verify or enforce it.
+
+### 6. No error handling on `graph.invoke()` in instruct endpoint
+- **File:** `src/main.py:82-85`
+- **Severity:** MEDIUM
+- **Detail:** If `graph.invoke()` raises an exception (missing `ANTHROPIC_API_KEY`, network timeout, LangGraph internal error), it propagates as an unhandled HTTP 500 with a raw stack trace. While the project mandates "fail-loud semantics", an API endpoint should return a structured error response rather than leaking internals to the caller.
+- **Rule violated:** project-context.md — "Fail-loud semantics: errors must surface immediately, never silently swallowed." Surfacing a raw traceback to an API consumer is not the same as a well-structured error response.
+
+### 7. `_extract_response` silently returns empty string
+- **File:** `src/main.py:103`
+- **Severity:** LOW
+- **Detail:** When no `AIMessage` with content is found in the result, `_extract_response` returns `""`. The `/instruct` endpoint then returns a 200 response with an empty `response` field. This hides a failure condition (the agent produced no response) behind a success status code, which violates the fail-loud principle.
+- **Rule violated:** project-context.md — "Fail-loud semantics — errors must surface immediately, never silently swallowed."
+
+### 8. `load_dotenv()` at import time pollutes test environment
+- **File:** `src/main.py:28`
+- **Severity:** LOW
+- **Detail:** `load_dotenv()` runs at module import time. Any test importing from `src.main` will load `.env` variables into the process environment. If a developer has a `.env` file with real API keys, this could cause unexpected side effects in tests (e.g., accidentally making real LLM calls if graph mocking fails).
+- **Rule violated:** coding-standards.md — test isolation. Side effects at import time affect all test modules.
+
+### 9. Fragile config extraction in test
+- **File:** `tests/test_main.py:89`
+- **Severity:** LOW
+- **Detail:** `config = call_args[1].get("config") or call_args[0][1]` uses a fallback that could mask bugs. If the invocation pattern ever changes (e.g., config passed positionally), the test would silently use the wrong path rather than failing clearly.
+- **Rule violated:** No specific rule, but test fragility undermines test reliability.
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| HIGH     | 1     |
+| MEDIUM   | 5     |
+| LOW      | 3     |
+
+The most critical issue is **#1 (async blocking)** — the `async def instruct()` endpoint calling synchronous `graph.invoke()` will block FastAPI's event loop during every request, making the server effectively single-threaded and unresponsive during LLM calls. This is straightforward to fix by changing `async def` to `def`.
+
+The **checkpoint DB path mismatch (#2)** is a spec deviation that should be reconciled — either update the implementation or the story spec.
+
+Issues #3-#5 relate to initialization and path handling patterns that will become problematic beyond MVP but are functional for the current scope.
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-6-persistent-server-cli-entry-point.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/main.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_main.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/graph.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/state.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/nodes.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/roles.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/pyproject.toml
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/.gitignore
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/gauntlet_docs/ai-prompts/ai-prompt-2026-03-23.md
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 1-7-repository-documentation-setup-guide
+================================================================================
+Here is my complete code review for Story 1-7.
+
+---
+
+# Code Review: Story 1-7 — Repository Documentation & Setup Guide
+
+## Issues Found
+
+### 1. README.md references `CODEAGENT.md` but it doesn't exist yet
+- **File:** `README.md:80`
+- **Severity:** LOW
+- **Details:** Line 80 says "For detailed architecture and multi-agent design, see `CODEAGENT.md` (Epic 2)." The story dev notes say "Do NOT create CODEAGENT.md content yet — that's Epic 2 (Story 2.4)." The "(Epic 2)" qualifier makes this somewhat acceptable as a forward reference, but an evaluator following the README right now will find no such file.
+- **Rule:** Story dev notes line 61
+
+### 2. README server mode command differs from `src/main.py` entry point
+- **File:** `README.md:43`
+- **Severity:** MEDIUM
+- **Details:** README says `uvicorn src.main:app --reload --port 8000`, but `src/main.py:148-162` shows the server mode is also accessible via `python src/main.py --host 0.0.0.0 --port 8000 --reload`. Using `uvicorn src.main:app` directly works but triggers module-level graph initialization eagerly. This is not wrong, but the README doesn't mention the `python src/main.py` server mode (without `--cli`), which is actually the primary entry point per the architecture doc. Minor inconsistency in documentation.
+- **Rule:** AC #1 — "how to run (CLI and server modes)"
+
+### 3. `scripts/git_snapshot.sh` uses `git add -A` — potential security concern
+- **File:** `scripts/git_snapshot.sh:11`
+- **Severity:** MEDIUM
+- **Details:** `git add -A` stages everything, including any `.env` files if the `.gitignore` is misconfigured or if the file is already tracked. The coding-standards and project-context both say "Never commit `.env` or credentials." While `.gitignore` currently covers `.env`, a tracked `.env` would bypass gitignore. This script is designed for agent use where it auto-commits, making this a higher risk surface.
+- **Rule:** `project-context.md` Security section — "Never commit `.env` or credentials"
+
+### 4. `scripts/run_tests.sh` — `python -c "import pytest_cov"` detection is fragile
+- **File:** `scripts/run_tests.sh:6`
+- **Severity:** LOW
+- **Details:** Uses `python -c "import pytest_cov"` to check if pytest-cov is installed. This works but is fragile — if the script runs outside the venv, it could detect a system-level pytest-cov or miss the venv's pytest-cov. A more robust check would be `python -m pytest --co -q --cov 2>/dev/null` or just checking `pip show pytest-cov`. Minor issue — works fine for the intended use case.
+- **Rule:** None directly violated
+
+### 5. `.env.example` has `LANGCHAIN_TRACING_V2=true` by default
+- **File:** `.env.example:5`
+- **Severity:** LOW
+- **Details:** Setting tracing to `true` by default means a user who copies `.env.example` to `.env` without a valid `LANGCHAIN_API_KEY` will get runtime errors when tracing tries to connect to LangSmith. The story AC #2 says "the evaluator copies it to `.env` and fills in API keys" — this assumes they fill in all keys, but a comment noting this dependency would improve UX.
+- **Rule:** AC #2
+
+### 6. `local_ci.sh` does not include `ruff format` in the story spec tasks
+- **File:** `scripts/local_ci.sh:8-9`
+- **Severity:** LOW
+- **Details:** The story spec Task 2 lists only "Run `ruff check src/ tests/`", "Run `mypy src/`", "Run `pytest tests/ -v`". The actual `local_ci.sh` also runs `ruff format --check src/ tests/` (line 9). This is an addition beyond the story spec — not a bug, and it's actually a good addition, but it's undocumented in the story tasks.
+- **Rule:** Story spec Task 2 subtasks
+
+### 7. No shebang line validation issue — but scripts lack Windows compatibility note
+- **File:** `scripts/local_ci.sh:1`, `scripts/run_tests.sh:1`, `scripts/git_snapshot.sh:1`
+- **Severity:** LOW
+- **Details:** All three scripts use `#!/usr/bin/env bash` and `set -euo pipefail`, which is correct for Linux/macOS. The project is being developed on Windows (MINGW64/Git Bash). The scripts work in Git Bash but this is not noted in the README. Since the README lists "Docker (optional)" and shows `source .venv/bin/activate` with a Windows comment, it's partially addressed. No actual bug.
+- **Rule:** None
+
+### 8. README doesn't mention `requirements-dev.txt` is needed for running tests
+- **File:** `README.md:22-23`
+- **Severity:** LOW
+- **Details:** The Quick Start section does include `pip install -r requirements-dev.txt` (line 22), which is good. However, the Development section (lines 94-116) doesn't remind users they need the dev dependencies for `pytest`, `ruff`, and `mypy`. An evaluator who only reads the Development section might be confused if they skipped the Quick Start install step.
+- **Rule:** AC #1
+
+### 9. Story completion notes claim "135 tests passing" — not independently verified
+- **File:** `_bmad-output/implementation-artifacts/1-7-repository-documentation-setup-guide.md:92`
+- **Severity:** LOW
+- **Details:** The story says "135 tests passing, no regressions" and also notes "Pre-existing ruff lint errors noted in src/agent/prompts.py and tests/test_context/test_injection.py." This means `local_ci.sh` would actually **fail** on ruff check, contradicting the quality gate requirement ("All three must pass before any git commit").
+- **Rule:** `coding-standards.md` Quality Enforcement — "All three must pass before any git commit"; `project-context.md` — "Never skip the quality gate"
+
+### 10. Pre-existing ruff errors mean `local_ci.sh` can't pass — quality gate broken
+- **File:** `scripts/local_ci.sh` (systemic)
+- **Severity:** HIGH
+- **Details:** The story completion notes explicitly acknowledge "Pre-existing ruff lint errors noted in src/agent/prompts.py and tests/test_context/test_injection.py (from earlier stories)." Since `local_ci.sh` runs `ruff check src/ tests/` with `set -e`, it will exit on the first failure. This means the quality gate script cannot pass in the current codebase state. The README tells users to run `bash scripts/local_ci.sh` as the quality check — but it will fail, potentially confusing evaluators. This violates the spirit of AC #1 (evaluator can run in <10 minutes) and the coding-standards quality gate rule.
+- **Rule:** `coding-standards.md` Quality Enforcement — "All three must pass before any git commit"; AC #1 (evaluator experience); NFR6 (clone-and-run <10 min)
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| HIGH     | 1     |
+| MEDIUM   | 2     |
+| LOW      | 7     |
+
+The **one HIGH issue** is that the quality gate (`local_ci.sh`) is documented and promoted in the README but cannot actually pass due to pre-existing ruff lint errors acknowledged in the story completion notes. This is the most impactful issue for evaluator experience.
+
+The **two MEDIUM issues** are: (1) the `git_snapshot.sh` using `git add -A` which has a security surface area, and (2) a minor README inconsistency about server mode entry points.
+
+The remaining **LOW issues** are documentation gaps, minor fragility in script logic, and spec-vs-implementation discrepancies that don't affect functionality.
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-7-repository-documentation-setup-guide.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/README.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/.env.example
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/.gitignore
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/scripts/run_tests.sh
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/scripts/git_snapshot.sh
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/scripts/local_ci.sh
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/main.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/docker-compose.yml
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/Dockerfile
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/pyproject.toml
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/planning-artifacts/architecture.md (partial — grep + first 50 lines)
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/gauntlet_docs/ai-prompts/ai-prompt-2026-03-23.md
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+SUMMARY
+================================================================================
+Epic: 1
+Total stories: 7
+Reviewed: 7
+Skipped: 0
+Failed: 0
+Total duration: 22m 23s
+================================================================================

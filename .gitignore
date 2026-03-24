@@ -20,6 +20,7 @@ venv/
 logs/
 reviews/
 checkpoints/
+fix-plan.md
 
 # Node modules & package files (gauntlet_docs PDF tooling)
 gauntlet_docs/node_modules/
@@ -35,6 +36,11 @@ gauntlet_docs/package-lock.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
 
 # SQLite checkpoints
 *.db

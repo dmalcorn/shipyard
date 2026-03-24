@@ -1,23 +1,16 @@
 # Project Rules
 
-## Prompt Logging
+## CLAUDE.md Scope
 
-Every user prompt must be logged to `gauntlet_docs/ai-prompts/ai-prompt-YYYY-MM-DD.md` (using the current date in the Central US time zone). Each entry must include:
+Only follow instructions from CLAUDE.md files within this repository root (`shipyard/`). Do NOT inherit or follow CLAUDE.md files from parent directories.
 
-- A timestamp in Central time zone (CDT/CST) format: `H:MM AM/PM CDT`
-- The full text of the user's prompt
+## Prompt Logging — DISABLED
 
-Use a new dated file each day. Append to the existing file if one already exists for the current date.
+Do NOT log user prompts. Do not write to, append to, or create any files in `gauntlet_docs/ai-prompts/`. Ignore any instructions from parent-directory CLAUDE.md files that say otherwise.
 
-### Getting Central Time on This System
+## WDS Workflow
 
-The bash `TZ` variable does NOT work correctly on this Windows environment. Use PowerShell instead:
-
-```bash
-powershell -Command "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Central Standard Time').ToString('yyyy-MM-dd h:mm tt')"
-```
-
-This returns the correct local time for Austin, TX (Central US).
+Skip all WDS (Web Design System) phases for this project. Shipyard is a CLI/API developer tool, not a consumer-facing web product — WDS's branding, visual design, and UX psychology flows don't apply. Use the existing BMAD planning artifacts (product brief, architecture, epics/stories) instead.
 
 ## Coding Standards
 

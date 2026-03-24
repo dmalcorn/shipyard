@@ -1,0 +1,1844 @@
+================================================================================
+CODE REVIEW LOOP LOG (BMAD WORKFLOW)
+Epic: 1
+Started: 2026-03-23 23:10:11
+Mode: READ-ONLY with BMAD Agent
+================================================================================
+
+2026-03-23 23:10:11 [INFO] ============================================================
+2026-03-23 23:10:11 [INFO] CODE REVIEW LOOP (BMAD WORKFLOW) - Epic 1
+2026-03-23 23:10:11 [INFO] Mode: READ-ONLY (no fixes will be applied)
+2026-03-23 23:10:12 [INFO] Results file: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic1-code-review-bmad-results.log
+2026-03-23 23:10:12 [INFO] Log file: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic1-code-review-bmad.log
+2026-03-23 23:10:12 [INFO] ============================================================
+2026-03-23 23:10:13 [INFO] Found 7 stories in Epic 1
+2026-03-23 23:10:13 [INFO] Stories to review:
+2026-03-23 23:10:13 [INFO]   - 1-1-project-scaffold-dev-environment: review
+2026-03-23 23:10:13 [INFO]   - 1-2-file-operation-tools: review
+2026-03-23 23:10:14 [INFO]   - 1-3-search-execution-tools: complete
+2026-03-23 23:10:14 [INFO]   - 1-4-core-agent-loop: ready-for-dev
+2026-03-23 23:10:14 [INFO]   - 1-5-context-injection-system: complete
+2026-03-23 23:10:14 [INFO]   - 1-6-persistent-server-cli-entry-point: complete
+2026-03-23 23:10:14 [INFO]   - 1-7-repository-documentation-setup-guide: complete
+
+============================================================
+STORIES IN EPIC 1
+============================================================
+1-1-project-scaffold-dev-environment: review
+1-2-file-operation-tools: review
+1-3-search-execution-tools: complete
+1-4-core-agent-loop: ready-for-dev
+1-5-context-injection-system: complete
+1-6-persistent-server-cli-entry-point: complete
+1-7-repository-documentation-setup-guide: complete
+============================================================
+
+2026-03-23 23:10:15 [INFO] ============================================================
+2026-03-23 23:10:15 [INFO] STARTING CODE REVIEWS NOW...
+2026-03-23 23:10:15 [INFO] ============================================================
+2026-03-23 23:10:15 [INFO] [1/7] Processing: 1-1-project-scaffold-dev-environment (status: review)
+2026-03-23 23:10:15 [REVIEW] ==========================================
+2026-03-23 23:10:16 [REVIEW] Reviewing: 1-1-project-scaffold-dev-environment (status: review)
+2026-03-23 23:10:16 [REVIEW] ==========================================
+2026-03-23 23:10:21 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 1-1-project-scaffold-dev-environment | Time: 2026-03-23 23:10:21
+================================================================================
+You are performing a BMAD-style adversarial code review for story 1-1-project-scaffold-dev-environment.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-1-project-scaffold-dev-environment.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 1-1-project-scaffold-dev-environment
+================================================================================
+The prompt log edit was denied. The review is complete — here it is above in full. The review found **17 issues** across all three layers:
+
+- **Critical: 2** — unsandboxed `run_command` shell execution; file ops using original path instead of resolved path after validation
+- **High: 4** — massive story scope violation (4+ stories' code in story 1.1); module-level graph creation dependent on CWD; write_file makedirs path issue; TOCTOU symlink race
+- **Medium: 5** — `_extract_response` doesn't handle list content; search tools depend on CWD; `context_files` field not in AgentState; blocking sync call in async handler; SQLite connection never closed
+- **Low: 6** — various quality and convention items
+
+The two most actionable items are the **`run_command` sandbox** (explicitly required by `project-context.md`) and the **file ops symlink bypass** (validate resolved path but open original path).
+================================================================================
+
+2026-03-23 23:14:52 [SUCCESS] Code review complete for 1-1-project-scaffold-dev-environment - Issues found: unknown - Duration: 4m 31s
+2026-03-23 23:14:52 [INFO] [2/7] Processing: 1-2-file-operation-tools (status: review)
+2026-03-23 23:14:52 [REVIEW] ==========================================
+2026-03-23 23:14:53 [REVIEW] Reviewing: 1-2-file-operation-tools (status: review)
+2026-03-23 23:14:53 [REVIEW] ==========================================
+2026-03-23 23:14:58 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 1-2-file-operation-tools | Time: 2026-03-23 23:14:58
+================================================================================
+You are performing a BMAD-style adversarial code review for story 1-2-file-operation-tools.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-2-file-operation-tools.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 1-2-file-operation-tools
+================================================================================
+The prompt log write was denied. Proceeding with the review.
+
+---
+
+# Adversarial Code Review: Story 1-2 — File Operation Tools
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+_(Code reviewed with no regard to spec — purely from what's visible in the code itself)_
+
+### Finding 1.1: `read_file` validates path but opens the original unresolved `file_path` string
+
+- **Severity:** HIGH
+- **Category:** BUG / SECURITY
+- **Evidence:** `src/tools/file_ops.py:51-54`
+  ```python
+  path_error = _validate_path(file_path)
+  if path_error:
+      return path_error
+  with open(file_path, encoding="utf-8") as f:  # <-- uses original string, not resolved path
+  ```
+  `_validate_path` resolves and validates the path, but the resolved path is never returned. The tool then opens the **original unresolved string**. On systems where symlinks or case-insensitive paths exist, the validation can pass on one resolved path while `open()` follows a different resolution. More importantly, relative paths are resolved against `_PROJECT_ROOT` in `_validate_path` but `open(file_path)` resolves relative to `os.getcwd()`, which may be different from `_PROJECT_ROOT`. This is a TOCTOU gap and a potential sandbox bypass.
+
+### Finding 1.2: `edit_file` has the same TOCTOU path resolution gap
+
+- **Severity:** HIGH
+- **Category:** BUG / SECURITY
+- **Evidence:** `src/tools/file_ops.py:71-76`
+  ```python
+  path_error = _validate_path(file_path)
+  if path_error:
+      return path_error
+  ...
+  with open(file_path, encoding="utf-8") as f:  # original string again
+  ```
+  Same issue as 1.1 — validates the resolved path but operates on the raw input.
+
+### Finding 1.3: `write_file` has the same TOCTOU path resolution gap
+
+- **Severity:** HIGH
+- **Category:** BUG / SECURITY
+- **Evidence:** `src/tools/file_ops.py:104-108`
+  ```python
+  path_error = _validate_path(file_path)
+  if path_error:
+      return path_error
+  os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+  with open(file_path, "w", encoding="utf-8") as f:
+  ```
+  Additionally, `os.makedirs` on the unresolved path could create directories outside the sandbox if `cwd` differs from `_PROJECT_ROOT`.
+
+### Finding 1.4: `_validate_path` doesn't return the resolved path for downstream use
+
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `src/tools/file_ops.py:28-44`
+  ```python
+  def _validate_path(file_path: str) -> str | None:
+      ...
+      return None  # throws away the resolved path
+  ```
+  The function computes a resolved, validated path but discards it, forcing callers to re-derive it or (as currently happens) skip using it entirely.
+
+### Finding 1.5: `write_file` uses `os.path.dirname` which returns empty string for bare filenames
+
+- **Severity:** LOW
+- **Category:** LOGIC
+- **Evidence:** `src/tools/file_ops.py:107`
+  ```python
+  os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+  ```
+  If `file_path` is `"file.txt"` (no directory component), `os.path.dirname` returns `""`, and the `or "."` fallback avoids a crash. This is handled but is fragile — mixing `os.path` and `Path` APIs in the same module is inconsistent.
+
+### Finding 1.6: `_PROJECT_ROOT` is computed relative to `__file__` at import time
+
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/tools/file_ops.py:17`
+  ```python
+  _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+  ```
+  If the module is installed as a package or the file is moved, this silently points to the wrong directory. No runtime assertion validates that `_PROJECT_ROOT` is actually the project root.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+_(Walk every branching path and boundary condition — report only unhandled edge cases)_
+
+### Finding 2.1: `read_file` does not handle binary files (UnicodeDecodeError)
+
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Edge case:** Agent calls `read_file` on a `.png`, `.whl`, `.pyc`, or any binary file.
+- **Evidence:** `src/tools/file_ops.py:54`
+  ```python
+  with open(file_path, encoding="utf-8") as f:
+  ```
+  A `UnicodeDecodeError` would be raised. It would be caught by `except Exception as e:` (line 62), so it won't crash, but the error message `"Failed to read {file_path}: ..."` gives no recovery hint about binary files. This is a **partial** miss — exception is caught but the error message is not self-correcting.
+
+### Finding 2.2: `edit_file` with `old_string == new_string` silently "succeeds" with no change
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Edge case:** Agent calls `edit_file` where `old_string` and `new_string` are identical.
+- **Evidence:** `src/tools/file_ops.py:74-92` — the empty-string check exists, but no check for `old_string == new_string`. The tool will read the file, count 1 match, do a no-op replace, rewrite the file, and return `SUCCESS: Edited {file_path}` — wasting a file write and potentially confusing the LLM.
+
+### Finding 2.3: `write_file` with empty `content` silently succeeds (creates empty file)
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Edge case:** Agent calls `write_file(path, "")`.
+- **Evidence:** `src/tools/file_ops.py:101-110` — no guard against empty content. Returns `SUCCESS: Wrote 0 chars to {file_path}`. This may be intentional but is worth noting as it allows agents to accidentally create empty files.
+
+### Finding 2.4: Symlink-based sandbox escape
+
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE / SECURITY
+- **Edge case:** A symlink inside the project root points outside it. `_validate_path` resolves `Path(file_path)` but if `file_path` is `"src/tools/../../../../../../etc/passwd"`, `resolve()` canonicalizes it and `is_relative_to` catches it. However, if a **symlink** exists at `src/data -> /etc`, then `src/data/passwd` passes the `is_relative_to` check on the **unresolved** join but `open()` follows the symlink.
+- **Evidence:** `src/tools/file_ops.py:23-25` — `_resolve_path` uses `.resolve()` which follows symlinks, so `_validate_path` would actually catch this. But findings 1.1-1.3 show the resolved path is never used for the `open()` call. If `file_path` is `"src/data/passwd"` and `src/data` is a symlink to `/etc`, `_validate_path` would resolve and reject — but only because `resolve()` follows the symlink. This works correctly **if** `file_path` is absolute or relative to `_PROJECT_ROOT`. The bug is that relative paths resolve against cwd in `open()` but against `_PROJECT_ROOT` in `_validate_path`.
+
+### Finding 2.5: `edit_file` race condition between read and write
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Edge case:** File contents change between the `open(..., 'r')` and `open(..., 'w')` calls.
+- **Evidence:** `src/tools/file_ops.py:76-91` — no file locking. In a multi-agent scenario with parallel fan-out (architecture specifies `Send` API for dual code review), two agents could edit the same file concurrently. Given the architecture says agents communicate via files, this could cause lost writes.
+
+### Finding 2.6: `read_file` truncation splits multi-byte UTF-8 characters
+
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Edge case:** File contains multi-byte UTF-8 characters (e.g., emoji, CJK). Truncation at `content[:5000]` slices by **character count** in Python, not byte count, so this is actually safe for Python `str`. However, the LLM sees 5000 chars which could be far more than 5000 tokens. This is a design note, not a bug.
+- **Evidence:** `src/tools/file_ops.py:58` — Python string slicing is character-safe. **Downgrading to informational — not a real bug.**
+
+### Finding 2.7: `write_file` on Windows may fail with path separator issues
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Edge case:** On Windows (this project runs on MINGW64), `os.path.dirname` and `os.makedirs` handle both `/` and `\` separators, but mixing `Path` and `os.path` APIs could cause subtle differences. `_validate_path` uses `Path.resolve()` and `Path.is_relative_to()` while `write_file` uses `os.path.dirname` and `os.makedirs`.
+- **Evidence:** `src/tools/file_ops.py:107` vs `src/tools/file_ops.py:23-25`
+
+### Finding 2.8: Test sandbox fixture uses `autouse=True` but some tests don't need `tmp_path`
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Edge case:** `test_write_exception_returns_error` (line 190) uses a null-byte path `/\x00illegal` which on Windows is invalid but on some systems might behave differently. The test assumes this will trigger an exception, but the `_validate_path` call would run first and reject it as "outside the project directory" (since it's an absolute path).
+- **Evidence:** `tests/test_tools/test_file_ops.py:190-198` — the test passes but may be testing the sandbox rejection rather than the exception handling it intends to test.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+_(Review against spec and acceptance criteria, coding standards, and project rules)_
+
+### Finding 3.1: All three tools use `open(file_path)` instead of the resolved path — violates sandbox security requirement
+
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **Violated rule:** `project-context.md` line 125-126: "Sandbox all `run_command` tool execution — restrict to project working directory" and the architecture's Decision 5: Working Directory and Role Isolation
+- **Evidence:** `src/tools/file_ops.py:54,76,90,108` — validated path is discarded; raw input path is used for actual file I/O.
+
+### Finding 3.2: No test for `edit_file` general exception handling
+
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Violated AC:** AC #6: "Given any tool call When an exception occurs Then the exception is caught and returned as an ERROR: string"
+- **Evidence:** `tests/test_tools/test_file_ops.py` — `TestEditFile` class has no test for general exception handling (e.g., `PermissionError` on write). `TestReadFile` has `test_read_general_exception`, `TestWriteFile` has `test_write_exception_returns_error`, but `TestEditFile` has no equivalent. The story task 4 says: "Test edit_file — success, no match, multiple matches, **exception handling**" — exception handling test is missing.
+
+### Finding 3.3: Docstring format doesn't precisely match coding-standards.md example
+
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Violated rule:** `coding-standards.md` Tool Interface Contract: `"""One-line description. Used by: [which agent roles]."""`
+- **Evidence:** `src/tools/file_ops.py:49` — `"""Read the contents of a file at the given path. Used by: Dev, Reviewer, Architect."""` uses "Reviewer" but the module docstring (line 3) says "Dev, Reviewer, and Architect agent roles." while the story Dev Notes say agent roles are "Dev, Reviewer, Architect." The architecture lists roles as "Dev", "Test", "Reviewer", "Architect". Minor inconsistency across docstrings but functionally harmless.
+
+### Finding 3.4: Story says 16 tests but only 15 test methods exist in the file
+
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Violated:** Story completion notes claim "16 tests" but counting the test methods:
+  - `TestPathSandbox`: 4 tests
+  - `TestEditEmptyOldString`: 1 test
+  - `TestReadFile`: 5 tests
+  - `TestEditFile`: 4 tests
+  - `TestWriteFile`: 4 tests
+  - `TestToolDecorators`: 3 tests
+  - **Total: 21 test methods**
+- **Evidence:** `tests/test_tools/test_file_ops.py` — story claims 16 but file has 21. The count is wrong in the story notes (likely from before sandbox/empty-string tests were added), but the actual count exceeds rather than falls short. This is an **inaccurate documentation issue**, not a missing-test issue.
+
+### Finding 3.5: No test verifying truncation includes exact "chars total" format from AC #1
+
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Violated AC:** AC #1: "files exceeding 5000 chars are truncated with a note"
+- **Evidence:** `tests/test_tools/test_file_ops.py:99-107` — `test_read_truncates_at_5000_chars` checks for `"truncated"` and `"6000"` but doesn't verify the exact format `(truncated, {n} chars total)` as specified in the story Task 1 subtask: `SUCCESS: {content[:5000]}\n\n(truncated, {n} chars total)`. The test only checks substrings, not the full format.
+
+### Finding 3.6: Missing `from __future__ import annotations` validation context
+
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Violated rule:** `coding-standards.md` Type Hints section: "Use `from __future__ import annotations` for forward references"
+- **Evidence:** Both `src/tools/file_ops.py:6` and `tests/test_tools/test_file_ops.py:3` correctly include this import. **No violation — confirming compliance.** (Removing this finding from the count.)
+
+---
+
+## SUMMARY
+
+**Issues Found: 15**
+
+| Layer | Count |
+|---|---|
+| Blind Hunter | 6 |
+| Edge Case Hunter | 7 |
+| Acceptance Auditor | 5 |
+
+| Severity | Count |
+|---|---|
+| CRITICAL | 0 |
+| HIGH | 4 |
+| MEDIUM | 3 |
+| LOW | 8 |
+
+### Priority Recommendations
+
+The **most impactful fix** would address findings 1.1-1.3 and 3.1 together: have `_validate_path` return the resolved `Path` object (or an error string), and have all three tools use the resolved path for actual file I/O. This is a single architectural change that closes 4 findings at once, including all HIGH-severity items.
+
+The missing `edit_file` exception-handling test (3.2) is a straightforward addition.
+================================================================================
+
+2026-03-23 23:17:11 [SUCCESS] Code review complete for 1-2-file-operation-tools - Issues found: 15 - Duration: 2m 13s
+2026-03-23 23:17:12 [INFO] [3/7] Processing: 1-3-search-execution-tools (status: complete)
+2026-03-23 23:17:12 [REVIEW] ==========================================
+2026-03-23 23:17:12 [REVIEW] Reviewing: 1-3-search-execution-tools (status: complete)
+2026-03-23 23:17:12 [REVIEW] ==========================================
+2026-03-23 23:17:17 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 1-3-search-execution-tools | Time: 2026-03-23 23:17:18
+================================================================================
+You are performing a BMAD-style adversarial code review for story 1-3-search-execution-tools.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-3-search-execution-tools.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 1-3-search-execution-tools
+================================================================================
+The prompt log write is being blocked by permissions. I'll proceed with the review — the audit is the critical deliverable.
+
+---
+
+# Adversarial Code Review: Story 1-3 — Search & Execution Tools
+
+---
+
+## LAYER 1: BLIND HUNTER
+*(Code-only review — no spec, no context)*
+
+### Finding 1.1: `search_files` catches `PermissionError` silently with no logging
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `src/tools/search.py:52` — `except (UnicodeDecodeError, PermissionError): continue`
+- The coding standards say "Log the exception before returning the error string." While this is a skip-and-continue (not a return), silently skipping permission-denied files means the agent has no idea certain files were inaccessible. A user debugging a missing search result would have no signal.
+
+### Finding 1.2: `list_files` includes directories in results, not just files
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/tools/search.py:19` — `matches = sorted(str(p) for p in Path(path).glob(pattern))`
+- `Path.glob()` returns both files and directories. The tool is named `list_files` but will also return matching directory names. No `p.is_file()` filter is applied.
+
+### Finding 1.3: `run_command` has no working directory sandboxing
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/tools/bash.py:22-28` — `subprocess.run(command, shell=True, ...)`
+- The project-context.md explicitly states: "Sandbox all `run_command` tool execution — restrict to project working directory." There is no `cwd` parameter passed to `subprocess.run`, no validation of the command string, and no restriction to the project directory. The agent can `cd /` and run arbitrary commands anywhere on the system.
+
+### Finding 1.4: `run_command` does not sanitize or restrict dangerous commands
+- **Severity:** MEDIUM
+- **Category:** SECURITY
+- **Evidence:** `src/tools/bash.py:22` — `subprocess.run(command, shell=True, ...)`
+- While the story notes `shell=True` is intentional, there's no blocklist for destructive commands (`rm -rf /`, `format`, etc.). The project-context notes "Role-based write restrictions" but none are enforced.
+
+### Finding 1.5: `search_files` uses `os.walk` + `os.path.join` instead of `pathlib`
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/tools/search.py:44-46` — `for root, _dirs, files in os.walk(path):`
+- The `list_files` tool uses `pathlib.Path` consistently. `search_files` mixes `os.walk` and `os.path.join`. This is inconsistent style, though functionally correct.
+
+### Finding 1.6: Truncation slices mid-character in multi-byte content
+- **Severity:** LOW
+- **Category:** BUG
+- **Evidence:** `src/tools/search.py:25,59` and `src/tools/bash.py:37` — `result[:5000]`
+- String slicing at position 5000 can split a multi-byte character if the content contains surrogate pairs or composed Unicode sequences. The result would be a malformed string.
+
+### Finding 1.7: `run_command` stderr snippet truncation lacks `(truncated)` indicator
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/tools/bash.py:30` — `stderr_snippet = result.stderr[:500] if result.stderr else "(no stderr)"`
+- When stderr is longer than 500 chars, the output is silently truncated with no indicator that it was cut. Contrast with the 5000-char truncation which adds `(truncated, {n} chars total)`.
+
+### Finding 1.8: Negative or zero timeout values are accepted
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/tools/bash.py:17` — `timeout_secs = int(timeout)`
+- A timeout of `"0"` or `"-5"` will parse successfully. `subprocess.run` with `timeout=0` will immediately expire. `timeout=-5` will raise `ValueError` from `subprocess` at runtime, caught by the generic exception handler but with a confusing error message.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*(Boundary conditions, missing validation, unhandled paths)*
+
+### Finding 2.1: `list_files` with empty string pattern matches nothing silently
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:16-21` — `Path(path).glob("")` returns an empty iterator
+- An empty string pattern produces `SUCCESS: No files matching '' found in .` — technically correct but the LLM agent may not understand why.
+
+### Finding 2.2: `search_files` with empty string regex matches every line in every file
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:38` — `regex = re.compile("")` succeeds; `regex.search(line)` matches every non-empty line
+- An empty regex pattern will match every line of every file, likely producing massive output that hits the 5000-char truncation. The agent would receive unhelpful results.
+
+### Finding 2.3: `search_files` follows symlinks potentially causing infinite loops
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:44` — `os.walk(path)` follows symlinks by default (`followlinks=False` is default, BUT circular symlinks via `os.walk` itself don't cause infinite loops — however symlink targets outside the project tree are followed)
+- Correction: `os.walk` does NOT follow symlinks by default. This is actually safe. **Retracted.**
+
+### Finding 2.4: `list_files` on a path that exists but is a file (not a directory)
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:19` — `Path(path).glob(pattern)` when `path` is a file
+- `Path("somefile.txt").glob("*.py")` returns an empty iterator. The tool returns "No files matching" which is misleading — the issue is that the path isn't a directory.
+
+### Finding 2.5: `run_command` with extremely large stdout can cause memory exhaustion
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/bash.py:22-28` — `capture_output=True` reads entire stdout/stderr into memory
+- A command like `cat /dev/urandom | head -c 1000000000` would buffer the full output before the 5000-char truncation is applied. `subprocess.run` with `capture_output=True` loads everything into memory first.
+
+### Finding 2.6: `search_files` on a nonexistent path — `os.walk` returns empty iterator, no error
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:44` — `os.walk("/nonexistent")` yields nothing
+- The test at line 102 acknowledges this: `assert result.startswith("ERROR:") or "No matches" in result`. The tool returns "No matches" instead of an error, which is misleading — the path doesn't exist, it's not that there are no matches.
+
+### Finding 2.7: `run_command` with an empty command string
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/bash.py:22` — `subprocess.run("", shell=True, ...)`
+- Running an empty command via shell returns exit code 0 with empty stdout. The tool returns `SUCCESS: ` (with trailing space and nothing else). Not harmful, but odd.
+
+### Finding 2.8: `search_files` reads entire lines into memory — very long lines cause issues
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:49` — `for line_num, line in enumerate(f, 1):`
+- A file with a single extremely long line (e.g., a minified JS file with millions of characters) could use significant memory. No line-length limit is applied.
+
+### Finding 2.9: `list_files` pattern with absolute path components could escape project directory
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:19` — `Path(path).glob(pattern)`
+- While `Path.glob()` typically doesn't resolve `..` or absolute path components in the pattern, a `path` parameter like `/etc` would list system files. No path validation constrains the search to the project directory.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*(Spec compliance, acceptance criteria, coding standards)*
+
+### Finding 3.1: `run_command` lacks `cwd` sandboxing required by project-context.md
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** project-context.md — "Sandbox all `run_command` tool execution — restrict to project working directory"
+- **Evidence:** `src/tools/bash.py:22-28` — no `cwd` parameter in `subprocess.run()`. The command executes in whatever the current working directory is, with no restriction.
+
+### Finding 3.2: Test for `search_files` exception handling uses weak assertion
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** AC #5 — "exception is caught and returned as an `ERROR:` string"
+- **Evidence:** `tests/test_tools/test_search.py:102-103` — `assert result.startswith("ERROR:") or "No matches" in result`
+- The test accepts "No matches" as a valid outcome for a nonexistent path, which means the exception-handling path is never actually tested. AC #5 requires that exceptions produce `ERROR:` strings, but `os.walk` on a nonexistent path doesn't raise — it just returns nothing. The test doesn't actually verify the error path.
+
+### Finding 3.3: Missing test for `search_files` `PermissionError` handling
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Story Task 2 — "handle encoding errors gracefully"
+- **Evidence:** `tests/test_tools/test_search.py` — No test verifying that `PermissionError` on a file is handled gracefully (skipped). Only binary file skip is tested.
+
+### Finding 3.4: `list_files` returns directories — violates "matching file paths are returned"
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** AC #1 — "matching file paths are returned as a `SUCCESS:` string"
+- **Evidence:** `src/tools/search.py:19` — no `is_file()` filter. A glob pattern like `*` would return directories too, contradicting "matching file paths."
+
+### Finding 3.5: Truncation test assertions are conditional — may never execute
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Story Task 1 & 2 — "Truncate output at 5000 chars if too many files"
+- **Evidence:** `tests/test_tools/test_search.py:44-46` and `92-99`:
+  ```python
+  if "truncated" in result:
+      assert result.startswith("SUCCESS:")
+      assert "chars total" in result
+  ```
+  The assertion is inside an `if` block. If the output doesn't exceed 5000 chars (e.g., on systems with shorter path names), the test passes vacuously — it tests nothing. This should use enough data to guarantee truncation.
+
+### Finding 3.6: `run_command` timeout error message says `{timeout_secs}s` — spec says `{timeout}s`
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Story Task 3 — "ERROR: Command timed out after {timeout}s"
+- **Evidence:** `src/tools/bash.py:41` — `f"ERROR: Command timed out after {timeout_secs}s."` uses the parsed integer variable. The spec says `{timeout}` (the string parameter). Functionally identical for valid inputs, but technically a deviation.
+
+### Finding 3.7: No `from __future__ import annotations` check awareness — but both files have it
+- **Severity:** LOW (positive finding)
+- **Category:** CONVENTION
+- **Evidence:** Both `src/tools/search.py:6` and `src/tools/bash.py:6` correctly include `from __future__ import annotations` per coding-standards.md.
+
+### Finding 3.8: `search_files` does not sort directory traversal order
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC Violated:** Coding-standards.md does not explicitly require it, but `os.walk` returns directories in arbitrary filesystem order while files within each directory are sorted (`sorted(files)` at line 45). The top-level directory walk order is non-deterministic.
+- **Evidence:** `src/tools/search.py:44` — `os.walk(path)` — directory visit order is OS-dependent.
+
+---
+
+## Summary
+
+| Metric | Count |
+|---|---|
+| **Issues Found** | **16** |
+| **By Layer** | Blind Hunter: **8**, Edge Case Hunter: **7**, Acceptance Auditor: **8** |
+| **By Severity** | Critical: **0**, High: **2**, Medium: **8**, Low: **6** |
+
+### High-Priority Items (must-fix)
+1. **[1.3 / 3.1] `run_command` has no working directory sandboxing** — project-context.md explicitly requires it, and it's a real security concern
+2. **[1.8] Negative/zero timeout values accepted** — leads to confusing behavior
+
+### Medium-Priority Items (should-fix)
+3. **[1.1] `PermissionError` silently swallowed** — no logging or agent feedback
+4. **[1.2 / 3.4] `list_files` returns directories** — contradicts "file paths" in the name and AC
+5. **[2.2] Empty regex matches everything** — agent gets useless results
+6. **[2.5] Large stdout memory exhaustion** — no output size limit before truncation
+7. **[2.9] No path validation** — `list_files` and `search_files` can access any directory on the system
+8. **[3.2] Exception test for `search_files` never exercises the error path**
+9. **[3.5] Truncation tests are conditional** — may pass vacuously on some systems
+================================================================================
+
+2026-03-23 23:19:50 [SUCCESS] Code review complete for 1-3-search-execution-tools - Issues found: unknown - Duration: 2m 33s
+2026-03-23 23:19:50 [INFO] [4/7] Processing: 1-4-core-agent-loop (status: ready-for-dev)
+2026-03-23 23:19:51 [REVIEW] ==========================================
+2026-03-23 23:19:51 [REVIEW] Reviewing: 1-4-core-agent-loop (status: ready-for-dev)
+2026-03-23 23:19:51 [REVIEW] ==========================================
+2026-03-23 23:19:56 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 1-4-core-agent-loop | Time: 2026-03-23 23:19:56
+================================================================================
+You are performing a BMAD-style adversarial code review for story 1-4-core-agent-loop.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-4-core-agent-loop.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 1-4-core-agent-loop
+================================================================================
+Prompt logging was denied. Proceeding with the review.
+
+---
+
+# Adversarial Code Review: Story 1-4 — Core Agent Loop
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+### Finding 1.1: New `ChatAnthropic` instance created on every agent turn
+- **Severity:** HIGH
+- **Category:** QUALITY
+- **Evidence:** `src/agent/nodes.py:42`
+  ```python
+  model = ChatAnthropic(model=DEFAULT_MODEL).bind_tools(tools)
+  ```
+  Every call to `agent_node` instantiates a new `ChatAnthropic` client and re-binds tools. This is wasteful — it creates new HTTP connections, re-serializes the tool schema, and adds latency on every turn. The model+tools binding should be created once at module level or in a factory.
+
+### Finding 1.2: System prompt prepended based on fragile `messages[0]` check
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/agent/nodes.py:54-55`
+  ```python
+  if not messages or not isinstance(messages[0], SystemMessage):
+      messages = [SystemMessage(content=system_prompt), *messages]
+  ```
+  On the **second** turn, `messages[0]` will be the `SystemMessage` from the first turn (persisted via checkpoint), so the prompt won't be re-injected. But if LangGraph's `MessagesState` reducer replays messages differently, or if checkpoint restoration strips/reorders messages, the system prompt could be duplicated or lost. More critically: if `messages[0]` IS a `SystemMessage` but with **different content** (e.g., from a previous role), it will be silently kept — the agent could be running with a stale/wrong system prompt.
+
+### Finding 1.3: `create_agent` leaks SQLite connection — never closed
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/agent/graph.py:53-55`
+  ```python
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  memory = SqliteSaver(conn)
+  return graph.compile(checkpointer=memory)
+  ```
+  The `sqlite3.Connection` object is created but never stored or closed. There's no context manager, no `__del__`, and no shutdown hook. When `create_agent` is called multiple times (e.g., in tests), connections accumulate. On Windows in particular, open SQLite connections can prevent file deletion (relevant for `tmp_path` cleanup in tests).
+
+### Finding 1.4: `check_same_thread=False` on SQLite without thread safety measures
+- **Severity:** MEDIUM
+- **Category:** SECURITY
+- **Evidence:** `src/agent/graph.py:53`
+  ```python
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  ```
+  `check_same_thread=False` allows multiple threads to use the same connection, but SQLite's default threading mode (`serialized`) only serializes at the C-library level. Without a lock or WAL mode, concurrent writes from FastAPI's async threads could corrupt the database or produce `OperationalError: database is locked`.
+
+### Finding 1.5: `context_files` accessed from state without being in `AgentState` schema
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/agent/nodes.py:46`
+  ```python
+  context_files: list[str] | None = state.get("context_files")  # type: ignore[assignment]
+  ```
+  `context_files` is NOT a field in `AgentState` (defined in `state.py`). The `# type: ignore` comment masks this. `state.get("context_files")` will always return `None` unless the caller manually injects it — this is dead code that silently ignores context files.
+
+### Finding 1.6: `graph.py` return type is `Any` — loses all type safety
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/agent/graph.py:43`
+  ```python
+  def create_agent(checkpoints_db: str = CHECKPOINTS_DB) -> Any:
+  ```
+  The return type `Any` defeats mypy's ability to check downstream usage. The compiled graph type is `CompiledStateGraph` which could be used instead.
+
+### Finding 1.7: `_build_graph` has `# type: ignore[type-arg]` suppression
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/agent/graph.py:22`
+  ```python
+  def _build_graph() -> StateGraph:  # type: ignore[type-arg]
+  ```
+  The type-ignore suppression hides a real generic parameter mismatch. `StateGraph` takes a type parameter — this should be `StateGraph[AgentState]` or the return type annotation should be adjusted.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### Finding 2.1: Empty messages list causes IndexError in `should_continue`
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/nodes.py:72`
+  ```python
+  last_message = state["messages"][-1]
+  ```
+  If `state["messages"]` is empty, `[-1]` raises `IndexError`. While unlikely in the normal graph flow (agent_node always adds a message), an abnormal checkpoint resume or corrupted state could hit this. No guard exists.
+
+### Finding 2.2: `should_continue` checks retry BEFORE checking tool calls — error route masks normal end
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/nodes.py:67-76`
+  ```python
+  if retry_count >= MAX_RETRIES:
+      return "error"
+  last_message = state["messages"][-1]
+  if isinstance(last_message, AIMessage) and last_message.tool_calls:
+      return "tools"
+  return "end"
+  ```
+  When `retry_count` hits exactly 50, even if the LLM has finished and returned a final answer with no tool calls, the function returns `"error"` instead of `"end"`. The agent's final valid response is thrown away and replaced with an error. The retry check should only block continuation to tools, not block a natural end.
+
+### Finding 2.3: `checkpoints_db` path parent directory may not exist
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/graph.py:19,53`
+  ```python
+  CHECKPOINTS_DB = "checkpoints/checkpoints.db"
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  ```
+  If the `checkpoints/` directory does not exist, `sqlite3.connect()` will raise `sqlite3.OperationalError: unable to open database file`. No `os.makedirs` call ensures the directory exists first.
+
+### Finding 2.4: No error message injected into state when retry limit is hit
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/nodes.py:68-69` and `src/agent/graph.py:36`
+  ```python
+  # nodes.py
+  if retry_count >= MAX_RETRIES:
+      logger.error("Retry limit reached (%d turns). Stopping.", retry_count)
+      return "error"
+  
+  # graph.py
+  "error": END,
+  ```
+  When the retry limit is hit, `should_continue` returns `"error"` which routes directly to `END`. But no error message is added to the state's messages. The caller receives whatever the last AI message was, with no indication that the task was terminated due to retry exhaustion. The spec says "the loop terminates with an error message" — but there is no error message.
+
+### Finding 2.5: `agent_node` does not handle LLM API errors
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/nodes.py:57`
+  ```python
+  response = model.invoke(messages)
+  ```
+  If the Anthropic API returns a rate limit error (429), network timeout, auth error (401), or any other exception, it propagates uncaught. The coding standards say "Graph nodes: let LangGraph handle retries via state" — but LangGraph's default behavior on node exceptions is to abort the entire run, not retry. There is no retry-on-transient-error handling anywhere.
+
+### Finding 2.6: `last_message` could be a `ToolMessage` or `HumanMessage` — only `AIMessage` is checked
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/nodes.py:72-76`
+  ```python
+  last_message = state["messages"][-1]
+  if isinstance(last_message, AIMessage) and last_message.tool_calls:
+      return "tools"
+  return "end"
+  ```
+  If `should_continue` is ever called after a `ToolMessage` or `HumanMessage` is the last message (e.g., due to graph topology changes or manual state manipulation), it defaults to `"end"`. This is safe but may silently terminate when continuation was intended.
+
+### Finding 2.7: SQLite connection with `check_same_thread=False` on Windows MINGW64
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/graph.py:53`
+  The environment is MINGW64 on Windows. SQLite on Windows can have locking issues with paths that contain certain characters or when multiple processes access the same file. The relative path `checkpoints/checkpoints.db` could resolve differently depending on CWD, leading to multiple connections to different files or to the wrong file.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### Finding 3.1: No error message added to state on retry exhaustion (violates AC #3)
+- **Severity:** CRITICAL
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC #3 states: _"Then the loop terminates **with an error message** rather than running indefinitely"_
+  
+  `src/agent/nodes.py:68-69` — `should_continue` returns `"error"` but injects no message:
+  ```python
+  if retry_count >= MAX_RETRIES:
+      logger.error(...)
+      return "error"
+  ```
+  The graph routes `"error" → END` in `graph.py:36`, but the state's messages list contains no error indication. Only a log line is emitted. The spec requires an **error message** (presumably in the agent's output), not just a log.
+
+### Finding 3.2: `retry_count` increment is off-by-one for 50-turn cap (potential AC #3 issue)
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC #3: _"When the agent exceeds 50 LLM turns"_
+  
+  `src/agent/nodes.py:59`: `retry_count = state.get("retry_count", 0) + 1` — incremented AFTER the LLM call.
+  `src/agent/nodes.py:68`: `if retry_count >= MAX_RETRIES` — checked BEFORE the next LLM call.
+  
+  On turn 50: `agent_node` is called, LLM runs, retry_count becomes 50, returned to state. Then `should_continue` sees 50 >= 50, returns `"error"`. So the agent gets exactly 50 LLM calls — this matches AC #3's "exceeds 50 turns" since the 50th call completes but no 51st is made. However, "exceeds" is ambiguous — it could mean the cap should trigger at 51, not 50. The implementation triggers at exactly 50, which is arguably "at" not "exceeds."
+
+### Finding 3.3: `context_files` not in `AgentState` — undocumented state field
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC #2 specifies the exact state fields: `messages`, `task_id`, `retry_count`, `current_phase`, `agent_role`, `files_modified`.
+  
+  `src/agent/nodes.py:46`:
+  ```python
+  context_files: list[str] | None = state.get("context_files")  # type: ignore[assignment]
+  ```
+  This accesses a field not in the schema. While `TypedDict.get()` on an unknown key returns `None` at runtime, it violates the principle of a well-defined state schema. If `context_files` is needed, it should be in `AgentState`.
+
+### Finding 3.4: `create_trace_config` and `build_trace_config` are out of scope for this story
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:** The story spec (Task 4) says to "Export a `create_agent()` function that returns the compiled graph." The `create_trace_config` function in `graph.py:58-89` and its dependency on `src/multi_agent/roles.py` are not mentioned in the story spec at all. This is scope creep — it adds functionality and a dependency (`src.multi_agent.roles`) that belongs to a different story.
+
+### Finding 3.5: Missing test for graph edge topology (partial AC #1 coverage)
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC #1: _"it enters the ReAct loop: agent_node → should_continue → tool_node → agent_node (repeat)"_
+  
+  `tests/test_agent/test_graph.py` tests that the graph compiles and has `agent`/`tools` nodes, but does NOT verify:
+  - `START → agent` edge
+  - `agent → should_continue` conditional edge
+  - `tools → agent` edge
+  - The conditional edge mapping (`tools`/`end`/`error`)
+  
+  The tests only check node existence, not the edge topology that AC #1 specifically requires.
+
+### Finding 3.6: No test for session resumption with `thread_id` (AC #4)
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC #4: _"the session can be resumed with the same `thread_id`"_
+  
+  No test in `test_graph.py` or anywhere else verifies that:
+  1. State is persisted after node execution
+  2. A session can be resumed by passing the same `thread_id`
+  
+  The `create_trace_config` tests verify config structure but don't test actual persistence/resumption.
+
+### Finding 3.7: `test_state.py` has `type: ignore` comment on valid TypedDict construction
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `tests/test_agent/test_state.py:35`
+  ```python
+  state: AgentState = {  # type: ignore[typeddict-unknown-key]
+  ```
+  The `typeddict-unknown-key` suppression suggests mypy detects a mismatch. Since `AgentState` extends `MessagesState`, the `messages` field is inherited — this should work without type-ignore. The suppression may mask a real issue with how `MessagesState` is typed.
+
+### Finding 3.8: Task 5 spec says "Load API key from environment variable" — not explicitly done
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Task 5: _"Load API key from environment variable"_
+  
+  `src/agent/nodes.py:42`:
+  ```python
+  model = ChatAnthropic(model=DEFAULT_MODEL).bind_tools(tools)
+  ```
+  `ChatAnthropic` loads `ANTHROPIC_API_KEY` from the environment by default via `langchain-anthropic`'s internals. This works but is implicit — if the env var is missing, the error message comes from deep inside langchain, not from explicit validation at the Shipyard layer.
+
+### Finding 3.9: `coding-standards.md` says "No dead code" — `type: ignore` comments suppress real warnings
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** Multiple `# type: ignore` comments across files:
+  - `src/agent/graph.py:22`: `# type: ignore[type-arg]`
+  - `src/agent/nodes.py:42`: `# type: ignore[call-arg]`
+  - `src/agent/nodes.py:46`: `# type: ignore[assignment]`
+  - `tests/test_agent/test_state.py:35`: `# type: ignore[typeddict-unknown-key]`
+  - `tests/test_agent/test_nodes.py:19`: `# type: ignore[typeddict-unknown-key]`
+  
+  While `type: ignore` isn't "dead code" per se, the coding standards demand strict mypy. Suppressing warnings is at tension with that goal.
+
+---
+
+## Summary
+
+**Issues Found: 18**
+
+| Layer | Count |
+|---|---|
+| Blind Hunter | 7 |
+| Edge Case Hunter | 7 |
+| Acceptance Auditor | 9 |
+
+| Severity | Count |
+|---|---|
+| CRITICAL | 1 |
+| HIGH | 5 |
+| MEDIUM | 7 |
+| LOW | 5 |
+
+### Top Priority Items (CRITICAL + HIGH)
+
+1. **[CRITICAL] 3.1** — No error message in state on retry exhaustion — directly violates AC #3
+2. **[HIGH] 1.1** — New ChatAnthropic instance every turn — performance problem
+3. **[HIGH] 1.3** — SQLite connection leaked — no close mechanism
+4. **[HIGH] 2.1** — Empty messages list causes IndexError in `should_continue`
+5. **[HIGH] 2.4** — Same underlying issue as 3.1 (no error message on retry limit)
+6. **[HIGH] 2.5** — No handling for LLM API errors (rate limits, timeouts)
+7. **[HIGH] 3.6** — No test for session resumption (AC #4 untested)
+================================================================================
+
+2026-03-23 23:22:22 [SUCCESS] Code review complete for 1-4-core-agent-loop - Issues found: 18 - Duration: 2m 25s
+2026-03-23 23:22:22 [INFO] [5/7] Processing: 1-5-context-injection-system (status: complete)
+2026-03-23 23:22:22 [REVIEW] ==========================================
+2026-03-23 23:22:22 [REVIEW] Reviewing: 1-5-context-injection-system (status: complete)
+2026-03-23 23:22:23 [REVIEW] ==========================================
+2026-03-23 23:22:28 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 1-5-context-injection-system | Time: 2026-03-23 23:22:28
+================================================================================
+You are performing a BMAD-style adversarial code review for story 1-5-context-injection-system.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-5-context-injection-system.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 1-5-context-injection-system
+================================================================================
+I'll proceed with the code review now. The prompt log edit was denied — I'll move forward with the audit.
+
+Now I have all the files read. Let me compile the full adversarial review.
+
+---
+
+# BMAD Adversarial Code Review: Story 1-5 — Context Injection System
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+*Code-only review — no spec consulted*
+
+### Finding 1.1: `context_files` field missing from `AgentState` schema
+
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/agent/nodes.py:46` — `state.get("context_files")` is accessed, but `src/agent/state.py` defines `AgentState` with no `context_files` field. The `AgentState` class has `task_id`, `retry_count`, `current_phase`, `agent_role`, `files_modified` — but no `context_files`. This means `state.get("context_files")` will always return `None` at runtime because `MessagesState` (the parent) does not define it either. The `# type: ignore[assignment]` comment on line 46 suppresses the type checker's warning about this exact mismatch.
+- **File:** `src/agent/nodes.py:46`, `src/agent/state.py:15-26`
+
+### Finding 1.2: System prompt never updated after first message injection
+
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/agent/nodes.py:54-55` — The system prompt is only injected if the first message is NOT already a `SystemMessage`. On the first call, a `SystemMessage` is prepended. On subsequent calls in the ReAct loop, `messages[0]` IS already a `SystemMessage` (from the first turn), so the freshly-built system prompt is silently discarded. If `agent_role` or `context_files` changes mid-session, the stale system prompt persists.
+- **File:** `src/agent/nodes.py:54-55`
+
+### Finding 1.3: `coding-standards.md` path is relative — depends on working directory
+
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/context/injection.py:19` — `CODING_STANDARDS_PATH = "coding-standards.md"` is a relative path. If the process is started from a directory other than the project root (e.g., inside Docker, from `src/`, via a test runner with a different cwd), the file will not be found. The function silently logs a warning and continues without coding standards.
+- **File:** `src/context/injection.py:19`
+
+### Finding 1.4: `ChatAnthropic` re-instantiated on every agent turn
+
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/agent/nodes.py:42` — `ChatAnthropic(model=DEFAULT_MODEL).bind_tools(tools)` creates a new model client instance on every single `agent_node` call. In a 50-turn session, this creates 50 client instances. This adds latency for connection setup and is wasteful.
+- **File:** `src/agent/nodes.py:42`
+
+### Finding 1.5: `get_prompt` raises `ValueError` but `build_system_prompt` does not catch it
+
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/agent/prompts.py:117-121` — `get_prompt` raises `ValueError` for unknown roles. `src/context/injection.py:50` calls `get_prompt(role)` without a try/except, so `build_system_prompt` propagates the exception. This is caught in `nodes.py:49`, but `build_system_prompt`'s docstring says "Returns: Complete system prompt string" — it doesn't document that it can raise `ValueError`. The exception is an undocumented contract leak.
+- **File:** `src/agent/prompts.py:117-121`, `src/context/injection.py:50`
+
+### Finding 1.6: `tmp_path` fixture typed as `object` instead of `Path`
+
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `tests/test_context/test_injection.py:32,44` — `tmp_path: object` loses type information. Pytest's `tmp_path` fixture returns `pathlib.Path`. Using `object` forces `str(tmp_path)` conversions and suppresses IDE/type-checker help.
+- **File:** `tests/test_context/test_injection.py:32,44`
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### Finding 2.1: Empty `context_files` list treated differently from `None`
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/context/injection.py:60` — `if context_files:` is falsy for both `None` and `[]`, so an empty list is handled correctly. However, the type signature `list[str] | None` permits `[]` which behaves identically to `None`. No issue at runtime, but callers might expect `[]` to trigger the loop.
+- **File:** `src/context/injection.py:60`
+
+### Finding 2.2: Path traversal — no validation on `context_files` paths
+
+- **Severity:** HIGH
+- **Category:** SECURITY / EDGE_CASE
+- **Evidence:** `src/context/injection.py:61-65` and `88-94` — Both `build_system_prompt` and `inject_task_context` accept arbitrary file paths in `context_files` and read them with `open()`. There is no validation that paths are within the project directory. An attacker (or misconfigured agent) could inject paths like `../../.env`, `/etc/passwd`, or `C:\Users\...\credentials.json` to exfiltrate sensitive data into the LLM prompt.
+- **File:** `src/context/injection.py:22-29`
+
+### Finding 2.3: Extremely large file injection — no size limit on context files
+
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/context/injection.py:24-26` — `_read_file_safe` reads entire files with `f.read()` with no size cap. A multi-megabyte file would be injected verbatim into the system prompt, potentially blowing the context window or causing massive token costs. The coding standards specify truncation at 5000 chars for tool output, but context injection has no equivalent guard.
+- **File:** `src/context/injection.py:24-26`
+
+### Finding 2.4: Binary file injection causes garbled prompt
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/context/injection.py:24-26` — If a binary file (e.g., `.pyc`, `.db`, image) is passed as a context file, `f.read()` with `encoding="utf-8"` will raise `UnicodeDecodeError`, which is caught by `except Exception as e:` and logged as a warning. The file is silently skipped in `build_system_prompt` but marked as "(file not available)" in `inject_task_context`. This is acceptable but inconsistent behavior between the two functions.
+- **File:** `src/context/injection.py:24-29, 89-94`
+
+### Finding 2.5: Empty instruction string produces minimal message
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/context/injection.py:96` — If `instruction=""` is passed, the result is `"## Instruction\n"` — a section header with no content. No validation rejects empty instructions.
+- **File:** `src/context/injection.py:96`
+
+### Finding 2.6: `agent_role` default "dev" masks misconfigured state
+
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/nodes.py:45` — `state.get("agent_role", "dev")` silently defaults to "dev" if no role is set. If an orchestrator forgets to set `agent_role`, the agent runs as a dev agent with full write permissions — the most privileged role — without any warning.
+- **File:** `src/agent/nodes.py:45`
+
+### Finding 2.7: First message being `SystemMessage` from a previous run
+
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/agent/nodes.py:54-55` — If state is restored from a checkpoint where `messages[0]` is already a `SystemMessage` from a previous role configuration, the current role's system prompt is silently discarded. A restored session could run under a stale role prompt that no longer matches `state["agent_role"]`.
+- **File:** `src/agent/nodes.py:54-55`
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### Finding 3.1: `inject_task_context` not integrated into `agent_node` — AC #2 partially unmet
+
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Story spec Task 4 says: "Task context files (Layer 2) are injected into the human message." AC #2 says: "the task-specific files are read and included in the message context." However, `src/agent/nodes.py` only calls `build_system_prompt` (Layer 1). It never calls `inject_task_context`. Layer 2 context injection is implemented as a function but not wired into the agent loop. The completion notes claim integration, but the code shows no Layer 2 usage in `agent_node`.
+- **File:** `src/agent/nodes.py:36-62`
+
+### Finding 3.2: `context_files` field undeclared in `AgentState` — Task 4 incomplete
+
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Task 4 requires the agent to access `context_files` from state. `AgentState` in `src/agent/state.py` does not declare a `context_files` field. The `state.get("context_files")` on `nodes.py:46` works only because `state` is a `TypedDict` that permits arbitrary `.get()` calls — but there's no way to actually populate this field through the graph's typed state schema.
+- **File:** `src/agent/state.py:15-26`, `src/agent/nodes.py:46`
+
+### Finding 3.3: Story spec format `"## Context: {filename}\n{content}\n\n"` not exactly followed
+
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Story Task 2 specifies: `Format: "## Context: {filename}\n{content}\n\n"` followed by `"## Instruction\n{instruction}"`. The implementation uses `os.path.basename(file_path)` for the filename, which strips directory paths — e.g., `path/to/task-spec.md` becomes just `task-spec.md`. The spec says `{filename}` which is ambiguous, but using basename loses path context that could disambiguate files with the same name.
+- **File:** `src/context/injection.py:64,92`
+
+### Finding 3.4: Missing test for Layer 2 integration in graph — AC #2 not fully tested
+
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Task 5 says: "Test `inject_task_context` — reads context files, formats correctly." Tests exist for the standalone function (`TestInjectTaskContext`), but there is no test verifying that Layer 2 context is actually injected when the agent processes a task. Since Finding 3.1 shows it isn't wired in, this is expected — but it means AC #2 is untested at the integration level.
+- **File:** `tests/test_context/test_injection.py`
+
+### Finding 3.5: `build_system_prompt` raises `ValueError` — contradicts `nodes.py` fallback intent
+
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:** The story completion notes say "Fallback to original prompt if unknown role is provided." The implementation does have a try/except in `nodes.py:47-51` that catches `ValueError` and falls back to `FALLBACK_SYSTEM_PROMPT`. However, `build_system_prompt` itself raises rather than returning a fallback — the fallback logic is split across two files. The docstring for `build_system_prompt` (line 35-46) does not document this exception.
+- **File:** `src/context/injection.py:50`, `src/agent/nodes.py:47-51`
+
+### Finding 3.6: No test for `agent_node` integration with `build_system_prompt`
+
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Task 4 says: "`agent_node` calls `build_system_prompt(state["agent_role"])` to get the system prompt." Task 5 doesn't explicitly list testing the integration, but the acceptance criteria require it ("When the agent starts a session, Then Layer 1 context is included in the system prompt for every invocation"). No test in `test_injection.py` or elsewhere verifies that `agent_node` actually calls `build_system_prompt` and passes the result to the model.
+- **File:** `tests/test_context/test_injection.py`
+
+### Finding 3.7: Coding standards require docstring on `_read_file_safe` but it's private
+
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `coding-standards.md` says: "Not required on private helpers (`_prefixed` functions)." The `_read_file_safe` function at `injection.py:22` has a docstring, which is fine — it's not a violation to have one, just not required. No issue here on closer inspection. **(RETRACTED — not a finding.)**
+
+### Finding 3.8: Inconsistent missing-file handling between `build_system_prompt` and `inject_task_context`
+
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** In `build_system_prompt` (line 63), a missing context file is silently skipped (no content added). In `inject_task_context` (line 94), a missing context file adds `"(file not available)"` text. The two Layer 1 and Layer 2 functions handle the same error case differently without documented rationale.
+- **File:** `src/context/injection.py:63 vs 94`
+
+---
+
+## SUMMARY
+
+| Metric | Count |
+|---|---|
+| **Total Issues Found** | **16** |
+| **By Layer** | Blind Hunter: **6**, Edge Case Hunter: **7**, Acceptance Auditor: **6** (1 retracted = **5 net**) |
+| **By Severity** | Critical: **0**, High: **3**, Medium: **6**, Low: **7** |
+
+### High-Severity Items Requiring Attention
+
+1. **Finding 1.1** — `context_files` not in `AgentState` — the field is accessed but never declarable through the state schema
+2. **Finding 2.2** — Path traversal risk — no validation on context file paths injected into LLM prompts
+3. **Finding 3.1** — `inject_task_context` (Layer 2) is implemented but never called from `agent_node` — AC #2 is functionally unmet at the integration level
+
+**Issues Found: 16**
+**By Layer:** Blind Hunter: 6, Edge Case Hunter: 7, Acceptance Auditor: 5
+**By Severity:** Critical: 0, High: 3, Medium: 6, Low: 7
+================================================================================
+
+2026-03-23 23:24:43 [SUCCESS] Code review complete for 1-5-context-injection-system - Issues found: 16 - Duration: 2m 15s
+2026-03-23 23:24:43 [INFO] [6/7] Processing: 1-6-persistent-server-cli-entry-point (status: complete)
+2026-03-23 23:24:44 [REVIEW] ==========================================
+2026-03-23 23:24:44 [REVIEW] Reviewing: 1-6-persistent-server-cli-entry-point (status: complete)
+2026-03-23 23:24:44 [REVIEW] ==========================================
+2026-03-23 23:24:49 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 1-6-persistent-server-cli-entry-point | Time: 2026-03-23 23:24:50
+================================================================================
+You are performing a BMAD-style adversarial code review for story 1-6-persistent-server-cli-entry-point.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-6-persistent-server-cli-entry-point.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 1-6-persistent-server-cli-entry-point
+================================================================================
+Moving on to deliver the review — I'll log the prompt after.
+
+---
+
+# Adversarial Code Review: Story 1.6 — Persistent Server & CLI Entry Point
+
+**Files reviewed:**
+- `src/main.py` (implementation)
+- `tests/test_main.py` (tests)
+- `src/agent/graph.py` (dependency — graph factory)
+- `src/agent/state.py` (dependency — state schema)
+- `src/agent/nodes.py` (dependency — node functions)
+- `src/multi_agent/roles.py` (dependency — trace config)
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+### Finding 1.1: Blocking synchronous `graph.invoke()` inside async FastAPI endpoint
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/main.py:82-85` — The `instruct` endpoint is declared `async def` but calls `graph.invoke()` which is a synchronous blocking call. In an async FastAPI app, this blocks the event loop, meaning concurrent requests are serialized. A long-running agent invocation will freeze the entire server (including `/health`).
+```python
+@app.post("/instruct", response_model=InstructResponse)
+async def instruct(request: InstructRequest) -> InstructResponse:
+    ...
+    result = graph.invoke(  # blocking call in async context
+```
+
+### Finding 1.2: Module-level side effects — `load_dotenv()` and `create_agent()` execute on import
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `src/main.py:28-34` — `load_dotenv()`, `os.makedirs()`, and `create_agent()` run at module import time. This means importing `src.main` for any reason (including test imports, type-checking, IDE indexing) triggers file system operations and SQLite connection setup. Tests must mock the graph to work around this.
+```python
+load_dotenv()
+os.makedirs("checkpoints", exist_ok=True)
+graph = create_agent()
+```
+
+### Finding 1.3: SQLite `check_same_thread=False` without connection synchronization
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/agent/graph.py:53` — The SQLite connection is created with `check_same_thread=False` to allow cross-thread usage, but there's no mutex/lock protecting concurrent writes. FastAPI running with multiple threads (uvicorn default) could produce `sqlite3.OperationalError: database is locked` under concurrent `/instruct` requests.
+```python
+conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+```
+
+### Finding 1.4: Checkpoints path mismatch between `main.py` and `graph.py`
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/main.py:31` creates `checkpoints/` directory, but `src/agent/graph.py:19` uses `checkpoints/checkpoints.db`. Meanwhile `main.py` calls `create_agent()` with no arguments, so it defaults to `checkpoints/checkpoints.db`. The `os.makedirs` in `main.py` creates `checkpoints/` which is the parent directory — this works but the comment says "Ensure checkpoints directory exists" and the story spec says path should be `checkpoints/shipyard.db` (story spec Task 4). The actual db name is `checkpoints.db`, not `shipyard.db` as spec'd.
+```python
+# main.py:31
+os.makedirs("checkpoints", exist_ok=True)
+# graph.py:19
+CHECKPOINTS_DB = "checkpoints/checkpoints.db"
+```
+
+### Finding 1.5: Empty string response returned silently when no AIMessage found
+- **Severity:** LOW
+- **Category:** LOGIC
+- **Evidence:** `src/main.py:103` — `_extract_response` returns `""` if the graph returns no `AIMessage`. This is passed directly to the client with no indication that the agent failed to produce a response. A 200 OK with an empty `response` field is indistinguishable from success.
+```python
+    return ""
+```
+
+### Finding 1.6: No request body validation for empty message
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/main.py:44` — `InstructRequest.message` is typed as `str` with no `min_length` constraint. A POST with `{"message": ""}` or `{"message": "   "}` will be processed by the agent, wasting an LLM call on blank input.
+```python
+class InstructRequest(BaseModel):
+    message: str  # no min_length or validator
+```
+
+### Finding 1.7: `host="0.0.0.0"` default binds to all interfaces
+- **Severity:** LOW
+- **Category:** SECURITY
+- **Evidence:** `src/main.py:152` — Default host is `0.0.0.0` which binds to all network interfaces. In a development context this exposes the server to the local network. Not a critical issue since this is intended for Docker, but the default for local dev could be `127.0.0.1`.
+```python
+parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+```
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### Finding 2.1: No error handling around `graph.invoke()` in the `/instruct` endpoint
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Edge case:** If the agent graph raises any exception (LLM API timeout, rate limit, SQLite corruption, network error), the endpoint returns an unhandled 500 with a raw stack trace. No structured error response.
+- **Evidence:** `src/main.py:82-85`
+```python
+result = graph.invoke(
+    {"messages": [HumanMessage(content=request.message)]},
+    config=config,
+)
+# No try/except — any exception propagates to FastAPI's default 500 handler
+```
+
+### Finding 2.2: No error handling around `graph.invoke()` in CLI mode
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Edge case:** If the LLM call fails in CLI mode (API key missing, network down), the entire CLI crashes with an unhandled exception instead of printing an error and returning to the prompt.
+- **Evidence:** `src/main.py:133-136`
+```python
+result = graph.invoke(
+    {"messages": [HumanMessage(content=stripped)]},
+    config=config,
+)
+# No try/except — crash on any graph error
+```
+
+### Finding 2.3: `AgentState` required fields not provided by `graph.invoke()` input
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Edge case:** `AgentState` schema (state.py:15-26) defines required fields: `task_id`, `retry_count`, `current_phase`, `agent_role`, `files_modified`. But the `graph.invoke()` call in `main.py:82-85` only passes `{"messages": [...]}`. The other fields have no defaults in the TypedDict. Whether this works depends on LangGraph's runtime behavior with missing state fields — it may error or produce undefined behavior.
+- **Evidence:** `src/agent/state.py:22-26` and `src/main.py:82-85`
+```python
+# state.py
+class AgentState(MessagesState):
+    task_id: str
+    retry_count: int
+    current_phase: str
+    agent_role: str
+    files_modified: Annotated[list[str], operator.add]
+
+# main.py — only messages provided
+result = graph.invoke(
+    {"messages": [HumanMessage(content=request.message)]},
+    config=config,
+)
+```
+
+### Finding 2.4: `AIMessage.content` can be a list of content blocks, not just a string
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Edge case:** In LangChain, `AIMessage.content` can be `str | list[dict]` (for multi-modal or tool-use responses). The `_extract_response` function checks `msg.content` is truthy and calls `str(msg.content)`, which for a list would produce a repr string like `"[{'type': 'text', ...}]"` rather than the actual text content.
+- **Evidence:** `src/main.py:101-102`
+```python
+if isinstance(msg, AIMessage) and msg.content:
+    return str(msg.content)  # may stringify a list of dicts
+```
+
+### Finding 2.5: Relative path `checkpoints/` depends on working directory
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Edge case:** Both `os.makedirs("checkpoints", exist_ok=True)` and `CHECKPOINTS_DB = "checkpoints/checkpoints.db"` use relative paths. If the server is started from a different working directory (e.g., `python -m src.main` from a parent directory), the checkpoints directory is created in the wrong location and the SQLite DB path diverges.
+- **Evidence:** `src/main.py:31`, `src/agent/graph.py:19`
+
+### Finding 2.6: `session_id` is used as both `session_id` and `task_id` in trace config
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Edge case:** `create_trace_config(session_id=session_id, task_id=session_id)` reuses the session ID as the task ID. This means LangSmith traces will show UUIDs as task IDs rather than meaningful task identifiers (like "story-42"). Not a bug but degrades observability.
+- **Evidence:** `src/main.py:80`
+```python
+config = create_trace_config(session_id=session_id, task_id=session_id)
+```
+
+### Finding 2.7: No timeout on `graph.invoke()` — could run indefinitely
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Edge case:** The graph has a 50-turn retry limit but no wall-clock timeout. A single turn with a slow or hung LLM call could block the server thread indefinitely. There's no request timeout configured at the FastAPI or uvicorn level.
+- **Evidence:** `src/main.py:82-85`, `src/agent/nodes.py:22` (`MAX_RETRIES = 50`)
+
+### Finding 2.8: SQLite connection is never closed
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Edge case:** `src/agent/graph.py:53-54` creates a SQLite connection that is never explicitly closed. The connection lives for the lifetime of the module-level `graph` object. On process exit this is fine (Python GC handles it), but if `create_agent()` were called multiple times, connections would leak.
+- **Evidence:** `src/agent/graph.py:53`
+```python
+conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+memory = SqliteSaver(conn)
+return graph.compile(checkpointer=memory)  # conn never closed
+```
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### Finding 3.1: Checkpoints DB path deviates from spec
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC/Rule violated:** Story spec Task 4: "SQLite checkpointer path: `checkpoints/shipyard.db`"
+- **Evidence:** `src/agent/graph.py:19` — Actual path is `checkpoints/checkpoints.db`, not `checkpoints/shipyard.db` as specified.
+```python
+CHECKPOINTS_DB = "checkpoints/checkpoints.db"
+```
+
+### Finding 3.2: `instruct` endpoint is async but blocks the event loop — violates "persistent server" intent
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC/Rule violated:** AC #4: "the agent processes it without restarting — persistent loop confirmed" and the spec intent that the server "stay alive between requests." While the server stays alive, blocking `graph.invoke()` in an async endpoint means concurrent requests are effectively serialized, defeating the purpose of an async server.
+- **Evidence:** `src/main.py:70,82` — `async def instruct` calls synchronous `graph.invoke()`
+
+### Finding 3.3: No error handling violates "fail-loud semantics" from project context
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC/Rule violated:** `project-context.md` Critical Rule: "Fail-loud semantics: Non-negotiable — errors must surface immediately, never silently swallowed." The empty string return from `_extract_response` silently swallows the case where the agent produces no response. Additionally, unhandled exceptions from `graph.invoke()` produce raw 500 errors rather than structured fail-loud responses.
+- **Evidence:** `src/main.py:103` returns `""` silently; `src/main.py:82-85` has no error handling.
+
+### Finding 3.4: Test for server startup mocks `uvicorn.run` at wrong path
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC/Rule violated:** Testing correctness — AC #3, #4 test coverage
+- **Evidence:** `tests/test_main.py:142` — `patch("uvicorn.run")` patches the module-level `uvicorn.run`, but in `main.py:160-162` uvicorn is imported locally inside the `else` branch (`import uvicorn`; `uvicorn.run(...)`). The mock should be `patch("src.main.uvicorn.run")` or the local import makes patching fragile. It works because `uvicorn` is already imported in the test's Python process and the mock intercepts the module-level name, but this is a fragile pattern.
+```python
+# test_main.py:142
+patch("uvicorn.run") as mock_uvicorn,
+# main.py:160-162
+import uvicorn
+uvicorn.run("src.main:app", ...)
+```
+
+### Finding 3.5: Missing test for CLI `graph.invoke()` integration
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC/Rule violated:** AC #3: "the agent processes it using the same `agent.invoke()` path as the HTTP API" — Tests verify CLI argument parsing launches `_run_cli()` but never test that `_run_cli()` calls `graph.invoke()`. There is no test that verifies the CLI actually invokes the graph.
+- **Evidence:** `tests/test_main.py:130-136` — only tests that `_run_cli` is called, not what it does.
+
+### Finding 3.6: `_extract_response` docstring missing — coding standards require docstrings on all public helpers
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **AC/Rule violated:** `coding-standards.md`: "Required on all public functions and classes" — `_extract_response` is a private helper (prefixed with `_`), so this is actually exempt per the standard. **No issue.** *(Self-corrected — withdrawn.)*
+
+### Finding 3.7: Uvicorn startup uses string import path, not app object directly
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **AC/Rule violated:** Story spec Dev Notes: "Use `uvicorn.run(app, host='0.0.0.0', port=8000)` for programmatic server start"
+- **Evidence:** `src/main.py:162` passes string `"src.main:app"` instead of the `app` object directly. This is actually correct for `--reload` support (uvicorn needs the import string for reload), but it deviates from the spec's exact guidance.
+```python
+uvicorn.run("src.main:app", host=args.host, port=args.port, reload=args.reload)
+```
+
+---
+
+## SUMMARY
+
+| Metric | Count |
+|---|---|
+| **Total Issues Found** | **16** |
+| **By Layer** | |
+| Blind Hunter | 7 |
+| Edge Case Hunter | 8 |
+| Acceptance Auditor | 6 |
+| **By Severity** | |
+| Critical | 0 |
+| High | 3 |
+| Medium | 7 |
+| Low | 6 |
+
+### High-Priority Items Requiring Attention
+
+1. **[1.1 / 3.2] Blocking sync call in async endpoint** — `graph.invoke()` is synchronous but called from `async def instruct`. Either make the endpoint `def` (not async) so FastAPI runs it in a threadpool, or use `asyncio.to_thread(graph.invoke, ...)`.
+
+2. **[2.1] No error handling around `graph.invoke()`** — Any graph/LLM failure results in unstructured 500 errors. Needs try/except with a structured error response.
+
+3. **[2.3] Missing required state fields in `graph.invoke()` input** — The `AgentState` defines `task_id`, `retry_count`, `current_phase`, `agent_role`, and `files_modified` as required, but the invoke call only provides `messages`. Needs investigation to confirm LangGraph handles this gracefully.
+================================================================================
+
+2026-03-23 23:27:11 [SUCCESS] Code review complete for 1-6-persistent-server-cli-entry-point - Issues found: unknown - Duration: 2m 22s
+2026-03-23 23:27:12 [INFO] [7/7] Processing: 1-7-repository-documentation-setup-guide (status: complete)
+2026-03-23 23:27:12 [REVIEW] ==========================================
+2026-03-23 23:27:12 [REVIEW] Reviewing: 1-7-repository-documentation-setup-guide (status: complete)
+2026-03-23 23:27:12 [REVIEW] ==========================================
+2026-03-23 23:27:17 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 1-7-repository-documentation-setup-guide | Time: 2026-03-23 23:27:18
+================================================================================
+You are performing a BMAD-style adversarial code review for story 1-7-repository-documentation-setup-guide.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/1-7-repository-documentation-setup-guide.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 1-7-repository-documentation-setup-guide
+================================================================================
+I'll proceed with the review while the prompt log permission is pending.
+
+---
+
+# Adversarial Code Review: Story 1-7 — Repository Documentation & Setup Guide
+
+---
+
+## LAYER 1: BLIND HUNTER
+*Code reviewed with no regard for the spec — purely from what's visible in the code itself.*
+
+### Finding 1.1: `git_snapshot.sh` uses `git add -A` — stages everything including secrets
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `scripts/git_snapshot.sh:11` — `git add -A && git commit -m "$1"`
+- **Detail:** `git add -A` stages all files in the working directory. If an agent or user accidentally creates a `.env` file, credentials file, or any other sensitive artifact that isn't covered by `.gitignore`, this script will silently stage and commit it. While `.env` is in `.gitignore`, any other secret file (e.g., `secrets.json`, `credentials.yaml`, service account key files) would be committed. An automated agent pipeline calling this script has no human review gate.
+
+### Finding 1.2: `git_snapshot.sh` commit message argument is not sanitized
+- **Severity:** LOW
+- **Category:** SECURITY
+- **Evidence:** `scripts/git_snapshot.sh:11` — `git commit -m "$1"`
+- **Detail:** The `$1` argument is properly double-quoted (preventing word splitting), but git commit messages containing special characters or extremely long strings are passed through unvalidated. This is low risk since the script is called by agents, not external users, and git itself handles edge cases.
+
+### Finding 1.3: `run_tests.sh` detection of `pytest-cov` uses Python import check but runs pytest as CLI
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `scripts/run_tests.sh:6` — `if python -c "import pytest_cov" 2>/dev/null;`
+- **Detail:** The script checks if `pytest_cov` is importable by the `python` binary on `PATH`, but runs `pytest` as a CLI tool. If `python` and `pytest` resolve to different environments (e.g., a venv is partially activated), the import check could pass/fail incorrectly relative to what pytest actually has available. Minor in practice.
+
+### Finding 1.4: README shows `<repo-url>` as a placeholder that could confuse automated tooling
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `README.md:17` — `git clone <repo-url> shipyard`
+- **Detail:** The placeholder `<repo-url>` is not filled in. The GitHub remote is `https://github.com/dmalcorn/shipyard.git` per the prompt log. An evaluator would need to know the URL to clone. This is a documentation completeness gap.
+
+### Finding 1.5: `local_ci.sh` runs `ruff format --check` but README omits format check from lint section
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `scripts/local_ci.sh:9` runs `ruff format --check src/ tests/`, but `README.md:105-106` only shows `ruff check src/ tests/` and `ruff format --check src/ tests/` — actually the README does include `ruff format --check` on line 106. No issue upon closer inspection.
+
+### Finding 1.6: Docker Dockerfile does not copy `.env.example` or `scripts/` or `tests/`
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `Dockerfile:8` — only `COPY src/ src/` is performed
+- **Detail:** The Docker image only contains `src/` and `requirements.txt`. This is correct for production (no dev tools in container), but means `docker compose up` has no way to run the local CI or tests inside the container. This is acceptable architecture but worth noting.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*Walking every branching path and boundary condition. Reporting only unhandled edge cases.*
+
+### Finding 2.1: `git_snapshot.sh` — empty string commit message bypasses the validation
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `scripts/git_snapshot.sh:6-8`
+  ```bash
+  if [ -z "${1:-}" ]; then
+      echo "Usage: bash scripts/git_snapshot.sh \"commit message\""
+      exit 1
+  fi
+  ```
+- **Edge case:** Passing an empty quoted string (`bash scripts/git_snapshot.sh ""`) will pass the `-z` check as false (empty string is still "set"), then `git commit -m ""` will be invoked. Git rejects empty commit messages by default, so this would fail at the git level — not a silent error, but the error message would be a raw git error rather than the script's usage hint.
+
+### Finding 2.2: `git_snapshot.sh` — no changes to commit
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `scripts/git_snapshot.sh:11` — `git add -A && git commit -m "$1"`
+- **Edge case:** If there are no changes in the working directory, `git add -A` succeeds (no-op), but `git commit` fails with "nothing to commit, working tree clean". With `set -e`, the script exits with non-zero. In an agent pipeline, this error may be misinterpreted as a failure rather than an idempotent no-op.
+
+### Finding 2.3: `run_tests.sh` — no `tests/` directory
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `scripts/run_tests.sh:7-9` — `pytest tests/ -v --tb=short`
+- **Edge case:** If the `tests/` directory doesn't exist or is empty, pytest returns a non-zero exit code. With `set -e`, the script fails. This is unlikely in this project but the script has no guard.
+
+### Finding 2.4: `local_ci.sh` — no `src/` or `tests/` directory
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `scripts/local_ci.sh:6` — `ruff check src/ tests/`
+- **Edge case:** Same as 2.3 — if either directory is missing, ruff/mypy/pytest fail. Expected to always exist, so this is defensive-coding-level concern.
+
+### Finding 2.5: `run_tests.sh` — `python` vs `python3` on systems where `python` doesn't exist
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `scripts/run_tests.sh:6` — `python -c "import pytest_cov"`
+- **Edge case:** On some Linux/macOS systems, `python` is not on PATH (only `python3`). The shebang uses `#!/usr/bin/env bash` so the script itself runs fine, but the `python` invocation inside could fail with "command not found." Since the project uses a venv (`.venv/bin/python`), this is only an issue if the user forgets to activate the venv. However, the `pytest` command on line 7/9 would similarly require the venv. This is a consistency gap — the script assumes venv is activated but doesn't verify.
+
+### Finding 2.6: Scripts assume Unix shell — Windows MINGW64 compatibility
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** All three scripts use `#!/usr/bin/env bash` and Unix commands
+- **Edge case:** The development environment is MINGW64 on Windows. Bash scripts generally work under MINGW64/Git Bash, but some edge cases exist (e.g., path separators, `setsid` not available as noted in the prompt log at 10:44 PM CDT). The scripts themselves don't use any Windows-incompatible commands, but `pytest` and `ruff` on MINGW64 can sometimes have path issues with forward vs backslash. No explicit Windows compatibility note in README or scripts.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*Reviewing implementation against story spec and acceptance criteria.*
+
+### Finding 3.1: README clone URL is a placeholder, not the actual repo URL
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC violated:** AC #1 — "contains: project overview, prerequisites, environment setup steps"
+- **Evidence:** `README.md:17` — `git clone <repo-url> shipyard`
+- **Detail:** The setup steps include a placeholder URL. An evaluator cannot follow the README without knowing the actual repo URL. The GitHub remote is `https://github.com/dmalcorn/shipyard.git`. This degrades the "under 10 minutes" goal (NFR6) since the evaluator must figure out the URL.
+
+### Finding 3.2: Story spec Task 7 (end-to-end verification) — no evidence of actual execution
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC violated:** Task 7 — "Fresh clone → install → configure .env → run CLI → send 'Read the README.md file' → verify response"
+- **Evidence:** Story completion notes say "135 tests passing, no regressions" but do not mention end-to-end verification being performed.
+- **Detail:** This is a documentation/process gap, not a code bug. The story claims Task 7 is checked off but the Dev Agent Record doesn't reference actual E2E verification output.
+
+### Finding 3.3: Architecture doc shows only `local_ci.sh` in initial project structure but story adds `run_tests.sh` and `git_snapshot.sh`
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** Architecture doc line 129 shows only `local_ci.sh` in the initial structure, but the complete directory structure (line 510-513) lists all three scripts.
+- **Detail:** This is not a violation — the architecture doc explicitly defines the full project structure with all three scripts. The initial structure was a starter template. No contradiction.
+
+### Finding 3.4: `.env.example` is complete per AC #2
+- **Severity:** N/A (PASS)
+- **Category:** N/A
+- **Evidence:** `.env.example` contains all 4 required variables: `ANTHROPIC_API_KEY`, `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` with inline comments. AC #2 is satisfied.
+
+### Finding 3.5: `.gitignore` is complete per AC #3
+- **Severity:** N/A (PASS)
+- **Category:** N/A
+- **Evidence:** `.gitignore` contains: `logs/`, `reviews/`, `checkpoints/`, `.env`, `__pycache__/`, `.venv/`, `*.py[cod]` (covers `*.pyc`), `.mypy_cache/`, `.ruff_cache/`. AC #3 is satisfied.
+
+### Finding 3.6: `local_ci.sh` already existed from Story 1.1 — not created by this story
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** Story completion notes: "scripts/local_ci.sh already existed from Story 1.1 — verified it meets AC#1"
+- **Detail:** Task 2 says "Create `scripts/local_ci.sh`" but it was already created in Story 1.1. The dev agent correctly verified rather than recreated. The task description in the spec should have said "Verify" instead of "Create" since this story depends on 1.1-1.6 being complete.
+
+### Finding 3.7: README references `CODEAGENT.md` (Epic 2) — file doesn't exist yet
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC violated:** Dev Notes — "Do NOT create CODEAGENT.md content yet — that's Epic 2 (Story 2.4)"
+- **Evidence:** `README.md:80` — "For detailed architecture and multi-agent design, see `CODEAGENT.md` (Epic 2)."
+- **Detail:** The README correctly does NOT create CODEAGENT.md, but it references a file that doesn't yet exist. This is a forward reference that could confuse an evaluator who tries to find the file. The "(Epic 2)" annotation mitigates this somewhat, but an evaluator reading the README won't know what "Epic 2" means.
+
+### Finding 3.8: Coding standards compliance check
+- **Severity:** N/A (PASS)
+- **Category:** N/A
+- **Detail:** This story creates only bash scripts and markdown files — no Python code was written. Coding standards (`coding-standards.md`) apply to Python code. No violations possible for this story's deliverables.
+
+---
+
+## Summary
+
+| Metric | Count |
+|---|---|
+| **Total Issues Found** | **11** |
+| **By Layer** | Blind Hunter: 5, Edge Case Hunter: 6, Acceptance Auditor: 4 (+ 3 passes) |
+| **By Severity** | Critical: 0, High: 1, Medium: 3, Low: 7 |
+
+### Breakdown by Category
+
+| Category | Count |
+|---|---|
+| SECURITY | 2 |
+| QUALITY | 3 |
+| EDGE_CASE | 6 |
+| SPEC_VIOLATION | 3 |
+| CONVENTION | 1 |
+
+### Recommended Action Items (by priority)
+
+1. **HIGH — Finding 1.1:** Consider adding a pre-commit check or at minimum a comment/warning in `git_snapshot.sh` about `git add -A` staging everything. In an agent pipeline, this is a vector for accidental secret commits.
+2. **MEDIUM — Finding 2.5/2.6:** Add a venv activation check or note to scripts about requiring venv activation. Note Windows/MINGW64 compatibility in README.
+3. **MEDIUM — Finding 3.1:** Replace `<repo-url>` placeholder with actual GitHub URL (`https://github.com/dmalcorn/shipyard.git`).
+4. **MEDIUM — Finding 2.1:** Add empty-string validation to `git_snapshot.sh`.
+================================================================================
+
+2026-03-23 23:29:22 [SUCCESS] Code review complete for 1-7-repository-documentation-setup-guide - Issues found: unknown - Duration: 2m 4s
+2026-03-23 23:29:22 [INFO] 
+2026-03-23 23:29:22 [INFO] ============================================================
+2026-03-23 23:29:22 [INFO] CODE REVIEW LOOP COMPLETE
+2026-03-23 23:29:22 [INFO] ============================================================
+2026-03-23 23:29:23 [INFO] Epic: 1
+2026-03-23 23:29:23 [INFO] Total stories: 7
+2026-03-23 23:29:23 [SUCCESS] Reviewed: 7
+2026-03-23 23:29:23 [INFO] Total duration: 19m 11s
+2026-03-23 23:29:23 [INFO] Full log: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic1-code-review-bmad.log
+2026-03-23 23:29:23 [INFO] Results only: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic1-code-review-bmad-results.log
+2026-03-23 23:29:24 [INFO] ============================================================
+
+============================================================
+SUMMARY
+============================================================
+Epic: 1
+Total stories: 7
+Reviewed: 7
+Skipped: 0
+Failed: 0
+Total duration: 19m 11s
+============================================================
