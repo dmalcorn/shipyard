@@ -397,6 +397,158 @@ header {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Flow Graph ── */
+.panel-flow {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  margin-top: 0.5rem;
+}
+
+.flow-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.flow-lane {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.flow-lane-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  width: 80px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 0.8rem;
+}
+
+.flow-nodes {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
+  position: relative;
+}
+
+.flow-node {
+  position: relative;
+  background: var(--bg-input);
+  border: 1px solid var(--border-weld);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: all 0.35s ease;
+  z-index: 1;
+}
+
+.flow-node.completed {
+  border-color: var(--green-ok);
+  color: var(--green-ok);
+  background: var(--green-glow);
+}
+
+.flow-node.active {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: var(--amber-glow);
+  box-shadow: 0 0 12px rgba(232, 168, 48, 0.25), inset 0 0 8px rgba(232, 168, 48, 0.08);
+  animation: node-pulse 2s ease infinite;
+}
+
+.flow-node.failed {
+  border-color: var(--red-alert);
+  color: var(--red-alert);
+  background: var(--red-glow);
+}
+
+.flow-node.idle {
+  border-color: var(--border-weld);
+  color: var(--text-dim);
+  background: var(--bg-input);
+}
+
+@keyframes node-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(232, 168, 48, 0.25); }
+  50% { box-shadow: 0 0 20px rgba(232, 168, 48, 0.45), inset 0 0 12px rgba(232, 168, 48, 0.12); }
+}
+
+.flow-connector {
+  width: 28px;
+  height: 2px;
+  background: var(--border-weld);
+  flex-shrink: 0;
+  position: relative;
+  transition: background 0.35s ease;
+}
+
+.flow-connector::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -3px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--border-weld);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: border-left-color 0.35s ease;
+}
+
+.flow-connector.lit {
+  background: var(--amber-dim);
+}
+
+.flow-connector.lit::after {
+  border-left-color: var(--amber-dim);
+}
+
+.flow-connector.done {
+  background: var(--green-ok);
+}
+
+.flow-connector.done::after {
+  border-left-color: var(--green-ok);
+}
+
+/* ── Rebuild sub-loop bracket ── */
+.flow-loop {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border: 1px dashed var(--border-weld);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.4rem;
+  position: relative;
+  transition: border-color 0.35s ease;
+}
+
+.flow-loop.active-loop {
+  border-color: var(--amber-dim);
+}
+
+.flow-loop-label {
+  position: absolute;
+  top: -8px;
+  left: 10px;
+  font-size: 0.5rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  background: var(--bg-plate);
+  padding: 0 0.3rem;
+}
+
 /* ── Responsive ── */
 @media (max-width: 900px) {
   .bridge {
@@ -406,7 +558,10 @@ header {
   .panel-instruct { grid-column: 1; grid-row: auto; min-height: 400px; }
   .panel-intake { grid-column: 1; grid-row: auto; }
   .panel-rebuild { grid-column: 1; grid-row: auto; }
+  .panel-flow { grid-column: 1; }
   .rebuild-stats { grid-template-columns: repeat(2, 1fr); }
+  .flow-lane { flex-wrap: wrap; }
+  .flow-lane-label { width: 100%; text-align: left; padding-bottom: 0.3rem; }
 }
 </style>
 </head>
@@ -537,12 +692,140 @@ header {
     </div>
   </div>
 
+  <!-- ── Pipeline Flow Graph ── -->
+  <div class="panel panel-flow">
+    <div class="panel-header">
+      Pipeline Flow
+      <span class="tag tag-live">LIVE</span>
+    </div>
+    <div class="panel-body">
+      <div class="flow-lanes">
+
+        <!-- Instruct Flow -->
+        <div class="flow-lane">
+          <div class="flow-lane-label">Instruct</div>
+          <div class="flow-nodes">
+            <div class="flow-node idle" id="fi-input">User Input</div>
+            <div class="flow-connector" id="fc-i1"></div>
+            <div class="flow-node idle" id="fi-agent">Agent Node</div>
+            <div class="flow-connector" id="fc-i2"></div>
+            <div class="flow-node idle" id="fi-decide">Should Continue?</div>
+            <div class="flow-connector" id="fc-i3"></div>
+            <div class="flow-node idle" id="fi-tools">Tool Calls</div>
+            <div class="flow-connector" id="fc-i4"></div>
+            <div class="flow-node idle" id="fi-response">Response</div>
+          </div>
+        </div>
+
+        <!-- Intake Flow -->
+        <div class="flow-lane">
+          <div class="flow-lane-label">Intake</div>
+          <div class="flow-nodes">
+            <div class="flow-node idle" id="fn-read">Read Specs</div>
+            <div class="flow-connector" id="fc-n1"></div>
+            <div class="flow-node idle" id="fn-summarize">Summarize</div>
+            <div class="flow-connector" id="fc-n2"></div>
+            <div class="flow-node idle" id="fn-backlog">Gen Backlog</div>
+            <div class="flow-connector" id="fc-n3"></div>
+            <div class="flow-node idle" id="fn-write">Write Output</div>
+            <div class="flow-connector" id="fc-n4"></div>
+            <div class="flow-node idle" id="fn-done">Complete</div>
+          </div>
+        </div>
+
+        <!-- Rebuild Flow -->
+        <div class="flow-lane">
+          <div class="flow-lane-label">Rebuild</div>
+          <div class="flow-nodes">
+            <div class="flow-node idle" id="fr-load">Load Backlog</div>
+            <div class="flow-connector" id="fc-r1"></div>
+            <div class="flow-node idle" id="fr-init">Init Project</div>
+            <div class="flow-connector" id="fc-r2"></div>
+            <div class="flow-loop" id="fr-loop">
+              <div class="flow-loop-label">per story</div>
+              <div class="flow-node idle" id="fr-tdd">TDD Pipeline</div>
+              <div class="flow-connector" id="fc-r3"></div>
+              <div class="flow-node idle" id="fr-test">Test</div>
+              <div class="flow-connector" id="fc-r4"></div>
+              <div class="flow-node idle" id="fr-review">Review</div>
+              <div class="flow-connector" id="fc-r5"></div>
+              <div class="flow-node idle" id="fr-tag">Git Tag</div>
+            </div>
+            <div class="flow-connector" id="fc-r6"></div>
+            <div class="flow-node idle" id="fr-done">Complete</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
 const API = window.location.origin;
 let instructSessionId = null;
 let rebuildSessionId = null;
+
+// ── Flow Graph State Management ──
+function setFlowState(nodeId, state) {
+  const el = document.getElementById(nodeId);
+  if (!el) return;
+  el.className = 'flow-node ' + state;
+}
+
+function setConnector(connId, state) {
+  const el = document.getElementById(connId);
+  if (!el) return;
+  el.className = 'flow-connector' + (state ? ' ' + state : '');
+}
+
+function resetFlow(prefix, nodeIds, connIds) {
+  nodeIds.forEach(id => setFlowState(id, 'idle'));
+  connIds.forEach(id => setConnector(id, ''));
+  const loop = document.getElementById('fr-loop');
+  if (loop) loop.classList.remove('active-loop');
+}
+
+function advanceFlow(nodeIds, connIds, activeIdx) {
+  nodeIds.forEach((id, i) => {
+    if (i < activeIdx) setFlowState(id, 'completed');
+    else if (i === activeIdx) setFlowState(id, 'active');
+    else setFlowState(id, 'idle');
+  });
+  connIds.forEach((id, i) => {
+    if (i < activeIdx) setConnector(id, 'done');
+    else if (i === activeIdx) setConnector(id, 'lit');
+    else setConnector(id, '');
+  });
+}
+
+function completeFlow(nodeIds, connIds) {
+  nodeIds.forEach(id => setFlowState(id, 'completed'));
+  connIds.forEach(id => setConnector(id, 'done'));
+}
+
+function failFlow(nodeIds, connIds, failIdx) {
+  nodeIds.forEach((id, i) => {
+    if (i < failIdx) setFlowState(id, 'completed');
+    else if (i === failIdx) setFlowState(id, 'failed');
+    else setFlowState(id, 'idle');
+  });
+  connIds.forEach((id, i) => {
+    if (i < failIdx) setConnector(id, 'done');
+    else setConnector(id, '');
+  });
+}
+
+// Flow node/connector ID arrays
+const INSTRUCT_NODES = ['fi-input', 'fi-agent', 'fi-decide', 'fi-tools', 'fi-response'];
+const INSTRUCT_CONNS = ['fc-i1', 'fc-i2', 'fc-i3', 'fc-i4'];
+
+const INTAKE_NODES = ['fn-read', 'fn-summarize', 'fn-backlog', 'fn-write', 'fn-done'];
+const INTAKE_CONNS = ['fc-n1', 'fc-n2', 'fc-n3', 'fc-n4'];
+
+const REBUILD_NODES = ['fr-load', 'fr-init', 'fr-tdd', 'fr-test', 'fr-review', 'fr-tag', 'fr-done'];
+const REBUILD_CONNS = ['fc-r1', 'fc-r2', 'fc-r3', 'fc-r4', 'fc-r5', 'fc-r6'];
 
 // ── Health Check ──
 async function checkHealth() {
@@ -602,9 +885,19 @@ instructForm.addEventListener('submit', async (e) => {
   instructBtn.disabled = true;
   instructBtn.innerHTML = '<span class="spinner"></span>';
 
+  // Flow: User Input → Agent
+  advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 0);
+  await new Promise(r => setTimeout(r, 150));
+  advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 1);
+
   try {
     const payload = { message };
     if (instructSessionId) payload.session_id = instructSessionId;
+
+    // Flow: Agent → Should Continue → Tools
+    advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 2);
+    await new Promise(r => setTimeout(r, 100));
+    advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 3);
 
     const r = await fetch(`${API}/instruct`, {
       method: 'POST',
@@ -616,11 +909,18 @@ instructForm.addEventListener('submit', async (e) => {
     if (r.ok) {
       instructSessionId = d.session_id;
       appendMessage('agent', d.response, `session: ${d.session_id} · messages: ${d.messages_count}`);
+      // Flow: → Response (complete)
+      completeFlow(INSTRUCT_NODES, INSTRUCT_CONNS);
+      setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 4000);
     } else {
       appendMessage('agent', `Error ${r.status}: ${JSON.stringify(d)}`, null);
+      failFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 3);
+      setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 5000);
     }
   } catch (err) {
     appendMessage('agent', `Network error: ${err.message}`, null);
+    failFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 1);
+    setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 5000);
   } finally {
     instructBtn.disabled = false;
     instructBtn.textContent = 'Send';
@@ -642,24 +942,40 @@ async function runIntake() {
   result.className = 'intake-result visible';
   result.textContent = 'Pipeline running...';
 
+  // Flow: Read Specs
+  advanceFlow(INTAKE_NODES, INTAKE_CONNS, 0);
+
   try {
     const payload = { spec_dir: specDir, target_dir: targetDir || './target/' };
     if (sessionId) payload.session_id = sessionId;
+
+    // Flow: Summarize
+    await new Promise(r => setTimeout(r, 200));
+    advanceFlow(INTAKE_NODES, INTAKE_CONNS, 1);
 
     const r = await fetch(`${API}/intake`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+
+    // Flow: Gen Backlog → Write Output
+    advanceFlow(INTAKE_NODES, INTAKE_CONNS, 3);
     const d = await r.json();
 
     if (r.ok) {
       result.innerHTML = `<strong style="color:var(--green-ok)">Status:</strong> ${escapeHtml(d.pipeline_status)}<br><strong>Session:</strong> ${escapeHtml(d.session_id)}<br><strong>Output:</strong> ${escapeHtml(d.output_dir)}${d.error ? `<br><strong style="color:var(--red-alert)">Error:</strong> ${escapeHtml(d.error)}` : ''}`;
+      completeFlow(INTAKE_NODES, INTAKE_CONNS);
+      setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
     } else {
       result.innerHTML = `<strong style="color:var(--red-alert)">Error ${r.status}:</strong> ${escapeHtml(JSON.stringify(d))}`;
+      failFlow(INTAKE_NODES, INTAKE_CONNS, 2);
+      setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
     }
   } catch (err) {
     result.innerHTML = `<strong style="color:var(--red-alert)">Network error:</strong> ${escapeHtml(err.message)}`;
+    failFlow(INTAKE_NODES, INTAKE_CONNS, 0);
+    setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Run Intake';
@@ -678,13 +994,29 @@ async function runRebuild() {
   btn.innerHTML = '<span class="spinner"></span> Rebuilding...';
   status.innerHTML = '<span class="spinner"></span> Rebuild in progress...';
 
+  // Flow: Load Backlog → Init Project
+  advanceFlow(REBUILD_NODES, REBUILD_CONNS, 0);
+  document.getElementById('fr-loop').classList.add('active-loop');
+
   try {
     const payload = { target_dir: targetDir };
+
+    await new Promise(r => setTimeout(r, 200));
+    advanceFlow(REBUILD_NODES, REBUILD_CONNS, 1);
+
+    // Animate through the story loop while waiting
+    let loopStep = 2;
+    const loopInterval = setInterval(() => {
+      advanceFlow(REBUILD_NODES, REBUILD_CONNS, loopStep);
+      loopStep = loopStep >= 5 ? 2 : loopStep + 1;
+    }, 1500);
+
     const r = await fetch(`${API}/rebuild`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    clearInterval(loopInterval);
     const d = await r.json();
 
     if (r.ok) {
@@ -698,11 +1030,25 @@ async function runRebuild() {
       document.getElementById('rebuildProgress').style.width = pct + '%';
 
       status.innerHTML = `<strong style="color:var(--amber)">Status:</strong> ${escapeHtml(d.status)} · Session: ${escapeHtml(d.session_id)}`;
+
+      if (d.stories_failed > 0) {
+        failFlow(REBUILD_NODES, REBUILD_CONNS, 4);
+      } else {
+        completeFlow(REBUILD_NODES, REBUILD_CONNS);
+      }
+      document.getElementById('fr-loop').classList.remove('active-loop');
+      setTimeout(() => resetFlow('fr', REBUILD_NODES, REBUILD_CONNS), 6000);
     } else {
       status.innerHTML = `<strong style="color:var(--red-alert)">Error ${r.status}:</strong> ${escapeHtml(JSON.stringify(d))}`;
+      failFlow(REBUILD_NODES, REBUILD_CONNS, 0);
+      document.getElementById('fr-loop').classList.remove('active-loop');
+      setTimeout(() => resetFlow('fr', REBUILD_NODES, REBUILD_CONNS), 5000);
     }
   } catch (err) {
     status.innerHTML = `<strong style="color:var(--red-alert)">Network error:</strong> ${escapeHtml(err.message)}`;
+    failFlow(REBUILD_NODES, REBUILD_CONNS, 0);
+    document.getElementById('fr-loop').classList.remove('active-loop');
+    setTimeout(() => resetFlow('fr', REBUILD_NODES, REBUILD_CONNS), 5000);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Start Rebuild';
