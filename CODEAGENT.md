@@ -297,10 +297,10 @@ graph TD
 
 ## Trace Links (MVP)
 
-- **Trace 1 (normal run):** [https://smith.langchain.com/public/9d212cc9-7537-4656-8581-f8c4bc190a98/r](https://smith.langchain.com/public/9d212cc9-7537-4656-8581-f8c4bc190a98/r)
+- **Trace 1 (normal run):** [https://smith.langchain.com/public/ab78cd3f-9ac0-4056-b37c-6752b3be396c/r](https://smith.langchain.com/public/ab78cd3f-9ac0-4056-b37c-6752b3be396c/r)
   Normal execution path — agent reads a file, performs an edit, and completes successfully without errors.
 
-- **Trace 2 (error recovery path):** [https://smith.langchain.com/public/114ea778-4414-4e01-aa2a-c97d915e5cc6/r](https://smith.langchain.com/public/114ea778-4414-4e01-aa2a-c97d915e5cc6/r)
+- **Trace 2 (error recovery path):** [https://smith.langchain.com/public/08c40afb-8571-487f-91e0-78b9189d9b9f/r](https://smith.langchain.com/public/08c40afb-8571-487f-91e0-78b9189d9b9f/r)
   Error recovery path — agent encounters an edit failure (stale or incorrect anchor), re-reads the file, and retries with corrected context.
 
 ---

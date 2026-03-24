@@ -1,0 +1,14 @@
+# Sample configuration for agent editing demos
+app:
+  name: "sandbox-app"
+  version: "0.1.0"
+  debug: false
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "sandbox_db"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
