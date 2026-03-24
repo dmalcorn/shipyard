@@ -1,6 +1,6 @@
 # Story 4.3: Rebuild Intervention Log
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -15,8 +15,8 @@ so that I have the raw data for the comparative analysis and can assess the agen
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Create `src/intake/intervention_log.py` — the logging module (AC: #1, #2)
-  - [ ] Define `InterventionEntry` dataclass:
+- [x] Task 1: Create `src/intake/intervention_log.py` — the logging module (AC: #1, #2)
+  - [x] Define `InterventionEntry` dataclass:
     ```python
     @dataclass
     class InterventionEntry:
@@ -31,7 +31,7 @@ so that I have the raw data for the comparative analysis and can assess the agen
         retry_counts: str       # e.g. "edit=2/3, test=5/5, CI=1/3"
         files_involved: list[str]
     ```
-  - [ ] Implement `InterventionLogger` class:
+  - [x] Implement `InterventionLogger` class:
     ```python
     class InterventionLogger:
         def __init__(self, log_path: str):
@@ -50,9 +50,9 @@ so that I have the raw data for the comparative analysis and can assess the agen
         def export_for_analysis(self) -> str:
             """Export log in a format ready for Story 5.1 comparative analysis."""
     ```
-- [ ] Task 2: Define the intervention log markdown format (AC: #2)
-  - [ ] Log file: `{target_dir}/intervention-log.md`
-  - [ ] Format:
+- [x] Task 2: Define the intervention log markdown format (AC: #2)
+  - [x] Log file: `{target_dir}/intervention-log.md`
+  - [x] Format:
     ```markdown
     # Ship App Rebuild — Intervention Log
 
@@ -82,19 +82,19 @@ so that I have the raw data for the comparative analysis and can assess the agen
     - **What Failed:** Ruff flagged unused import in generated code
     - **How Recovered:** Dev Agent removed the unused import on retry (CI cycle 2/3)
     ```
-  - [ ] Each entry must be specific and evidence-based — the format enforces this with required fields
-- [ ] Task 3: Implement CLI intervention prompt (AC: #1)
-  - [ ] When the rebuild loop (Story 4.2) detects a pipeline failure:
+  - [x] Each entry must be specific and evidence-based — the format enforces this with required fields
+- [x] Task 3: Implement CLI intervention prompt (AC: #1)
+  - [x] When the rebuild loop (Story 4.2) detects a pipeline failure:
     1. Print the failure report to stdout
     2. Print `"What broke (concise): "` → capture input
     3. Print `"What will you do to fix it: "` → capture input
     4. Print `"What does this reveal about the agent: "` → capture input
     5. Create `InterventionEntry` and call `log_intervention()`
     6. Apply the developer's fix (manual edit or instruction to re-run)
-  - [ ] Support `skip` to mark a story as failed and move on
-  - [ ] Support `abort` to stop the entire rebuild
-- [ ] Task 4: Implement API intervention response (AC: #1)
-  - [ ] When pipeline fails in API mode, return:
+  - [x] Support `skip` to mark a story as failed and move on
+  - [x] Support `abort` to stop the entire rebuild
+- [x] Task 4: Implement API intervention response (AC: #1)
+  - [x] When pipeline fails in API mode, return:
     ```json
     {
       "status": "intervention_needed",
@@ -105,7 +105,7 @@ so that I have the raw data for the comparative analysis and can assess the agen
       "retry_counts": "..."
     }
     ```
-  - [ ] Accept `POST /rebuild/intervene` with:
+  - [x] Accept `POST /rebuild/intervene` with:
     ```json
     {
       "session_id": "...",
@@ -115,27 +115,27 @@ so that I have the raw data for the comparative analysis and can assess the agen
       "action": "fix|skip|abort"
     }
     ```
-  - [ ] Log the intervention and resume/skip/abort accordingly
-- [ ] Task 5: Implement auto-recovery logging (AC: #2)
-  - [ ] When the orchestrator retries and SUCCEEDS (e.g., CI fails on cycle 1 but passes on cycle 2), log an auto-recovery entry
-  - [ ] Auto-recoveries are important contrast data — they show what the agent CAN handle without help
-  - [ ] Hook into the conditional routing functions in `orchestrator.py` to detect retry success
-  - [ ] Call `log_auto_recovery()` when a retry succeeds after a previous failure
-- [ ] Task 6: Implement export for comparative analysis (AC: #2)
-  - [ ] `export_for_analysis()` returns a structured summary suitable for Story 5.1:
+  - [x] Log the intervention and resume/skip/abort accordingly
+- [x] Task 5: Implement auto-recovery logging (AC: #2)
+  - [x] When the orchestrator retries and SUCCEEDS (e.g., CI fails on cycle 1 but passes on cycle 2), log an auto-recovery entry
+  - [x] Auto-recoveries are important contrast data — they show what the agent CAN handle without help
+  - [x] Hook into the conditional routing functions in `orchestrator.py` to detect retry success
+  - [x] Call `log_auto_recovery()` when a retry succeeds after a previous failure
+- [x] Task 6: Implement export for comparative analysis (AC: #2)
+  - [x] `export_for_analysis()` returns a structured summary suitable for Story 5.1:
     - Intervention frequency by pipeline phase
     - Categories of agent limitations discovered
     - Auto-recovery success rate
     - Specific examples for each limitation category
-  - [ ] This export feeds directly into the 7-section comparative analysis
-- [ ] Task 7: Write tests (AC: #1, #2)
-  - [ ] Test `InterventionEntry` creation with all required fields
-  - [ ] Test `log_intervention()` appends correctly to the log file
-  - [ ] Test `log_auto_recovery()` appends auto-recovery entries
-  - [ ] Test `get_summary()` returns correct counts
-  - [ ] Test `export_for_analysis()` produces structured output
-  - [ ] Test log file format matches the specified markdown structure
-  - [ ] Test log entries contain specific evidence (not vague summaries) — validate required fields are non-empty
+  - [x] This export feeds directly into the 7-section comparative analysis
+- [x] Task 7: Write tests (AC: #1, #2)
+  - [x] Test `InterventionEntry` creation with all required fields
+  - [x] Test `log_intervention()` appends correctly to the log file
+  - [x] Test `log_auto_recovery()` appends auto-recovery entries
+  - [x] Test `get_summary()` returns correct counts
+  - [x] Test `export_for_analysis()` produces structured output
+  - [x] Test log file format matches the specified markdown structure
+  - [x] Test log entries contain specific evidence (not vague summaries) — validate required fields are non-empty
 
 ## Dev Notes
 
@@ -180,9 +180,25 @@ so that I have the raw data for the comparative analysis and can assess the agen
 ## Dev Agent Record
 
 ### Agent Model Used
+Claude Opus 4.6
 
 ### Debug Log References
+N/A — all 383 tests pass, no debug sessions required.
 
 ### Completion Notes List
+- Implemented `InterventionEntry` dataclass with `__post_init__` validation enforcing non-empty evidence fields (what_broke, what_developer_did, agent_limitation)
+- Implemented `AutoRecoveryEntry` dataclass for contrast data
+- Implemented `InterventionLogger` class following AuditLogger pattern: class-based, markdown output, structured entries with auto-updating summary section
+- Markdown log format matches spec exactly: header with summary counts, numbered intervention entries, numbered auto-recovery entries, separator lines
+- CLI intervention prompt (`cli_intervention_prompt`) captures structured data (what broke, what dev did, agent limitation) and supports `skip`/`abort` at any input stage; KeyboardInterrupt returns abort
+- API helpers: `build_intervention_needed_response` for failure payload, `process_api_intervention` for logging and returning action
+- Added `POST /rebuild/intervene` FastAPI endpoint in main.py with `InterventionRequest`/`InterventionResponse` Pydantic models
+- Auto-recovery detection via `_detect_auto_recovery` in rebuild.py — checks `test_cycle_count`, `ci_cycle_count`, `edit_retry_count` in orchestrator result; logs auto-recovery when any > 1
+- `export_for_analysis()` returns structured markdown: intervention frequency by phase, agent limitation categories with examples, auto-recovery success rate
+- 24 dedicated tests covering: dataclass creation, field validation, log formatting, summary counts, CLI prompt (fix/skip/abort/KeyboardInterrupt), API helpers, export structure
 
 ### File List
+- `src/intake/intervention_log.py` (new)
+- `tests/test_intake/test_intervention_log.py` (new)
+- `src/intake/rebuild.py` (modified — added InterventionLogger import, auto-recovery detection, intervention_logger parameter)
+- `src/main.py` (modified — added intervention imports, API endpoint, updated CLI rebuild to use structured prompt)

@@ -1,0 +1,7 @@
+=== ruff check ===
+All checks passed!
+=== ruff format check ===
+Would reformat: src\intake\intervention_log.py
+Would reformat: src\intake\rebuild.py
+Would reformat: src\main.py
+3 files would be reformatted, 51 files already formatted

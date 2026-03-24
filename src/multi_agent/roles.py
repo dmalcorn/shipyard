@@ -143,7 +143,7 @@ def get_tools_for_role(role: str, working_dir: str | None = None) -> list[BaseTo
     role_config = get_role(role)
 
     # If working_dir is set, get working-dir-scoped tools
-    if working_dir:
+    if working_dir is not None:
         from src.tools.scoped import get_scoped_tools
 
         scoped = get_scoped_tools(working_dir)

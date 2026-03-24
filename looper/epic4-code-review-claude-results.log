@@ -1,0 +1,425 @@
+================================================================================
+CODE REVIEW RESULTS (DIRECT CLAUDE)
+Epic: 4
+Started: 2026-03-24 14:16:22
+================================================================================
+This file contains only the review findings for easy comparison.
+================================================================================
+
+
+================================================================================
+STORY: 4-1-ship-app-specification-intake
+================================================================================
+Now I have all the information needed. Here is my complete code review.
+
+---
+
+# Code Review: Story 4-1 — Ship App Specification Intake
+
+## Issues Found
+
+### 1. **HIGH** — No conditional routing on `pipeline_status` failure
+**File:** `src/intake/pipeline.py:166-170`
+**Rule violated:** project-context.md line 64 — "Conditional edges: Route based on state fields (`current_phase`, `retry_count`), not by parsing message content"
+
+The graph uses unconditional edges:
+```python
+graph.add_edge(START, "read_specs")
+graph.add_edge("read_specs", "intake_specs")
+graph.add_edge("intake_specs", "create_backlog")
+```
+If `read_specs_node` returns `pipeline_status: "failed"` (e.g., missing directory, no spec files), the pipeline **still proceeds** to `intake_specs_node`, which calls `run_sub_agent()` with an empty `raw_specs` string. This wastes LLM API calls and produces meaningless output. A conditional edge should check `pipeline_status` after `read_specs_node` and route to END on failure.
+
+---
+
+### 2. **HIGH** — mypy strict mode error in `pipeline.py:206`
+**File:** `src/intake/pipeline.py:206`
+**Rule violated:** project-context.md line 88 — "Type checking: mypy strict mode — all function signatures must have type annotations"; coding-standards.md line 185 — "mypy — enforces type hint requirement"
+
+```
+src\intake\pipeline.py:206: error: Argument 1 to "invoke" of "Pregel" has incompatible type "IntakeState"; expected "StateT | Command[Any] | None"
+```
+`compiled.invoke(initial_state)` fails mypy strict mode. The `IntakeState` TypedDict is not recognized as a valid input type by the Pregel overloads. This must be resolved — the quality gate (`local_ci.sh`) runs mypy strict and this will fail.
+
+---
+
+### 3. **MEDIUM** — `output_node` reports `"completed"` even when upstream content is empty
+**File:** `src/intake/pipeline.py:121-143`
+**Rule violated:** project-context.md line 101 — "Fail-loud semantics: Non-negotiable — errors must surface immediately, never silently swallowed"
+
+Due to issue #1, if `read_specs_node` fails, `output_node` will write empty files for `spec_summary` and `epics_and_stories` and return `pipeline_status: "completed"`. The pipeline silently produces empty output files while reporting success. At minimum, `output_node` should validate that `spec_summary` and `epics_and_stories` are non-empty before declaring completion.
+
+---
+
+### 4. **MEDIUM** — Missing audit logging for intake pipeline sessions
+**File:** `src/main.py:376-396` (CLI) and `src/main.py:167-191` (API)
+**Rule violated:** project-context.md line 97 — "Audit logging: Every agent session produces a markdown log at `logs/session-{id}.md`"
+
+The `_run_intake()` CLI function and `/intake` API endpoint do not create an `AuditLogger`. Compare with `_run_cli()` (line 292) and `/instruct` (line 130), which both initialize and use `AuditLogger`. Intake sessions produce no audit trail.
+
+---
+
+### 5. **MEDIUM** — `output_node` lacks exception handling (inconsistent with `read_specs_node`)
+**File:** `src/intake/pipeline.py:130-143`
+**Rule violated:** Inconsistency within the module. `read_specs_node` catches `FileNotFoundError`/`NotADirectoryError` and returns `pipeline_status: "failed"`. `output_node` calls `os.makedirs()` and `open()` without any exception handling. A permission error or disk-full scenario would raise an unhandled exception instead of setting `pipeline_status: "failed"`.
+
+The coding standards say "Graph nodes: let LangGraph handle retries via state" (coding-standards.md line 81), but this pipeline has no LangGraph retry mechanism — there are no conditional edges or retry loops. The error handling in `read_specs_node` acknowledges this by catching exceptions manually, making the lack of handling in `output_node` an inconsistency.
+
+---
+
+### 6. **MEDIUM** — `type: ignore` suppression on `build_intake_graph` return type
+**File:** `src/intake/pipeline.py:151`
+**Rule violated:** project-context.md line 88 — "mypy strict mode"
+
+```python
+def build_intake_graph() -> StateGraph:  # type: ignore[type-arg]
+```
+This suppresses the mypy error for missing generic type parameter rather than providing the correct type (`StateGraph[IntakeState]`). The project enforces mypy strict — `type: ignore` comments should be minimized and justified. Combined with issue #2, this suggests the typing for the pipeline needs attention.
+
+---
+
+### 7. **LOW** — Inconsistent use of `os.path` vs `pathlib` across intake module
+**Files:** `src/intake/backlog.py:37-38`, `src/intake/pipeline.py:130-133`
+**Rule violated:** Internal consistency (not a hard rule, but `spec_reader.py` uses `pathlib.Path` throughout)
+
+`backlog.py` uses `os.path.join()` and `os.path.exists()`. `pipeline.py`'s `output_node` uses `os.makedirs()` and `os.path.join()`. Meanwhile `spec_reader.py` uses `pathlib.Path` consistently. While not a strict coding standard violation, the inconsistency within a single module makes the code harder to maintain.
+
+---
+
+### 8. **LOW** — `IntakeState(TypedDict, total=False)` makes all fields optional
+**File:** `src/intake/pipeline.py:23`
+
+Using `total=False` means every field in `IntakeState` is optional, which weakens type safety. mypy won't catch cases where a required field like `spec_dir` is missing from the initial state. Consider using `total=True` for required fields and a separate `TypedDict` (or `NotRequired`) for optional ones.
+
+---
+
+### 9. **LOW** — Truncation suffix causes individual file output to exceed `MAX_FILE_CHARS`
+**File:** `src/intake/spec_reader.py:57-58`
+
+```python
+content = content[:MAX_FILE_CHARS] + f"\n\n(truncated, {len(content)} chars total)"
+```
+
+The truncated content is `5000 + len(suffix)` characters, which slightly exceeds the 5000-char limit. The story spec says "Respect the 5000-char truncation rule from the tool contract for individual large files." To stay within the budget, the content portion should be `content[:MAX_FILE_CHARS - len(suffix)]` or similar.
+
+---
+
+## Summary
+
+| Severity | Count | Categories |
+|----------|-------|------------|
+| HIGH     | 2     | Missing conditional routing, mypy failure |
+| MEDIUM   | 4     | Silent success on empty output, missing audit logs, inconsistent error handling, type: ignore |
+| LOW      | 3     | Path API inconsistency, TypedDict total=False, truncation overshoot |
+
+**Tests:** All 71 intake tests pass.
+**Ruff:** Clean — no lint issues.
+**mypy:** 1 error in `pipeline.py:206` (the other 3 errors are in pre-existing files outside this story's scope).
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/4-1-ship-app-specification-intake.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/spec_reader.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/pipeline.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/backlog.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/main.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/.gitignore
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_intake/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_intake/test_spec_reader.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_intake/test_pipeline.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_intake/test_backlog.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/spawn.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/roles.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/prompts.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/scoped.py
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 4-2-autonomous-ship-rebuild-execution
+================================================================================
+Now I have a comprehensive understanding of all files. Let me compile the code review.
+
+---
+
+# Code Review: Story 4-2 — Autonomous Ship Rebuild Execution
+
+## Issues Found
+
+### 1. [HIGH] Working directory isolation not threaded through orchestrator — `_run_story_pipeline` ignores `target_dir`
+**File:** `src/intake/rebuild.py:217-265`
+**Rule violated:** Story spec Task 2 ("Validate that no tool call can write outside `{target_dir}/` during rebuild mode"); project-context.md line 110 ("Never share state between agents via memory — file-based handoffs only")
+
+`_run_story_pipeline()` accepts `target_dir` as a parameter (line 218) but **never uses it**. The function calls `build_orchestrator()` and invokes the compiled graph with an `OrchestratorState` that has no `working_dir` field. The orchestrator's agent nodes (`test_agent_node`, `dev_agent_node`, `review_node`, `architect_node`, `fix_dev_node`) all call `run_sub_agent()` without `working_dir`, so they will use the default (unscoped) tools operating on Shipyard's own source tree. **This is the most critical feature of the story and it is fundamentally broken end-to-end.** The scoped tools infrastructure exists (`scoped.py`, `spawn.py`, `roles.py`) but is never wired to the orchestrator pipeline.
+
+### 2. [HIGH] Orchestrator `_run_bash()` has no `cwd` parameter — bash nodes run in wrong directory during rebuild
+**File:** `src/multi_agent/orchestrator.py:142-164`
+**Rule violated:** Story spec Dev Notes ("The `_run_bash()` helper in `orchestrator.py` uses `subprocess.run()` without `cwd`. For rebuild, it must pass `cwd=target_dir`.")
+
+The `_run_bash()` helper does not accept a `cwd` parameter. During a rebuild, `unit_test_node`, `ci_node`, `git_snapshot_node`, `system_test_node`, `final_ci_node`, and `git_push_node` all run commands in Shipyard's process CWD, not the target project directory. Tests and CI for the target app will execute against the wrong project.
+
+### 3. [HIGH] `OrchestratorState` has no `working_dir` field — orchestrator nodes cannot propagate target directory
+**File:** `src/multi_agent/orchestrator.py:50-88`
+**Rule violated:** Story spec Task 2 ("Add a `working_dir` parameter to `run_sub_agent()` that sets the current working directory for all tool operations within the sub-agent")
+
+While `run_sub_agent()` and `get_tools_for_role()` were correctly extended with `working_dir`, the `OrchestratorState` TypedDict has no `working_dir` field. There is no mechanism for the rebuild loop to pass `target_dir` into the orchestrator state so that agent nodes can thread it to `run_sub_agent()`.
+
+### 4. [HIGH] Subprocess calls in `_init_target_project` don't check return codes
+**File:** `src/intake/rebuild.py:278-298`
+**Rule violated:** project-context.md line 101 ("Fail-loud semantics: Non-negotiable — errors must surface immediately, never silently swallowed")
+
+`subprocess.run()` calls for `git init` (line 278), `git add` (line 292), and `git commit` (line 293) don't check `returncode`. If any of these fail (e.g., `git` not on PATH, git config missing user.name/email), the function silently continues. Should check return codes and log/raise on failure.
+
+### 5. [HIGH] Subprocess call in `_git_tag_epic` doesn't check return code
+**File:** `src/intake/rebuild.py:309-314`
+**Rule violated:** project-context.md line 101 ("Fail-loud semantics")
+
+`subprocess.run()` for `git tag` doesn't check `returncode`. If the tag already exists or there's no commit to tag, the failure is silently swallowed.
+
+### 6. [HIGH] `/rebuild` API endpoint doesn't pass `on_intervention` callback
+**File:** `src/main.py:194-224`
+**Rule violated:** Story spec Task 4 ("In API mode: return the failure with `status: 'intervention_needed'` and the failure report")
+
+The `/rebuild` endpoint calls `run_rebuild()` without `on_intervention` or `intervention_logger`. Pipeline failures during API-mode rebuilds will be silently counted as failures with no intervention opportunity — the intervention-needed response flow described in the story spec is not connected.
+
+### 7. [MEDIUM] `_run_rebuild_cli` doesn't pass `intervention_logger` to `run_rebuild`
+**File:** `src/main.py:338-374`
+**Rule violated:** Story spec Task 4 ("Track intervention count per story and per epic")
+
+`_run_rebuild_cli` creates an `InterventionLogger` (line 342) but only passes it to the `cli_intervention` callback closure. It is NOT passed to `run_rebuild()` as the `intervention_logger` parameter (line 364), so auto-recovery detection (rebuild.py lines 100-101) will never fire in CLI mode.
+
+### 8. [MEDIUM] `list_files` in scoped.py doesn't validate path stays within scope
+**File:** `src/tools/scoped.py:119-133`
+**Rule violated:** Story spec Task 2 ("Validate that no tool call can write outside `{target_dir}/` during rebuild mode"); project-context.md line 125 ("Sandbox all `run_command` tool execution")
+
+`list_files` uses `_resolve(path)` but not `_validate(path)`. A path like `"../.."` will resolve to a directory outside the scoped root, allowing directory listing outside the target project. The `relative_to(root)` call on line 127 would raise `ValueError` for matches outside root, but the glob itself still searches outside scope.
+
+### 9. [MEDIUM] `search_files` in scoped.py doesn't validate path stays within scope
+**File:** `src/tools/scoped.py:135-164`
+**Rule violated:** Same as #8
+
+Same issue as `list_files` — `search_files` uses `_resolve(path)` without `_validate(path)`, allowing content search outside the scoped directory.
+
+### 10. [MEDIUM] `_init_target_project` doesn't implement language-based scaffolding
+**File:** `src/intake/rebuild.py:268-298`
+**Rule violated:** Story spec Task 6 ("Create basic project scaffold based on the spec summary (language detection from intake)")
+
+The function only creates a `README.md` regardless of the target project's language. The story spec says the scaffold should be "based on the spec summary (language detection from intake)" and "include the minimum files needed for the first story's tests to have something to run against." No spec summary is consulted and no language-appropriate files (e.g., `setup.py`, `package.json`) are generated.
+
+### 11. [MEDIUM] `/rebuild/intervene` endpoint uses hardcoded path instead of target directory
+**File:** `src/main.py:244-247`
+**Rule violated:** coding-standards.md ("Configuration at project root")
+
+The intervention log path is hardcoded to `f"./target/intervention-log-{request.session_id}.md"`. This ignores whatever `target_dir` was specified in the original `/rebuild` request. The intervention log should be co-located with the rebuild target.
+
+### 12. [MEDIUM] Module-level `_intervention_loggers` dict has no cleanup mechanism
+**File:** `src/main.py:228`
+**Rule violated:** General code quality — unbounded memory growth
+
+`_intervention_loggers: dict[str, InterventionLogger] = {}` grows with each session but entries are never removed. In a long-running server, this is a memory leak.
+
+### 13. [MEDIUM] `/rebuild/intervene` passes empty strings for contextual fields
+**File:** `src/main.py:253-263`
+
+`process_api_intervention()` is called with `epic=""`, `story=""`, `failure_report=""`, `retry_counts=""`. The intervention log entries will lack the contextual information (which epic/story/phase failed) needed for Story 5.1 comparative analysis.
+
+### 14. [MEDIUM] Missing tests for scoped path escaping in `list_files` and `search_files`
+**File:** `tests/test_tools/test_scoped.py`
+**Rule violated:** coding-standards.md ("Tool testing: Test both SUCCESS: and ERROR: return paths")
+
+Tests cover path escaping for `read_file`, `write_file`, and `edit_file`, but there are no tests verifying that `list_files` and `search_files` reject paths that escape the scoped directory. This mirrors the actual bug in issues #8 and #9.
+
+### 15. [LOW] `on_intervention` parameter uses `Any` instead of `Callable`
+**File:** `src/intake/rebuild.py:27`
+**Rule violated:** coding-standards.md ("Type hints: Required on all function signatures")
+
+`on_intervention: Any | None = None` should use a proper `Callable` type hint like `Callable[[str], str | None] | None` to document the expected callback signature and catch type errors.
+
+### 16. [LOW] `import re` inside function body in `search_files`
+**File:** `src/tools/scoped.py:138`
+**Rule violated:** coding-standards.md ("Imports: Order: standard library, then third-party, then local")
+
+`re` is imported inside the `search_files` function instead of at module level. While it works, ruff may flag this, and it's inconsistent with the import ordering convention.
+
+### 17. [LOW] Intervention handling only allows one retry attempt
+**File:** `src/intake/rebuild.py:104-121`
+
+If the first intervention retry also fails, no further intervention is offered — the story is counted as failed. The story spec says "Re-invoke the pipeline for the same story with the fix applied" without explicitly limiting retries, though a single retry may be an acceptable simplification.
+
+### 18. [LOW] `run_command` in scoped.py uses `shell=True`
+**File:** `src/tools/scoped.py:178-179`
+**Rule violated:** project-context.md line 125 ("Sandbox all `run_command` tool execution — restrict to project working directory")
+
+`shell=True` enables shell interpretation of the command string. While the `cwd` parameter restricts the working directory, `shell=True` still allows shell injection if the command string contains untrusted input (e.g., from LLM-generated tool calls). The existing `run_command` in `src/tools/bash.py` also uses `shell=True`, so this is consistent but worth flagging.
+
+### 19. [LOW] Tests directly import private functions from `rebuild.py`
+**File:** `tests/test_intake/test_rebuild.py:10-16`
+
+Tests import `_git_tag_epic`, `_group_by_epic`, `_init_target_project`, `_write_rebuild_status` — all private (underscore-prefixed) functions. While testing private functions is common, it couples tests to implementation details. These could alternatively be tested through `run_rebuild()`.
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| HIGH     | 6     |
+| MEDIUM   | 8     |
+| LOW      | 5     |
+| **Total**| **19** |
+
+**The most critical finding (Issues #1-3):** Working directory isolation — the headline feature of Story 4-2 — is **structurally incomplete**. The scoped tools infrastructure exists in `scoped.py`, `spawn.py`, and `roles.py`, but the orchestrator pipeline has no mechanism to receive or propagate `target_dir`. During a rebuild, all agent tool calls and all bash commands (tests, CI, git) will operate on Shipyard's own source tree, not the target project. This needs `OrchestratorState` to carry `working_dir`, all agent nodes to thread it to `run_sub_agent()`, and `_run_bash()` to accept a `cwd` parameter.
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/4-2-autonomous-ship-rebuild-execution.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/rebuild.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/scoped.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/spawn.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/roles.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/main.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_intake/test_rebuild.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_tools/test_scoped.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/multi_agent/orchestrator.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/backlog.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/intervention_log.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_intake/__init__.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_multi_agent/test_orchestrator.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_multi_agent/test_roles.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/tests/test_multi_agent/test_spawn.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/tools/restricted.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/intake/pipeline.py
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/src/agent/prompts.py
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+STORY: 4-3-rebuild-intervention-log
+================================================================================
+Good. Now I have all the files needed. Let me compile the review.
+
+---
+
+# Code Review: Story 4-3 — Rebuild Intervention Log
+
+## Issues Found
+
+### 1. **MEDIUM** — `InterventionRequest.action` field not type-constrained to `Literal`
+**File:** `src/main.py:106`
+**Rule violated:** coding-standards.md — Type hints required on all function signatures; project-context.md — mypy strict mode
+**Detail:** `InterventionRequest.action` is typed as `str` rather than `Literal["fix", "skip", "abort"]`. The runtime cast on line 251 compensates, but this means the Pydantic model accepts any string without validation. This is inconsistent with the story spec (Task 4) which defines the field as `"fix|skip|abort"`, and with `process_api_intervention()` which expects `Literal["fix", "skip", "abort"]`. Should be `action: Literal["fix", "skip", "abort"]` so Pydantic validates the value automatically.
+
+### 2. **MEDIUM** — `/rebuild/intervene` endpoint passes empty strings for required context fields
+**File:** `src/main.py:253-261`
+**Rule violated:** Story spec Task 4 — the endpoint should associate intervention with the active rebuild session's epic/story/phase/failure_report/retry_counts
+**Detail:** `process_api_intervention()` is called with `epic=""`, `story=""`, `phase="pipeline"`, `failure_report=""`, `retry_counts=""`. These empty strings mean the logged intervention entry lacks the context needed for comparative analysis (AC #2). The endpoint doesn't retrieve the active session's state (which story failed, what the failure report was, etc.). The `InterventionEntry.__post_init__` validation doesn't catch these because `epic`, `story`, and `failure_report` are not in `_EVIDENCE_FIELDS`.
+
+### 3. **MEDIUM** — `InterventionResponse.action` typed as `str` instead of `Literal`
+**File:** `src/main.py:113`
+**Rule violated:** coding-standards.md — Type hints should be precise
+**Detail:** Same as issue #1 but on the response model. Should be `Literal["fix", "skip", "abort"]` for consistency with the rest of the codebase and for accurate API schema generation.
+
+### 4. **LOW** — `_run_rebuild_cli` doesn't pass `intervention_logger` to `run_rebuild`
+**File:** `src/main.py:364-368`
+**Rule violated:** Story spec Task 5 — auto-recovery logging
+**Detail:** `_run_rebuild_cli` creates an `InterventionLogger` (line 342) and uses it for the CLI prompt callback, but doesn't pass it as `intervention_logger=` to `run_rebuild()`. This means auto-recovery detection in `rebuild.py:100-101` will never trigger during CLI mode because `intervention_logger` defaults to `None`. The auto-recovery path is effectively dead code in CLI mode.
+
+### 5. **LOW** — Module-level `_intervention_loggers` dict is a memory leak
+**File:** `src/main.py:228`
+**Rule violated:** project-context.md — Fail-loud semantics; no silent issues
+**Detail:** `_intervention_loggers` is a module-level dict that accumulates `InterventionLogger` instances keyed by session_id. There's no cleanup mechanism — loggers are never removed after a session completes. In a long-running server, this accumulates indefinitely. Not critical for the current usage pattern (short-lived sessions), but violates the principle of not silently accumulating state.
+
+### 6. **LOW** — `_rewrite_summary` can silently skip if marker not found
+**File:** `src/intake/intervention_log.py:264-265`
+**Rule violated:** project-context.md — Fail-loud semantics: "errors must surface immediately, never silently swallowed"
+**Detail:** If `"---\n"` marker is not found in the file content, `_rewrite_summary` silently returns without updating anything. This is a private helper so the impact is limited, but per fail-loud semantics it should at minimum log a warning.
+
+### 7. **LOW** — `get_summary` return type uses `object` instead of a more precise type
+**File:** `src/intake/intervention_log.py:143`
+**Rule violated:** coding-standards.md — Type hints required; project-context.md — mypy strict mode
+**Detail:** `get_summary` returns `dict[str, object]`. The actual values are `int` and `dict[str, int]`. A `TypedDict` or `dict[str, int | dict[str, int]]` would be more precise and useful for type checking.
+
+### 8. **LOW** — `cli_intervention_prompt` bypasses `__post_init__` validation via fallback defaults
+**File:** `src/intake/intervention_log.py:348-350`
+**Rule violated:** Story spec AC #2 — evidence-based data, not vague summaries
+**Detail:** If the user enters empty strings for the three prompts, the code falls back to `"Not specified"` (lines 348-350), which passes `__post_init__` validation. This means a user can fill in all three fields with empty input and get a logged entry with `"Not specified"` for every evidence field, defeating the purpose of the non-empty validation in `__post_init__`.
+
+### 9. **LOW** — `process_api_intervention` also bypasses `__post_init__` with `"Not specified"` fallback
+**File:** `src/intake/intervention_log.py:430-432`
+**Rule violated:** Story spec AC #2 — evidence-based data requirement
+**Detail:** Same issue as #8 but for the API path. The `or "Not specified"` fallback means the validation in `__post_init__` never catches empty API submissions.
+
+### 10. **LOW** — Missing test for `InterventionEntry` validation of other evidence fields
+**File:** `tests/test_intake/test_intervention_log.py:201-215`
+**Rule violated:** Story spec Task 7 — "validate required fields are non-empty"
+**Detail:** `test_required_fields_non_empty` only tests `what_broke=""`. There are no tests for `what_developer_did=""` or `agent_limitation=""`. All three fields in `_EVIDENCE_FIELDS` should be validated by tests.
+
+### 11. **LOW** — No test for `export_for_analysis` with limitation categories containing multiple entries
+**File:** `tests/test_intake/test_intervention_log.py:386-393`
+**Rule violated:** Story spec Task 7 — test export_for_analysis produces structured output
+**Detail:** `test_export_limitation_categories` only logs one intervention. There's no test verifying that multiple interventions with the same limitation category are grouped correctly (the "Occurrences" count reflects multiple examples), or that different limitation categories are listed separately.
+
+### 12. **LOW** — `InterventionEntry.failure_report` is not included in `_EVIDENCE_FIELDS`
+**File:** `src/intake/intervention_log.py:14`
+**Rule violated:** Story spec — "failure_report" is a required field described as "the error_handler_node output or pipeline failure description"
+**Detail:** `failure_report` is a key data field for the intervention log but isn't validated as non-empty. This allows creating entries with an empty failure_report, which undermines the evidence-based data requirement.
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| HIGH     | 0     |
+| MEDIUM   | 3     |
+| LOW      | 9     |
+
+The implementation is solid overall. The core `InterventionLogger` class is well-structured and follows the `AuditLogger` pattern as specified. The main concerns are: (1) the API endpoint passes empty strings for contextual fields, making logged interventions less useful for comparative analysis, (2) the CLI mode doesn't pass the intervention logger for auto-recovery tracking, and (3) the `"Not specified"` fallback pattern undermines the `__post_init__` validation. No HIGH severity issues found.
+
+---
+
+=== AGENT IDENTIFICATION ===
+Agent: Direct Claude (no BMAD agent)
+Loaded files:
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\_bmad-output\project-context.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\CLAUDE.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\coding-standards.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\_bmad-output\implementation-artifacts\4-3-rebuild-intervention-log.md
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\intake\intervention_log.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\tests\test_intake\test_intervention_log.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\main.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\intake\rebuild.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\logging\audit.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\src\intake\__init__.py
+  - C:\alcorn\Gauntlet\6-Shipyard\shipyard\tests\test_intake\__init__.py
+=== END IDENTIFICATION ===
+================================================================================
+
+
+================================================================================
+SUMMARY
+================================================================================
+Epic: 4
+Total stories: 3
+Reviewed: 3
+Skipped: 0
+Failed: 0
+Total duration: 7m 37s
+================================================================================

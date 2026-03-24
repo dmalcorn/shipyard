@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -150,12 +151,12 @@ class TestShouldContinue:
 
     def test_empty_messages_returns_end(self) -> None:
         """No messages -> end."""
-        state: dict = {"messages": [], "retry_count": 0}
+        state: dict[str, Any] = {"messages": [], "retry_count": 0}
         assert _should_continue(state) == "end"  # type: ignore[arg-type]
 
     def test_retry_exceeded_returns_error(self) -> None:
         """Retry count at max -> error."""
-        state: dict = {
+        state: dict[str, Any] = {
             "messages": [AIMessage(content="done")],
             "retry_count": MAX_LLM_TURNS,
         }
@@ -164,12 +165,12 @@ class TestShouldContinue:
     def test_tool_calls_returns_tools(self) -> None:
         """AI message with tool calls -> tools."""
         msg = AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "1"}])
-        state: dict = {"messages": [msg], "retry_count": 0}
+        state: dict[str, Any] = {"messages": [msg], "retry_count": 0}
         assert _should_continue(state) == "tools"  # type: ignore[arg-type]
 
     def test_no_tool_calls_returns_end(self) -> None:
         """AI message without tool calls -> end."""
-        state: dict = {"messages": [AIMessage(content="all done")], "retry_count": 0}
+        state: dict[str, Any] = {"messages": [AIMessage(content="all done")], "retry_count": 0}
         assert _should_continue(state) == "end"  # type: ignore[arg-type]
 
 
@@ -178,9 +179,12 @@ class TestRunSubAgent:
 
     def test_config_includes_parent_session(self, checkpoints_db: str) -> None:
         """Sub-agent config includes parent_session metadata for trace linking."""
-        captured_config: dict = {}
+        captured_config: dict[str, Any] = {}
 
-        def mock_invoke(state: dict, config: dict | None = None) -> dict:
+        def mock_invoke(
+            state: dict[str, Any],
+            config: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             captured_config.update(config or {})
             return {
                 "messages": [],
@@ -225,9 +229,12 @@ class TestRunSubAgent:
 
     def test_sub_agent_thread_id_distinct_from_parent(self, checkpoints_db: str) -> None:
         """Sub-agent gets its own unique thread_id."""
-        captured_config: dict = {}
+        captured_config: dict[str, Any] = {}
 
-        def mock_invoke(state: dict, config: dict | None = None) -> dict:
+        def mock_invoke(
+            state: dict[str, Any],
+            config: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             captured_config.update(config or {})
             return {
                 "messages": [],
@@ -344,9 +351,12 @@ class TestRunSubAgent:
 
     def test_model_tier_in_metadata(self, checkpoints_db: str) -> None:
         """Config metadata includes correct model_tier for the role."""
-        captured_config: dict = {}
+        captured_config: dict[str, Any] = {}
 
-        def mock_invoke(state: dict, config: dict | None = None) -> dict:
+        def mock_invoke(
+            state: dict[str, Any],
+            config: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             captured_config.update(config or {})
             return {
                 "messages": [],

@@ -1,0 +1,826 @@
+================================================================================
+CODE REVIEW LOOP LOG (BMAD WORKFLOW)
+Epic: 4
+Started: 2026-03-24 14:16:22
+Mode: READ-ONLY with BMAD Agent
+================================================================================
+
+2026-03-24 14:16:22 [INFO] ============================================================
+2026-03-24 14:16:22 [INFO] CODE REVIEW LOOP (BMAD WORKFLOW) - Epic 4
+2026-03-24 14:16:22 [INFO] Mode: READ-ONLY (no fixes will be applied)
+2026-03-24 14:16:23 [INFO] Results file: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic4-code-review-bmad-results.log
+2026-03-24 14:16:23 [INFO] Log file: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic4-code-review-bmad.log
+2026-03-24 14:16:23 [INFO] ============================================================
+2026-03-24 14:16:24 [INFO] Found 3 stories in Epic 4
+2026-03-24 14:16:24 [INFO] Stories to review:
+2026-03-24 14:16:24 [INFO]   - 4-1-ship-app-specification-intake: complete
+2026-03-24 14:16:24 [INFO]   - 4-2-autonomous-ship-rebuild-execution: complete
+2026-03-24 14:16:24 [INFO]   - 4-3-rebuild-intervention-log: review
+
+============================================================
+STORIES IN EPIC 4
+============================================================
+4-1-ship-app-specification-intake: complete
+4-2-autonomous-ship-rebuild-execution: complete
+4-3-rebuild-intervention-log: review
+============================================================
+
+2026-03-24 14:16:25 [INFO] ============================================================
+2026-03-24 14:16:25 [INFO] STARTING CODE REVIEWS NOW...
+2026-03-24 14:16:25 [INFO] ============================================================
+2026-03-24 14:16:25 [INFO] [1/3] Processing: 4-1-ship-app-specification-intake (status: complete)
+2026-03-24 14:16:26 [REVIEW] ==========================================
+2026-03-24 14:16:26 [REVIEW] Reviewing: 4-1-ship-app-specification-intake (status: complete)
+2026-03-24 14:16:26 [REVIEW] ==========================================
+2026-03-24 14:16:31 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 4-1-ship-app-specification-intake | Time: 2026-03-24 14:16:31
+================================================================================
+You are performing a BMAD-style adversarial code review for story 4-1-ship-app-specification-intake.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/4-1-ship-app-specification-intake.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 4-1-ship-app-specification-intake
+================================================================================
+Now I have all the files. Let me compile the comprehensive three-layer review.
+
+---
+
+# Adversarial Code Review: Story 4-1 — Ship App Specification Intake
+
+---
+
+## LAYER 1: BLIND HUNTER
+*Code-only review — no regard for spec*
+
+### 1. Pipeline continues after node failure — no conditional edges
+- **Severity:** CRITICAL
+- **Category:** LOGIC
+- **Evidence:** `src/intake/pipeline.py:166-170`
+  ```python
+  graph.add_edge(START, "read_specs")
+  graph.add_edge("read_specs", "intake_specs")   # unconditional
+  graph.add_edge("intake_specs", "create_backlog")
+  graph.add_edge("create_backlog", "output")
+  graph.add_edge("output", END)
+  ```
+  When `read_specs_node` returns `{"pipeline_status": "failed", "error": "..."}` (lines 46, 51, 54), the pipeline unconditionally proceeds to `intake_specs_node`, which sends an empty `raw_specs` string to `run_sub_agent()`. This wastes LLM API credits and produces garbage output. There are no conditional edges to short-circuit on failure.
+
+### 2. Path traversal — `spec_dir` and `target_dir` accept arbitrary filesystem paths via API
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/main.py:65-69` (IntakeRequest model), `src/main.py:177-191` (intake endpoint)
+  ```python
+  class IntakeRequest(BaseModel):
+      spec_dir: str              # arbitrary path from user
+      target_dir: str = "./target/"  # arbitrary write target
+  ```
+  No path validation or sandboxing. `spec_dir` can read any directory on the filesystem (limited to supported extensions). `target_dir` creates directories and writes files to arbitrary locations via `os.makedirs()` and `open()` in `output_node`. The project context explicitly mandates: "Sandbox all `run_command` tool execution — restrict to project working directory" — this principle should extend to file I/O.
+
+### 3. No total output size limit in `read_project_specs`
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/intake/spec_reader.py:44-62`
+  ```python
+  for file_path in sorted(spec_path.rglob("*")):
+      # ... truncates individual files at 5000 chars
+      parts.append(f"## File: {relative}\n{content}")
+  return "\n\n".join(parts)
+  ```
+  Individual files are capped at 5000 chars, but there is no aggregate limit. A directory with 1000 small files produces ~5MB+ of text. This is injected directly into the LLM prompt in `intake_specs_node` (line 68), which will exceed any model's context window and cause an API error or silent truncation.
+
+### 4. Empty LLM results propagate silently through pipeline
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/intake/pipeline.py:79,115`
+  ```python
+  spec_summary = result.get("final_message", "")  # line 79
+  epics_and_stories = result.get("final_message", "")  # line 115
+  ```
+  If `run_sub_agent()` returns `{"final_message": ""}`, the nodes pass empty strings forward without any validation. `output_node` then writes two empty files (`spec-summary.md` and `epics.md`) and reports `pipeline_status: "completed"`. No warning is logged.
+
+### 5. `output_node` file writes have no exception handling
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/intake/pipeline.py:135-139`
+  ```python
+  with open(spec_path, "w", encoding="utf-8") as f:
+      f.write(spec_summary)
+  with open(epics_path, "w", encoding="utf-8") as f:
+      f.write(epics_and_stories)
+  ```
+  While the coding standards say "Graph nodes: let LangGraph handle retries via state — don't add try/except around node logic," LangGraph cannot meaningfully retry a file permission or disk-full error. An unhandled `OSError` will crash the pipeline with no graceful status update. Other nodes like `read_specs_node` DO catch exceptions and return failed status — the inconsistency is notable.
+
+### 6. Weak edge count assertion in graph topology test
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `tests/test_intake/test_pipeline.py:162-163`
+  ```python
+  edges = graph.edges
+  assert len(edges) >= 4
+  ```
+  Asserts `>= 4` instead of exactly 5. This would pass even if edges were duplicated or if extra incorrect edges were added. A more precise assertion would verify exact edge tuples.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*Branching paths and boundary conditions*
+
+### 7. Symlink loops in spec directory cause infinite traversal
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/spec_reader.py:44`
+  ```python
+  for file_path in sorted(spec_path.rglob("*")):
+  ```
+  `rglob("*")` follows symlinks by default in Python's `pathlib`. A circular symlink (e.g., `docs/loop -> ../docs`) causes infinite recursion or, in newer Python versions, repeated reads of the same files. No cycle detection is implemented.
+- **Edge case:** Target project directory contains symlinks pointing back to ancestors.
+
+### 8. Concurrent pipeline executions can corrupt shared output directory
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/pipeline.py:130-139`
+  ```python
+  os.makedirs(output_dir, exist_ok=True)
+  with open(spec_path, "w", encoding="utf-8") as f:
+      f.write(spec_summary)
+  ```
+  Two simultaneous `POST /intake` requests with the same `target_dir` (default: `./target/`) will race on file writes. One pipeline's `spec-summary.md` could be overwritten by another's between write and read.
+- **Edge case:** Two API clients call `/intake` concurrently with default target directory.
+
+### 9. Sub-bullets in acceptance criteria section are incorrectly captured
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/backlog.py:63-115`
+  ```python
+  stripped = line.strip()
+  # ...
+  if in_criteria and stripped.startswith("- "):
+      current_criteria.append(stripped[2:])
+  ```
+  `line.strip()` removes leading whitespace before checking `startswith("- ")`. A sub-bullet like `    - sub-detail under a criterion` becomes `- sub-detail under a criterion` after stripping, which is captured as a top-level criterion.
+- **Edge case:** LLM generates nested bullet lists under acceptance criteria.
+
+### 10. `backlog.py` regex won't match epic headers with leading whitespace
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/backlog.py:67`
+  ```python
+  epic_match = re.match(r"^##\s+Epic\s+\d+:\s*(.+)", stripped)
+  ```
+  Since `stripped = line.strip()`, leading whitespace is already removed, so `^##` works. However, this regex won't match headers like `## Epic A: Title` (non-numeric epic identifiers). Since the LLM is instructed to use `## Epic N: Title` with numeric N, this is expected — but LLMs don't always follow instructions precisely.
+- **Edge case:** LLM generates non-numeric epic identifiers or roman numerals.
+
+### 11. Windows path separators in file headers
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/spec_reader.py:50,60`
+  ```python
+  relative = file_path.relative_to(spec_path)
+  parts.append(f"## File: {relative}\n{content}")
+  ```
+  On Windows, `relative` uses backslash separators (`docs\api\endpoints.md`). The downstream LLM prompt will contain Windows-style paths, and the format deviates from the spec's `{relative_path}` convention which implies forward slashes.
+- **Edge case:** Running the intake pipeline on Windows.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*Implementation vs. story spec and coding standards*
+
+### 12. Pipeline graph topology deviates from specified edge wiring
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC/Rule:** Task 3 — "Wire edges: `START → intake_specs_node → create_backlog_node → output_node → END`"
+- **Evidence:** `src/intake/pipeline.py:166-170`
+  ```python
+  graph.add_edge(START, "read_specs")          # extra node
+  graph.add_edge("read_specs", "intake_specs")
+  graph.add_edge("intake_specs", "create_backlog")
+  graph.add_edge("create_backlog", "output")
+  graph.add_edge("output", END)
+  ```
+  The spec calls for 3 nodes in the graph path (intake_specs → create_backlog → output), but the implementation adds a 4th (`read_specs`). While functionally reasonable, this is an undocumented deviation. The spec could be interpreted as expecting `intake_specs_node` to handle file reading internally.
+
+### 13. `load_backlog` return type doesn't match spec's `list[dict]`
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC/Rule:** Task 5 — "`load_backlog(target_dir: str) -> list[dict]` that parses the generated `epics.md` into a structured list of `{epic, story, description, acceptance_criteria}`"
+- **Evidence:** `src/intake/backlog.py:16`
+  ```python
+  def load_backlog(target_dir: str) -> list[dict[str, str | list[str]]]:
+  ```
+  The return type is `list[dict[str, str | list[str]]]` — more specific than the spec's `list[dict]`. This is technically a stricter type and not a violation, but the narrower annotation could cause mypy issues if callers expect plain `dict`.
+
+### 14. Integration test doesn't verify `load_backlog` parses pipeline output
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC/Rule:** Task 6 — "Integration test: run intake pipeline with mock LLM calls on a small spec directory"
+- **Evidence:** `tests/test_intake/test_pipeline.py:169-203`
+  The integration test (`test_end_to_end_with_mock_llm`) verifies files are written and pipeline status is "completed", but doesn't call `load_backlog()` on the output to verify the generated `epics.md` is actually parseable by the downstream orchestrator. The round-trip validation (write → parse) is missing.
+
+### 15. No test for pipeline failure propagation behavior
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC/Rule:** Task 6 / coding-standards.md — "Test both `SUCCESS:` and `ERROR:` return paths"
+- **Evidence:** `tests/test_intake/test_pipeline.py`
+  While `test_fails_on_missing_spec_dir` and `test_fails_on_empty_directory` test individual node failure, no test verifies what happens when the full pipeline is invoked with invalid input. The CRITICAL bug (Finding #1 — pipeline continues after failure) is untested.
+
+### 16. `run_sub_agent()` called without `build_trace_config()` as dev notes specify
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC/Rule:** Dev Notes — "Reuse `build_trace_config()` from `src/multi_agent/roles.py` for LangSmith metadata"
+- **Evidence:** `src/intake/pipeline.py:71-77`
+  The dev notes suggest directly using `build_trace_config()`, but the pipeline delegates this to `run_sub_agent()` which calls it internally. While the end result is the same (traces are created with correct metadata), the intent was arguably to show explicit trace configuration in the pipeline code for visibility.
+
+---
+
+## Summary
+
+| Metric | Count |
+|--------|-------|
+| **Issues Found** | **16** |
+| **By Layer** | Blind Hunter: **6**, Edge Case Hunter: **5**, Acceptance Auditor: **5** |
+| **By Severity** | Critical: **1**, High: **1**, Medium: **8**, Low: **6** |
+
+### Critical/High Issues Requiring Immediate Attention
+
+1. **CRITICAL — Pipeline continues after failure** (#1): The linear edge wiring means a failed `read_specs_node` still triggers LLM calls. Add conditional edges or check `pipeline_status` at each node entry.
+2. **HIGH — Path traversal via API** (#2): Both `spec_dir` and `target_dir` accept arbitrary paths. Add path validation/sandboxing, at minimum restricting to a configured project root.
+================================================================================
+
+2026-03-24 14:19:49 [SUCCESS] Code review complete for 4-1-ship-app-specification-intake - Issues found: unknown - Duration: 3m 18s
+2026-03-24 14:19:50 [INFO] [2/3] Processing: 4-2-autonomous-ship-rebuild-execution (status: complete)
+2026-03-24 14:19:50 [REVIEW] ==========================================
+2026-03-24 14:19:50 [REVIEW] Reviewing: 4-2-autonomous-ship-rebuild-execution (status: complete)
+2026-03-24 14:19:50 [REVIEW] ==========================================
+2026-03-24 14:19:55 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 4-2-autonomous-ship-rebuild-execution | Time: 2026-03-24 14:19:56
+================================================================================
+You are performing a BMAD-style adversarial code review for story 4-2-autonomous-ship-rebuild-execution.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/4-2-autonomous-ship-rebuild-execution.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 4-2-autonomous-ship-rebuild-execution
+================================================================================
+Now I have all the context needed. Here is the full adversarial code review.
+
+---
+
+# Adversarial Code Review: Story 4-2 — Autonomous Ship Rebuild Execution
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+### 1. Working directory isolation plumbing is disconnected from orchestrator nodes
+- **Severity:** CRITICAL
+- **Category:** BUG
+- **Evidence:** `src/intake/rebuild.py:236` — `_run_story_pipeline` calls `build_orchestrator()` which constructs a graph whose nodes (`test_agent_node`, `dev_agent_node`, `fix_dev_node`, etc. in `orchestrator.py:179-458`) all call `run_sub_agent()` without a `working_dir` parameter. While `working_dir` was added to `run_sub_agent()` (`spawn.py:140`), `create_agent_subgraph()` (`spawn.py:54`), and `get_tools_for_role()` (`roles.py:124`), and `get_scoped_tools()` was created — **none of the orchestrator graph nodes ever pass `working_dir`**. There is no `working_dir` field in `OrchestratorState` (`orchestrator.py:50-88`). The story's primary requirement (tools operate on `target_dir`, not Shipyard's own tree) is not fulfilled. During a rebuild, the agent will edit Shipyard's own source code.
+
+### 2. `list_files` tool bypasses scope validation
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/tools/scoped.py:120-133` — `list_files` calls `_resolve(path)` but not `_validate(path)`. The `_resolve` function at line 33-35 accepts absolute paths unchanged. A `path` argument like `/etc` would escape the scoped directory. The `list_files` tool would enumerate files outside `target_dir`.
+
+### 3. `search_files` tool bypasses scope validation
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/tools/scoped.py:136-164` — Same issue as `list_files`. `search_files` calls `_resolve(path)` directly without going through `_validate(path)`. An absolute `path` parameter like `/etc` or `../../` could allow searching file contents outside the scoped directory.
+
+### 4. `_init_target_project` ignores subprocess return codes
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/intake/rebuild.py:278-298` — `subprocess.run(["git", "init"], ...)` and `subprocess.run(["git", "add", "."], ...)` and `subprocess.run(["git", "commit", ...])` all discard return codes. If `git init` fails (e.g., git not installed, permissions), the function silently continues. Violates fail-loud semantics.
+
+### 5. `_git_tag_epic` ignores subprocess return code
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/intake/rebuild.py:309-314` — `subprocess.run(["git", "tag", tag_name], ...)` result is discarded. If tagging fails (e.g., duplicate tag, no commits), no error is reported.
+
+### 6. API `/rebuild` endpoint provides no `on_intervention` callback
+- **Severity:** HIGH
+- **Category:** LOGIC
+- **Evidence:** `src/main.py:206-209` — `run_rebuild()` is called with only `target_dir` and `session_id`. No `on_intervention` or `intervention_logger` is passed. Failed stories during API-mode rebuilds will never trigger intervention handling — they're silently counted as failures.
+
+### 7. API `/rebuild/intervene` creates logger with hardcoded target path
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/main.py:244-246` — When no logger exists for a session, one is created with `log_path=f"./target/intervention-log-{request.session_id}.md"`. This hardcodes `./target/` regardless of the actual `target_dir` the rebuild is using.
+
+### 8. `run_command` scoped tool uses `shell=True`
+- **Severity:** MEDIUM
+- **Category:** SECURITY
+- **Evidence:** `src/tools/scoped.py:178` — `subprocess.run(command, shell=True, ...)`. While `cwd` is correctly set to the scoped root, `shell=True` enables shell metacharacter injection. An LLM (or prompt injection) could execute `cd / && rm -rf *` which would escape the working directory sandbox that file tools enforce.
+
+### 9. Single retry in intervention loop
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/intake/rebuild.py:104-121` — When a story fails and the intervention callback provides a fix instruction, only ONE retry is attempted (lines 115-121). If the retry also fails, the story is marked failed without re-prompting for another intervention. The intervention count tracking per story (line 97 `intervention_count`) suggests multiple interventions were intended.
+
+### 10. `_resolve` allows absolute paths to escape scope for `list_files`/`search_files`
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/tools/scoped.py:33-35` — `_resolve` returns `p.resolve()` unchanged for absolute paths. Tools that call `_resolve` directly (not through `_validate`) — `list_files:123` and `search_files:141` — can operate on arbitrary directories.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### 11. Missing `epics.md` raises unhandled FileNotFoundError
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/rebuild.py:51` calls `load_backlog(target_dir)`, and `src/intake/backlog.py:38-39` raises `FileNotFoundError` if `epics.md` doesn't exist. `run_rebuild()` has no try/except around this call. The exception propagates to the caller uncaught, crashing the CLI or returning a 500 error from the API.
+- **Edge case:** Target directory exists but `epics.md` was not created (intake step skipped or failed).
+
+### 12. `_group_by_epic` produces duplicates for non-contiguous epic stories
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/rebuild.py:318-345` — Uses a sequential scan comparing current epic name to previous. If the backlog has stories like `[Epic1-S1, Epic2-S1, Epic1-S2]`, it creates two separate groups for "Epic1", resulting in duplicate git tags and split progress tracking.
+- **Edge case:** Malformed or non-standard backlog ordering from intake pipeline.
+
+### 13. Git operations may fail without user.name/user.email configured
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/rebuild.py:293-298` — `git commit -m "chore: initial project scaffold"` will fail on systems where `user.name` and `user.email` are not configured (CI, Docker, fresh installs). Return code is not checked.
+- **Edge case:** Fresh Docker container, new developer setup, CI environment.
+
+### 14. Empty `working_dir` string treated as falsy
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/roles.py:146` — `if working_dir:` is False for empty string `""`. If someone accidentally passes `working_dir=""`, it silently falls through to non-scoped tools instead of raising an error.
+- **Edge case:** Caller passes empty string instead of None.
+
+### 15. `search_files` may OOM on large target projects
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/scoped.py:146-163` — `search_files` recursively reads ALL files into memory via `file_path_obj.read_text()`. For large target projects with many/large text files, this could consume excessive memory.
+- **Edge case:** Target project with large generated files, logs, or data files.
+
+### 16. `cli_intervention` callback returns "retry" not the actual fix instruction
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:362` — `cli_intervention` returns the literal string `"retry"` on fix action. In `rebuild.py:112-113`, this string is appended to the task description as `"INTERVENTION FIX INSTRUCTION:\nretry"`. The actual developer fix instruction captured by `cli_intervention_prompt()` is logged but not propagated back to the retry.
+- **Edge case:** This always happens — every CLI intervention fix loses the developer's actual instruction.
+
+### 17. Duplicate git tags not handled
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/rebuild.py:309-314` — If a rebuild is re-run, `git tag` will fail because the tag already exists. The error is silently swallowed (no return code check).
+- **Edge case:** Re-running rebuild on a partially completed target project.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### 18. AC#1 violated: Orchestrator tools do NOT operate on `{target_dir}/`
+- **Severity:** CRITICAL
+- **Category:** SPEC_VIOLATION
+- **AC:** #1 — "for each epic: detailed stories are created → Test Agent writes failing tests → Dev Agent implements → CI runs"
+- **Evidence:** `_run_story_pipeline` (`rebuild.py:234-265`) invokes the orchestrator via `build_orchestrator().invoke(initial_state)`. The orchestrator nodes (`orchestrator.py:179-458`) call `run_sub_agent()` without `working_dir`. Despite the scoped tools infrastructure being built, it's never activated. All agent file operations and bash commands execute in the Shipyard project directory, not `target_dir`.
+
+### 19. AC#1 violated: `_run_bash` in orchestrator.py has no `cwd` support
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC:** #1 / Story dev notes: "The `_run_bash()` helper in `orchestrator.py` uses `subprocess.run()` without `cwd`. For rebuild, it must pass `cwd=target_dir`."
+- **Evidence:** `src/multi_agent/orchestrator.py:142-164` — `_run_bash` still takes only `command` and `timeout` parameters. No `cwd` support was added. All bash nodes (`unit_test_node`, `ci_node`, `git_snapshot_node`, etc.) execute commands in Shipyard's directory.
+
+### 20. AC#2 violated: API mode doesn't return `intervention_needed` status
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC:** #2 — "In API mode: return the failure with `status: "intervention_needed"` and the failure report"
+- **Evidence:** `src/main.py:194-224` — The `/rebuild` endpoint calls `run_rebuild()` without an `on_intervention` callback. There is a `build_intervention_needed_response()` helper in `intervention_log.py:363-389` that was built for this purpose, but it's never imported or used by the API endpoint.
+
+### 21. AC#2 partially violated: Only one intervention retry per story
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC:** #2 — "Track intervention count per story and per epic"
+- **Evidence:** `src/intake/rebuild.py:104-121` — Implementation allows exactly one retry. Task 4 specifies "Re-invoke the pipeline for the same story with the fix applied" (implying a loop), and tracking intervention count per story implies multiple possible interventions. Current code counts but doesn't loop.
+
+### 22. AC#2 violated: CLI intervention loses developer fix instruction
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC:** #2 — "After human provides intervention: Log the intervention details (what was done, what the developer typed)"
+- **Evidence:** `src/main.py:348-362` — `cli_intervention` calls `cli_intervention_prompt()` which captures the developer's input and logs it, but returns the literal string `"retry"` instead of the captured fix instruction. At `rebuild.py:112-113`, this means the retry task description gets `"INTERVENTION FIX INSTRUCTION:\nretry"` instead of the actual fix the developer described.
+
+### 23. Task 6 violated: Scaffold doesn't detect language from spec
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Task:** 6 — "Create basic project scaffold based on the spec summary (language detection from intake)"
+- **Evidence:** `src/intake/rebuild.py:285-289` — Scaffold only creates a generic `README.md`. No language detection from the intake spec summary is performed, and no language-specific files are created.
+
+### 24. Coding standards: Fail-loud semantics violated in subprocess calls
+- **Severity:** MEDIUM
+- **Category:** CONVENTION
+- **Rule:** project-context.md — "Fail-loud semantics: Non-negotiable — errors must surface immediately, never silently swallowed"
+- **Evidence:** `rebuild.py:278-298` and `rebuild.py:309-314` — Multiple `subprocess.run()` calls discard return codes. Git init, add, commit, and tag failures are all silently swallowed.
+
+### 25. `run_rebuild` not using intervention_logger from CLI path
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC:** #2 — "every intervention is logged"
+- **Evidence:** `src/main.py:364-368` — `_run_rebuild_cli` creates an `InterventionLogger` at line 342 but doesn't pass it to `run_rebuild()` as `intervention_logger`. Auto-recovery detection (`_detect_auto_recovery` at `rebuild.py:100-101`) requires `intervention_logger` to be non-None, so auto-recoveries are never logged in CLI mode.
+
+---
+
+## Summary
+
+| Metric | Count |
+|---|---|
+| **Issues Found** | **25** |
+| **By Layer** | Blind Hunter: 10, Edge Case Hunter: 7, Acceptance Auditor: 8 |
+| **By Severity** | Critical: 2, High: 7, Medium: 11, Low: 5 |
+
+### Critical Issues Requiring Immediate Attention
+
+1. **Working directory isolation is completely disconnected** (Findings #1, #18, #19) — The scoped tools infrastructure was built (`scoped.py`, `working_dir` params on `run_sub_agent`, `get_tools_for_role`) but never wired into the orchestrator graph nodes. The rebuild will edit Shipyard's own source tree, not the target project. This is the story's primary requirement.
+
+2. **Scoped tools `list_files` and `search_files` bypass path validation** (Findings #2, #3, #10) — These tools use `_resolve()` instead of `_validate()`, allowing directory traversal attacks via the `path` parameter.
+================================================================================
+
+2026-03-24 14:22:40 [SUCCESS] Code review complete for 4-2-autonomous-ship-rebuild-execution - Issues found: unknown - Duration: 2m 45s
+2026-03-24 14:22:40 [INFO] [3/3] Processing: 4-3-rebuild-intervention-log (status: review)
+2026-03-24 14:22:41 [REVIEW] ==========================================
+2026-03-24 14:22:41 [REVIEW] Reviewing: 4-3-rebuild-intervention-log (status: review)
+2026-03-24 14:22:41 [REVIEW] ==========================================
+2026-03-24 14:22:46 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 4-3-rebuild-intervention-log | Time: 2026-03-24 14:22:46
+================================================================================
+You are performing a BMAD-style adversarial code review for story 4-3-rebuild-intervention-log.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/4-3-rebuild-intervention-log.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 4-3-rebuild-intervention-log
+================================================================================
+Now I have all the context needed. Here is the full three-layer adversarial code review.
+
+---
+
+# Code Review: Story 4-3 — Rebuild Intervention Log
+
+## LAYER 1: BLIND HUNTER
+*Code reviewed in isolation, no regard for spec — purely bugs, security, logic, quality.*
+
+---
+
+### 1. `failure_report` captured but never persisted to markdown
+- **Severity:** HIGH
+- **Category:** LOGIC
+- **Evidence:** `src/intake/intervention_log.py:38` defines `failure_report` on `InterventionEntry`, but `_format_intervention` (lines 200-213) never writes it to the markdown output. The raw pipeline failure data is accepted, stored in memory, then silently discarded when the entry is serialized to disk.
+
+### 2. Evidence validation bypassed by "Not specified" fallback in CLI
+- **Severity:** HIGH
+- **Category:** LOGIC
+- **Evidence:** `src/intake/intervention_log.py:348-350` — if the user enters empty input, the values are replaced with `"Not specified"`. This passes the `__post_init__` validation (line 45-49) which only checks for empty/whitespace. The validation intended to enforce evidence-based entries is circumvented.
+```python
+what_broke=what_broke or "Not specified",
+what_developer_did=what_did or "Not specified",
+agent_limitation=limitation or "Not specified",
+```
+
+### 3. Same evidence bypass in API path
+- **Severity:** HIGH
+- **Category:** LOGIC
+- **Evidence:** `src/intake/intervention_log.py:430-432` — `process_api_intervention` applies the same `or "Not specified"` fallback, bypassing the dataclass validation.
+
+### 4. Path injection via unsanitized `session_id` in file path
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/main.py:245` — `session_id` from user request is directly interpolated into a file path:
+```python
+intervention_logger = InterventionLogger(
+    log_path=f"./target/intervention-log-{request.session_id}.md"
+)
+```
+A session_id like `../../etc/passwd` could write to arbitrary locations. Compare with `src/logging/audit.py:14-19` which sanitizes `session_id` via regex.
+
+### 5. `_intervention_loggers` dict grows unboundedly (memory leak)
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/main.py:228` — `_intervention_loggers: dict[str, InterventionLogger] = {}` is appended to at line 247 but entries are never removed. In a long-running server, each session adds a logger that is never garbage collected.
+
+### 6. `_rewrite_summary` silently no-ops on missing marker
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/intake/intervention_log.py:264-265` — if the `---\n` marker is not found, the method silently returns without updating the summary. Project rules require fail-loud semantics: "errors must surface immediately, never silently swallowed" (`project-context.md:101`).
+```python
+if marker_pos == -1:
+    return
+```
+
+### 7. Invalid `action` silently defaults to "fix"
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/main.py:250` — if the user sends an invalid action string (e.g. `"delete"`), it silently becomes `"fix"` with no warning or error:
+```python
+raw_action = request.action if request.action in valid_actions else "fix"
+```
+This violates fail-loud semantics and could cause unintended rebuild retries.
+
+### 8. `InterventionRequest.action` typed as `str` not `Literal`
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/main.py:106` — `action: str` accepts any string. Should be `action: Literal["fix", "skip", "abort"]` so Pydantic validates at the request boundary instead of silently defaulting.
+
+### 9. Empty `files_involved` produces trailing-space markdown line
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/intake/intervention_log.py:202` — when `files_involved` is empty, `", ".join(...)` produces `""`, rendering as `- **Files Involved:** ` (trailing space, no content).
+
+### 10. Limitation categories use exact string match — fragmentation risk
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/intake/intervention_log.py:108-112` — limitation text is used as dict key with exact match. "Cross-module dependency" and "cross-module dependency" create separate categories, fragmenting the export analysis.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*Every branching path and boundary condition — only unhandled edge cases.*
+
+---
+
+### 11. CLI user enters "skip" or "abort" as genuine `what_broke` content
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/intervention_log.py:321-324` — the user might legitimately want to record that "skip logic was broken" as `what_broke`. But any input whose `.lower()` equals `"skip"` or `"abort"` terminates the prompt flow, making it impossible to log an intervention whose description is literally those words.
+
+### 12. `_rewrite_summary` is not atomic — partial-write risk on crash
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/intervention_log.py:256-269` — reads the full file, constructs new content in memory, then writes it all back with `path.write_text()`. If the process is killed between the read and the write (or during `write_text`), the file could be truncated or corrupted. Although spec says thread safety isn't required, crash resilience during multi-hour rebuilds matters.
+
+### 13. `_append_section` then `_rewrite_summary` creates a write-after-write dependency
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/intervention_log.py:115-116` — `log_intervention` first appends content (opens file in "a" mode), then `_rewrite_summary` reads the entire file back and rewrites it. On Windows, if the file handle from append isn't fully flushed/closed before the read, the read might see stale data. The `with` block in `_append_section` (line 273) does close the handle, but this depends on Python's GC timing with the `open()` in `_rewrite_summary`.
+
+### 14. Rebuild CLI creates `InterventionLogger` but doesn't pass it to `run_rebuild`
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:342-368` — `intervention_logger` is created at line 342 but `run_rebuild` at line 364 is called without `intervention_logger=intervention_logger`. Auto-recovery logging is completely inert in CLI mode — the logger exists but is never used for auto-recovery detection.
+
+### 15. API `/rebuild` endpoint creates no `InterventionLogger`
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:194-224` — the `/rebuild` endpoint calls `run_rebuild` without creating or passing an `InterventionLogger`. Auto-recovery detection is dead code in API mode as well.
+
+### 16. `/rebuild/intervene` endpoint has no context about the active rebuild
+- **Severity:** HIGH
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:253-258` — `epic=""`, `story=""`, `phase="pipeline"`, `failure_report=""`, `retry_counts=""` are all hardcoded empty. The endpoint has no mechanism to retrieve the current story/epic context from the running rebuild, so all API intervention log entries are missing critical context.
+
+### 17. `_detect_auto_recovery` treats count=1 as no retry
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/rebuild.py:191` — `if test_cycles > 1:` means exactly 1 cycle is treated as no retry. If the orchestrator counts starting from 1 (first run = 1), then a single retry would be count=2, which is caught. But if counting from 0, a single retry = count=1 would be missed. The code assumes counting from 0 (initial state at line 252 shows `test_cycle_count: 0`), so `> 1` means at least 2 cycles completed, which is correct. This is borderline but acceptable.
+
+### 18. Log file not created until first entry — `get_summary()` works without file
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/intake/intervention_log.py:91-98` — `_ensure_initialized` creates the file only when `log_intervention` or `log_auto_recovery` is first called. But `get_summary()` and `export_for_analysis()` work from in-memory state without needing the file. If someone calls `get_summary` first, no file exists. This isn't a crash, but the log file won't exist until a first write — could surprise code that checks for the file's presence.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*Implementation vs. story spec and acceptance criteria. Also checks coding-standards.md.*
+
+---
+
+### 19. AC #2 violated: "Not specified" entries are not evidence-based data
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC:** #2 — "provides specific, evidence-based data (not vague summaries)"
+- **Evidence:** Both `cli_intervention_prompt` (line 348-350) and `process_api_intervention` (line 430-432) replace empty user input with "Not specified", allowing vague, non-evidence entries into the log. The `__post_init__` validation (lines 45-49) was designed to prevent this but is bypassed by these fallbacks.
+
+### 20. Task 5 violated: Auto-recovery logging is disconnected in both CLI and API modes
+- **Severity:** CRITICAL
+- **Category:** SPEC_VIOLATION
+- **AC:** Task 5 — "Hook into the conditional routing functions... Call `log_auto_recovery()` when a retry succeeds after a previous failure"
+- **Evidence:** `src/main.py:364-368` — `_run_rebuild_cli` creates an `InterventionLogger` but doesn't pass it as `intervention_logger` to `run_rebuild()`. Similarly, the `/rebuild` API endpoint (line 206-209) calls `run_rebuild` with no `intervention_logger`. The `_detect_auto_recovery` function in `rebuild.py:169-214` is dead code — it can never execute because `intervention_logger` is always `None` at the call site (`rebuild.py:100`).
+
+### 21. Task 4 violated: API intervention endpoint lacks rebuild context
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC:** Task 4 — "return failure_report, story, phase, retry_counts" and "Log the intervention and resume/skip/abort accordingly"
+- **Evidence:** `src/main.py:231-270` — the `/rebuild/intervene` endpoint hardcodes `epic=""`, `story=""`, `phase="pipeline"`, `failure_report=""`, `retry_counts=""`. There is no integration between the `/rebuild` loop and `/rebuild/intervene` — the endpoint cannot resume/skip/abort the running rebuild. It's a standalone logger with no connection to the active pipeline.
+
+### 22. Task 4 violated: No mechanism to return `intervention_needed` from `/rebuild`
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **AC:** Task 4 — "When pipeline fails in API mode, return `{status: intervention_needed, ...}`"
+- **Evidence:** `src/main.py:194-224` — the `/rebuild` endpoint runs the entire rebuild synchronously and returns a `RebuildResponse` when done. There is no async mechanism to pause the rebuild and return `intervention_needed`. The `build_intervention_needed_response` helper (intervention_log.py:363-389) exists but is never called from any endpoint.
+
+### 23. Spec format deviation: `failure_report` not included in markdown output
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC:** #1 — "the log records... what broke or got stuck"
+- **Evidence:** The `InterventionEntry` captures `failure_report` (the raw pipeline output), but `_format_intervention` (lines 200-213) never writes it to the markdown. While the spec's example format doesn't show a "Failure Report" field, the Task 1 definition states `failure_report` is "the error_handler_node output or pipeline failure description" — this raw data is lost.
+
+### 24. Test coverage gap: no tests for `_detect_auto_recovery`
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC:** Task 7 — test suite should cover auto-recovery logging
+- **Evidence:** `tests/test_intake/test_intervention_log.py` has no tests for `_detect_auto_recovery` (in `rebuild.py`). The completion notes claim "24 dedicated tests," but auto-recovery detection logic (the function that checks `test_cycle_count`, `ci_cycle_count`, `edit_retry_count`) has zero test coverage.
+
+### 25. Test coverage gap: no tests for `/rebuild/intervene` endpoint
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC:** Task 7 — coverage for API intervention
+- **Evidence:** No test file tests the FastAPI endpoint at `/rebuild/intervene`. The `TestApiIntervention` class only tests the helper functions (`build_intervention_needed_response`, `process_api_intervention`), not the actual endpoint integration including the path-injection-vulnerable session_id handling.
+
+### 26. Coding standard: `InterventionLogger.log_path` should be `Path` not `str`
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `src/intake/intervention_log.py:83-84` — `log_path` is stored as `str` but used as `Path` throughout (lines 95, 253, 258). The existing `AuditLogger` pattern (audit.py:52) stores `_log_path` as a `Path` object. Inconsistent with the established pattern.
+
+### 27. Coding standard: `get_summary` return type uses `object` instead of a specific type
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `src/intake/intervention_log.py:143` — `get_summary() -> dict[str, object]` uses `object` as the value type. Coding standards require precise type hints. The return contains `int` and `dict[str, int]` values, so `dict[str, int | dict[str, int]]` would be more precise.
+
+---
+
+## SUMMARY
+
+| Metric | Count |
+|---|---|
+| **Issues Found** | **27** |
+| **By Layer** | Blind Hunter: 10, Edge Case Hunter: 8, Acceptance Auditor: 9 |
+| **By Severity** | Critical: 1, High: 9, Medium: 9, Low: 8 |
+
+### Critical Issues Requiring Immediate Attention
+
+1. **Auto-recovery logging is completely dead code** (Finding #20) — `intervention_logger` is never passed to `run_rebuild()` in either CLI or API mode, making Task 5's entire implementation unreachable.
+
+### High-Severity Patterns
+
+- **Evidence validation bypass** (Findings #2, #3, #19) — the "Not specified" fallback undermines the core design goal of forcing evidence-based entries
+- **API intervention is disconnected** (Findings #14, #15, #16, #21, #22) — the `/rebuild/intervene` endpoint operates in isolation with no connection to the running rebuild pipeline
+- **Path injection** (Finding #4) — unsanitized `session_id` in file path construction
+================================================================================
+
+2026-03-24 14:26:32 [SUCCESS] Code review complete for 4-3-rebuild-intervention-log - Issues found: unknown - Duration: 3m 45s
+2026-03-24 14:26:32 [INFO] 
+2026-03-24 14:26:32 [INFO] ============================================================
+2026-03-24 14:26:32 [INFO] CODE REVIEW LOOP COMPLETE
+2026-03-24 14:26:33 [INFO] ============================================================
+2026-03-24 14:26:33 [INFO] Epic: 4
+2026-03-24 14:26:33 [INFO] Total stories: 3
+2026-03-24 14:26:33 [SUCCESS] Reviewed: 3
+2026-03-24 14:26:34 [INFO] Total duration: 10m 10s
+2026-03-24 14:26:34 [INFO] Full log: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic4-code-review-bmad.log
+2026-03-24 14:26:34 [INFO] Results only: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic4-code-review-bmad-results.log
+2026-03-24 14:26:34 [INFO] ============================================================
+
+============================================================
+SUMMARY
+============================================================
+Epic: 4
+Total stories: 3
+Reviewed: 3
+Skipped: 0
+Failed: 0
+Total duration: 10m 10s
+============================================================

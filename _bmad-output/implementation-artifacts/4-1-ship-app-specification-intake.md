@@ -1,6 +1,6 @@
 # Story 4.1: Ship App Specification Intake
 
-Status: ready-for-dev
+Status: complete
 
 ## Story
 
@@ -15,18 +15,18 @@ so that the agent can break it into epics and stories for autonomous rebuilding.
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Create the intake pipeline entry point (AC: #1)
-  - [ ] Add a new CLI command `--intake <spec-dir>` to `src/main.py` that accepts a path to a target project's documentation directory
-  - [ ] Add a new API endpoint `POST /intake` that accepts `{spec_dir: str, session_id?: str}`
-  - [ ] Both routes call the same intake pipeline function
-- [ ] Task 2: Implement `src/intake/spec_reader.py` — spec ingestion (AC: #1)
-  - [ ] Create `src/intake/` module with `__init__.py`
-  - [ ] `read_project_specs(spec_dir: str) -> str` — recursively reads all `.md`, `.txt`, `.py`, `.json`, `.yaml` files from the spec directory
-  - [ ] Concatenate contents with clear file path headers: `## File: {relative_path}\n{content}`
-  - [ ] Respect the 5000-char truncation rule from the tool contract for individual large files
-  - [ ] Return the combined spec text as a single string
-- [ ] Task 3: Implement `src/intake/pipeline.py` — two-stage intake graph (AC: #1, #2)
-  - [ ] Define `IntakeState(TypedDict)`:
+- [x] Task 1: Create the intake pipeline entry point (AC: #1)
+  - [x]Add a new CLI command `--intake <spec-dir>` to `src/main.py` that accepts a path to a target project's documentation directory
+  - [x]Add a new API endpoint `POST /intake` that accepts `{spec_dir: str, session_id?: str}`
+  - [x]Both routes call the same intake pipeline function
+- [x] Task 2: Implement `src/intake/spec_reader.py` — spec ingestion (AC: #1)
+  - [x]Create `src/intake/` module with `__init__.py`
+  - [x]`read_project_specs(spec_dir: str) -> str` — recursively reads all `.md`, `.txt`, `.py`, `.json`, `.yaml` files from the spec directory
+  - [x]Concatenate contents with clear file path headers: `## File: {relative_path}\n{content}`
+  - [x]Respect the 5000-char truncation rule from the tool contract for individual large files
+  - [x]Return the combined spec text as a single string
+- [x] Task 3: Implement `src/intake/pipeline.py` — two-stage intake graph (AC: #1, #2)
+  - [x]Define `IntakeState(TypedDict)`:
     ```python
     class IntakeState(TypedDict, total=False):
         task_id: str
@@ -39,28 +39,28 @@ so that the agent can break it into epics and stories for autonomous rebuilding.
         pipeline_status: str  # running|completed|failed
         error: str
     ```
-  - [ ] Build a `StateGraph(IntakeState)` with two LLM nodes:
+  - [x]Build a `StateGraph(IntakeState)` with two LLM nodes:
     1. `intake_specs_node` — spawns a Dev Agent (Sonnet) with prompt: "Read and summarize these project specifications into a structured spec summary. Identify: features, tech stack, architecture, key behaviors, and acceptance criteria."
     2. `create_backlog_node` — spawns a Dev Agent (Sonnet) with prompt: "From this spec summary, create a prioritized backlog of epics and stories. Each story must have: user story statement, acceptance criteria (BDD Given/When/Then), and technical notes."
-  - [ ] Wire edges: `START → intake_specs_node → create_backlog_node → output_node → END`
-  - [ ] `output_node` writes two files to `{output_dir}`:
+  - [x]Wire edges: `START → intake_specs_node → create_backlog_node → output_node → END`
+  - [x]`output_node` writes two files to `{output_dir}`:
     - `spec-summary.md` — the structured spec summary
     - `epics.md` — the generated epics and stories backlog
-- [ ] Task 4: Implement target directory configuration (AC: #1)
-  - [ ] Add `--target-dir` parameter to CLI (default: `./target/`)
-  - [ ] The intake pipeline writes output to `{target_dir}/` so the orchestrator knows where to find the backlog
-  - [ ] Add `target/` to `.gitignore`
-- [ ] Task 5: Wire intake pipeline to the orchestrator (AC: #2)
-  - [ ] The intake output (`epics.md`) becomes the input for the TDD orchestrator pipeline (Story 3.5)
-  - [ ] Add a helper function `load_backlog(target_dir: str) -> list[dict]` that parses the generated `epics.md` into a structured list of `{epic, story, description, acceptance_criteria}`
-  - [ ] This parsed backlog drives the loop in Story 4.2
-- [ ] Task 6: Write tests (AC: #1, #2)
-  - [ ] Test `read_project_specs()` with a temp directory containing sample spec files
-  - [ ] Test `IntakeState` has all required fields
-  - [ ] Test intake graph has correct node count and edge connections
-  - [ ] Test `output_node` writes both files to the output directory
-  - [ ] Test `load_backlog()` parses a sample epics.md into structured list
-  - [ ] Integration test: run intake pipeline with mock LLM calls on a small spec directory
+- [x] Task 4: Implement target directory configuration (AC: #1)
+  - [x]Add `--target-dir` parameter to CLI (default: `./target/`)
+  - [x]The intake pipeline writes output to `{target_dir}/` so the orchestrator knows where to find the backlog
+  - [x]Add `target/` to `.gitignore`
+- [x] Task 5: Wire intake pipeline to the orchestrator (AC: #2)
+  - [x]The intake output (`epics.md`) becomes the input for the TDD orchestrator pipeline (Story 3.5)
+  - [x]Add a helper function `load_backlog(target_dir: str) -> list[dict]` that parses the generated `epics.md` into a structured list of `{epic, story, description, acceptance_criteria}`
+  - [x]This parsed backlog drives the loop in Story 4.2
+- [x] Task 6: Write tests (AC: #1, #2)
+  - [x]Test `read_project_specs()` with a temp directory containing sample spec files
+  - [x]Test `IntakeState` has all required fields
+  - [x]Test intake graph has correct node count and edge connections
+  - [x]Test `output_node` writes both files to the output directory
+  - [x]Test `load_backlog()` parses a sample epics.md into structured list
+  - [x]Integration test: run intake pipeline with mock LLM calls on a small spec directory
 
 ## Dev Notes
 
@@ -106,9 +106,30 @@ so that the agent can break it into epics and stories for autonomous rebuilding.
 ## Dev Agent Record
 
 ### Agent Model Used
+claude-opus-4-6
 
 ### Debug Log References
+N/A — all 32 tests passed on first run.
 
 ### Completion Notes List
+- Created `src/intake/` module: spec_reader.py, pipeline.py, backlog.py
+- IntakeState TypedDict with all required fields
+- Two-stage LangGraph pipeline: read_specs → intake_specs → create_backlog → output
+- `read_project_specs()` reads .md/.txt/.py/.json/.yaml/.yml with 5000-char truncation
+- `load_backlog()` parses epics.md into structured list for orchestrator consumption
+- `run_intake_pipeline()` convenience function compiles and invokes the pipeline
+- CLI: `--intake <spec-dir>` and `--target-dir` flags in main.py
+- API: `POST /intake` endpoint with IntakeRequest/IntakeResponse models
+- `target/` added to .gitignore
 
 ### File List
+- src/intake/__init__.py (new)
+- src/intake/spec_reader.py (new)
+- src/intake/pipeline.py (new)
+- src/intake/backlog.py (new)
+- src/main.py (modified — intake CLI/API entry points)
+- .gitignore (modified — added target/)
+- tests/test_intake/__init__.py (new)
+- tests/test_intake/test_spec_reader.py (new)
+- tests/test_intake/test_pipeline.py (new)
+- tests/test_intake/test_backlog.py (new)

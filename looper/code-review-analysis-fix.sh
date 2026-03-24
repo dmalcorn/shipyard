@@ -619,7 +619,7 @@ $prompt
 
 EOF
 
-    echo -e "${YELLOW}>>> Invoking Claude for analysis...${NC}"
+    echo -e "${YELLOW}>>> Invoking BMAD analyst for review comparison...${NC}"
     echo -e "${CYAN}    (Press Ctrl+C to stop gracefully)${NC}"
     run_claude_with_signal_handling "$prompt" "$TOOLS_ANALYZE"
     local result="$CLAUDE_RESULT"
@@ -779,7 +779,7 @@ $prompt
 
 EOF
 
-    echo -e "${YELLOW}>>> Invoking Dev Agent to apply fixes...${NC}"
+    echo -e "${YELLOW}>>> Invoking BMAD dev agent to apply fixes...${NC}"
     run_claude_with_signal_handling "$prompt" "$TOOLS_FIX"
     local result="$CLAUDE_RESULT"
     local exit_code=$CLAUDE_EXIT_CODE
@@ -953,7 +953,7 @@ $prompt
 
 EOF
 
-    echo -e "${YELLOW}>>> Invoking Architect Agent...${NC}"
+    echo -e "${YELLOW}>>> Invoking BMAD architect agent...${NC}"
     run_claude_with_signal_handling "$prompt" "$TOOLS_ARCHITECT"
     local result="$CLAUDE_RESULT"
     local exit_code=$CLAUDE_EXIT_CODE
@@ -1057,7 +1057,7 @@ $prompt
 
 EOF
 
-    echo -e "${YELLOW}>>> Invoking Dev Agent to apply architect fixes...${NC}"
+    echo -e "${YELLOW}>>> Invoking BMAD dev agent to apply architect fixes...${NC}"
     run_claude_with_signal_handling "$prompt" "$TOOLS_FIX"
     local result="$CLAUDE_RESULT"
     local exit_code=$CLAUDE_EXIT_CODE
@@ -1201,7 +1201,7 @@ EOF
             log "INFO" "Pausing 15 seconds before CI fix..."
             sleep 15
 
-            echo -e "${YELLOW}>>> Invoking Dev Agent to fix CI issues...${NC}"
+            echo -e "${YELLOW}>>> Invoking BMAD dev agent to fix CI issues...${NC}"
 
             run_claude_with_signal_handling "$fix_prompt" "$TOOLS_CI_FIX" "$CLAUDE_TIMEOUT_LONG"
             local fix_result="$CLAUDE_RESULT"

@@ -213,7 +213,7 @@ By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
 "
 
     local story_num=$(echo "$story_id" | cut -d'-' -f1-2)
-    echo -e "${YELLOW}>>> Invoking Claude for code review $story_num...${NC}"
+    echo -e "${YELLOW}>>> Invoking BMAD code reviewer for $story_num...${NC}"
     log "INFO" "Running read-only code review (tools: $TOOLS_REVIEW_READONLY)..."
 
     # Log the prompt
@@ -230,11 +230,11 @@ EOF
 
     # Run Claude with read-only tools
     # Note: </dev/null prevents claude from consuming the while loop's stdin
-    echo -e "${YELLOW}>>> Waiting for Claude response...${NC}"
+    echo -e "${YELLOW}>>> Waiting for BMAD code reviewer response...${NC}"
     local result=""
     local exit_code=0
     result=$(claude --print --allowedTools "$TOOLS_REVIEW_READONLY" -- "$prompt" </dev/null 2>&1) || exit_code=$?
-    echo -e "${GREEN}>>> Claude response received.${NC}"
+    echo -e "${GREEN}>>> BMAD code reviewer response received.${NC}"
 
     # Log the full output
     cat >> "$LOG_FILE" << EOF

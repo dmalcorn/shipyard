@@ -9,8 +9,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import uuid
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -103,14 +104,14 @@ class InterventionRequest(BaseModel):
     what_broke: str
     what_developer_did: str
     agent_limitation: str
-    action: str  # "fix", "skip", or "abort"
+    action: Literal["fix", "skip", "abort"]
 
 
 class InterventionResponse(BaseModel):
     """Response body for the /rebuild/intervene endpoint."""
 
     session_id: str
-    action: str
+    action: Literal["fix", "skip", "abort"]
     logged: bool
 
 
@@ -241,14 +242,11 @@ def rebuild_intervene(request: InterventionRequest) -> InterventionResponse:
     intervention_logger = _intervention_loggers.get(request.session_id)
     if not intervention_logger:
         # Create a logger if one doesn't exist for this session
-        intervention_logger = InterventionLogger(
-            log_path=f"./target/intervention-log-{request.session_id}.md"
-        )
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", request.session_id)
+        intervention_logger = InterventionLogger(log_path=f"./target/intervention-log-{safe_id}.md")
         _intervention_loggers[request.session_id] = intervention_logger
 
-    valid_actions = ("fix", "skip", "abort")
-    raw_action = request.action if request.action in valid_actions else "fix"
-    action = cast(Literal["fix", "skip", "abort"], raw_action)
+    action = request.action  # Already validated by Pydantic Literal type
 
     process_api_intervention(
         logger=intervention_logger,
@@ -347,7 +345,7 @@ def _run_rebuild_cli(target_dir: str) -> None:
 
     def cli_intervention(failure_report: str) -> str | None:
         """Prompt user for structured intervention on pipeline failure."""
-        action = cli_intervention_prompt(
+        action, fix_instruction = cli_intervention_prompt(
             logger=intervention_logger,
             epic="",
             story="",
@@ -359,12 +357,13 @@ def _run_rebuild_cli(target_dir: str) -> None:
             return None
         if action == "skip":
             return "skip"
-        return "retry"
+        return fix_instruction if fix_instruction else "retry"
 
     result = run_rebuild(
         target_dir=target_dir,
         session_id=session_id,
         on_intervention=cli_intervention,
+        intervention_logger=intervention_logger,
     )
 
     print("\nRebuild complete.")

@@ -1,6 +1,6 @@
 # Story 4.2: Autonomous Ship Rebuild Execution
 
-Status: ready-for-dev
+Status: complete
 
 ## Story
 
@@ -16,36 +16,36 @@ so that the agent proves it can complete a real build task with the full multi-a
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Implement the rebuild loop in `src/intake/rebuild.py` (AC: #1)
-  - [ ] Create `run_rebuild(target_dir: str, session_id: str) -> dict` — the top-level rebuild orchestrator
-  - [ ] Load the backlog from `{target_dir}/epics.md` using `load_backlog()` from Story 4.1
-  - [ ] For each epic in the backlog:
+- [x] Task 1: Implement the rebuild loop in `src/intake/rebuild.py` (AC: #1)
+  - [x]Create `run_rebuild(target_dir: str, session_id: str) -> dict` — the top-level rebuild orchestrator
+  - [x]Load the backlog from `{target_dir}/epics.md` using `load_backlog()` from Story 4.1
+  - [x]For each epic in the backlog:
     1. For each story in the epic:
        - Invoke `build_orchestrator()` from `src/multi_agent/orchestrator.py` with the story as `task_description` and relevant context files
        - Capture the pipeline result (completed or failed)
        - Log the result to the intervention log (Story 4.3)
     2. After all stories in an epic complete, create a git tag: `epic-{n}-complete`
-  - [ ] Track overall progress in a `rebuild-status.md` file in `{target_dir}/`
-- [ ] Task 2: Implement working directory isolation (AC: #1)
-  - [ ] The orchestrator's tools (`read_file`, `edit_file`, `write_file`, etc.) must operate on the `{target_dir}/` project, NOT on Shipyard's own source tree
-  - [ ] Add a `working_dir` parameter to `run_sub_agent()` that sets the current working directory for all tool operations within the sub-agent
-  - [ ] When spawning agents for the rebuild, pass `working_dir=target_dir`
-  - [ ] Validate that no tool call can write outside `{target_dir}/` during rebuild mode
-- [ ] Task 3: Implement rebuild CLI and API entry points (AC: #1)
-  - [ ] Add `--rebuild <target-dir>` flag to `src/main.py` CLI
-  - [ ] Add `POST /rebuild` endpoint: `{target_dir: str, session_id?: str}`
-  - [ ] Both call `run_rebuild()` with appropriate session setup
-- [ ] Task 4: Implement intervention detection and logging (AC: #2)
-  - [ ] When the orchestrator pipeline returns `pipeline_status: "failed"`, pause and:
+  - [x]Track overall progress in a `rebuild-status.md` file in `{target_dir}/`
+- [x] Task 2: Implement working directory isolation (AC: #1)
+  - [x]The orchestrator's tools (`read_file`, `edit_file`, `write_file`, etc.) must operate on the `{target_dir}/` project, NOT on Shipyard's own source tree
+  - [x]Add a `working_dir` parameter to `run_sub_agent()` that sets the current working directory for all tool operations within the sub-agent
+  - [x]When spawning agents for the rebuild, pass `working_dir=target_dir`
+  - [x]Validate that no tool call can write outside `{target_dir}/` during rebuild mode
+- [x] Task 3: Implement rebuild CLI and API entry points (AC: #1)
+  - [x]Add `--rebuild <target-dir>` flag to `src/main.py` CLI
+  - [x]Add `POST /rebuild` endpoint: `{target_dir: str, session_id?: str}`
+  - [x]Both call `run_rebuild()` with appropriate session setup
+- [x] Task 4: Implement intervention detection and logging (AC: #2)
+  - [x]When the orchestrator pipeline returns `pipeline_status: "failed"`, pause and:
     1. Write a pending intervention entry to the intervention log (Story 4.3)
     2. In CLI mode: print the failure report and prompt for manual intervention instruction
     3. In API mode: return the failure with `status: "intervention_needed"` and the failure report
-  - [ ] After human provides intervention (fix instruction or "skip"):
+  - [x]After human provides intervention (fix instruction or "skip"):
     1. Log the intervention details (what was done, what the developer typed)
     2. Re-invoke the pipeline for the same story with the fix applied
-  - [ ] Track intervention count per story and per epic
-- [ ] Task 5: Implement rebuild progress tracking (AC: #1, #3)
-  - [ ] Write `{target_dir}/rebuild-status.md` after each story completes:
+  - [x]Track intervention count per story and per epic
+- [x] Task 5: Implement rebuild progress tracking (AC: #1, #3)
+  - [x]Write `{target_dir}/rebuild-status.md` after each story completes:
     ```markdown
     # Ship App Rebuild Status
     ## Epic 1: {title}
@@ -56,20 +56,20 @@ so that the agent proves it can complete a real build task with the full multi-a
     Stories completed: X/Y
     Interventions: N
     ```
-  - [ ] On rebuild completion, add final summary with total stories, interventions, and wall-clock time
-- [ ] Task 6: Implement project initialization for target directory (AC: #1)
-  - [ ] Before the first story runs, initialize the target project:
+  - [x]On rebuild completion, add final summary with total stories, interventions, and wall-clock time
+- [x] Task 6: Implement project initialization for target directory (AC: #1)
+  - [x]Before the first story runs, initialize the target project:
     1. `git init` in `{target_dir}/` if not already a git repo
     2. Create basic project scaffold based on the spec summary (language detection from intake)
     3. Run initial commit: "chore: initial project scaffold"
-  - [ ] The scaffold should include the minimum files needed for the first story's tests to have something to run against
-- [ ] Task 7: Write tests (AC: #1-#3)
-  - [ ] Test `run_rebuild()` with a mock backlog (2 epics, 2 stories each)
-  - [ ] Test working directory isolation — verify tool calls target `{target_dir}/` not Shipyard root
-  - [ ] Test intervention detection — pipeline failure triggers intervention logging
-  - [ ] Test `rebuild-status.md` is written and updated after each story
-  - [ ] Test git tagging after epic completion
-  - [ ] Test project initialization creates git repo and initial commit
+  - [x]The scaffold should include the minimum files needed for the first story's tests to have something to run against
+- [x] Task 7: Write tests (AC: #1-#3)
+  - [x]Test `run_rebuild()` with a mock backlog (2 epics, 2 stories each)
+  - [x]Test working directory isolation — verify tool calls target `{target_dir}/` not Shipyard root
+  - [x]Test intervention detection — pipeline failure triggers intervention logging
+  - [x]Test `rebuild-status.md` is written and updated after each story
+  - [x]Test git tagging after epic completion
+  - [x]Test project initialization creates git repo and initial commit
 
 ## Dev Notes
 
@@ -122,9 +122,31 @@ so that the agent proves it can complete a real build task with the full multi-a
 ## Dev Agent Record
 
 ### Agent Model Used
+claude-opus-4-6
 
 ### Debug Log References
+N/A — all 358 tests passed (including 25 new Story 4-2 tests).
 
 ### Completion Notes List
+- Created `src/intake/rebuild.py` — full rebuild loop with `run_rebuild()`
+- `_init_target_project()` — git init + README scaffold + initial commit
+- `_run_story_pipeline()` — invokes `build_orchestrator()` per story
+- `_git_tag_epic()` — git tag after each epic completes
+- `_write_rebuild_status()` — progress tracking in rebuild-status.md
+- Intervention handling via `on_intervention` callback (CLI prompts, API returns)
+- Created `src/tools/scoped.py` — working-directory-scoped tools factory
+  - All 6 tools (read/edit/write/list/search/run_command) operate within target_dir
+  - Path validation prevents escaping scoped directory
+- Extended `run_sub_agent()` and `create_agent_subgraph()` with `working_dir` parameter
+- Extended `get_tools_for_role()` with `working_dir` parameter
+- CLI: `--rebuild <target-dir>` flag with interactive intervention
+- API: `POST /rebuild` endpoint with RebuildRequest/RebuildResponse models
 
 ### File List
+- src/intake/rebuild.py (new)
+- src/tools/scoped.py (new)
+- src/multi_agent/spawn.py (modified — working_dir param)
+- src/multi_agent/roles.py (modified — working_dir param in get_tools_for_role)
+- src/main.py (modified — rebuild CLI/API entry points)
+- tests/test_intake/test_rebuild.py (new)
+- tests/test_tools/test_scoped.py (new)
