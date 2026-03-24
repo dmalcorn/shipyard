@@ -26,7 +26,7 @@ from src.intake.intervention_log import (
 )
 from src.intake.pipeline import run_intake_pipeline
 from src.intake.rebuild import run_rebuild
-from src.logging.audit import AuditLogger
+from src.audit_log.audit import AuditLogger
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,6 @@ def _extract_response(result: dict[str, Any]) -> str:
 def _run_cli() -> None:
     """Run the interactive CLI loop."""
     session_id = str(uuid.uuid4())
-    config = create_trace_config(session_id=session_id, task_id=session_id)
 
     audit = AuditLogger(session_id=session_id, task_description="Interactive CLI session")
     audit.start_session()
@@ -313,12 +312,18 @@ def _run_cli() -> None:
                 print("Goodbye.")
                 break
 
+            # Each turn gets a fresh thread_id so the checkpointer doesn't
+            # accumulate messages from prior turns.  The session_id is kept
+            # constant for audit logging and LangSmith trace grouping.
+            turn_id = str(uuid.uuid4())
+            turn_config = create_trace_config(session_id=turn_id, task_id=session_id)
+
             result = graph.invoke(
                 {
                     "messages": [HumanMessage(content=stripped)],
                     "task_id": session_id,
                 },
-                config=config,
+                config=turn_config,
             )
 
             response_text = _extract_response(result)

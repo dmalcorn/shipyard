@@ -22,7 +22,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
-from src.logging.audit import get_logger
+from src.audit_log.audit import get_logger
 from src.multi_agent.spawn import run_sub_agent
 
 logger = logging.getLogger(__name__)

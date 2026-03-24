@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from src.logging.audit import AuditLogger, _active_loggers, get_logger
+from src.audit_log.audit import AuditLogger, _active_loggers, get_logger
 
 
 class TestSessionLifecycle:
