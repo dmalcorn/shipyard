@@ -13,8 +13,12 @@ import re
 import uuid
 from typing import Any, Literal
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
@@ -120,6 +124,20 @@ class InterventionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Shipyard", version="0.1.0")
+
+# ---------------------------------------------------------------------------
+# Static files & dashboard
+# ---------------------------------------------------------------------------
+
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/")
+async def dashboard() -> FileResponse:
+    """Serve the Shipyard dashboard."""
+    return FileResponse(str(_static_dir / "index.html"))
 
 
 @app.get("/health")
@@ -313,15 +331,17 @@ def _run_cli() -> None:
                 break
 
             # Each turn gets a fresh thread_id so the checkpointer doesn't
-            # accumulate messages from prior turns.  The session_id is kept
-            # constant for audit logging and LangSmith trace grouping.
+            # accumulate messages from prior turns and each turn produces
+            # its own independent LangSmith trace.
             turn_id = str(uuid.uuid4())
-            turn_config = create_trace_config(session_id=turn_id, task_id=session_id)
+            turn_config = create_trace_config(session_id=turn_id, task_id=turn_id)
+            # Give the trace a human-readable name (truncated instruction)
+            turn_config["run_name"] = f"cli: {stripped[:60]}"
 
             result = graph.invoke(
                 {
                     "messages": [HumanMessage(content=stripped)],
-                    "task_id": session_id,
+                    "task_id": turn_id,
                 },
                 config=turn_config,
             )
