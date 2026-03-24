@@ -16,6 +16,7 @@ from langgraph.graph import END, START, StateGraph
 
 from src.intake.spec_reader import read_project_specs
 from src.multi_agent.spawn import run_sub_agent
+from src.pipeline_tracker import advance_stage, complete_pipeline, fail_pipeline, start_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class IntakeState(TypedDict, total=False):
 
 def read_specs_node(state: IntakeState) -> dict[str, Any]:
     """Read project specs from the spec directory."""
+    advance_stage(state.get("session_id", ""), "reading_specs")
     spec_dir = state.get("spec_dir", "")
     if not spec_dir:
         return {"pipeline_status": "failed", "error": "No spec_dir provided"}
@@ -59,6 +61,7 @@ def read_specs_node(state: IntakeState) -> dict[str, Any]:
 def intake_specs_node(state: IntakeState) -> dict[str, Any]:
     """Spawn a Dev Agent to summarize project specifications."""
     session_id = state.get("session_id", "")
+    advance_stage(session_id, "summarizing")
     task_id = state.get("task_id", "")
     raw_specs = state.get("raw_specs", "")
 
@@ -85,6 +88,7 @@ def intake_specs_node(state: IntakeState) -> dict[str, Any]:
 def create_backlog_node(state: IntakeState) -> dict[str, Any]:
     """Spawn a Dev Agent to create epics and stories from the spec summary."""
     session_id = state.get("session_id", "")
+    advance_stage(session_id, "generating_backlog")
     task_id = state.get("task_id", "")
     spec_summary = state.get("spec_summary", "")
 
@@ -120,6 +124,7 @@ def create_backlog_node(state: IntakeState) -> dict[str, Any]:
 
 def output_node(state: IntakeState) -> dict[str, Any]:
     """Write spec summary and epics to the output directory."""
+    advance_stage(state.get("session_id", ""), "writing_output")
     output_dir = state.get("output_dir", "")
     spec_summary = state.get("spec_summary", "")
     epics_and_stories = state.get("epics_and_stories", "")
@@ -201,6 +206,8 @@ def run_intake_pipeline(
 
     task_id = f"intake-{session_id[:8]}"
 
+    start_pipeline(session_id, "intake")
+
     graph = build_intake_graph()
     compiled = graph.compile()
 
@@ -213,4 +220,11 @@ def run_intake_pipeline(
     }
 
     result = compiled.invoke(initial_state)  # type: ignore[arg-type]  # LangGraph Pregel generic not stable across versions
-    return dict(result)
+    result_dict = dict(result)
+
+    if result_dict.get("pipeline_status") == "completed":
+        complete_pipeline(session_id)
+    else:
+        fail_pipeline(session_id, result_dict.get("error", ""))
+
+    return result_dict

@@ -827,6 +827,78 @@ const INTAKE_CONNS = ['fc-n1', 'fc-n2', 'fc-n3', 'fc-n4'];
 const REBUILD_NODES = ['fr-load', 'fr-init', 'fr-tdd', 'fr-test', 'fr-review', 'fr-tag', 'fr-done'];
 const REBUILD_CONNS = ['fc-r1', 'fc-r2', 'fc-r3', 'fc-r4', 'fc-r5', 'fc-r6'];
 
+// ── Server-side stage → flow node index mapping ──
+const STAGE_MAP = {
+  instruct: {
+    user_input: 0, agent_node: 1, should_continue: 2, tool_calls: 3, response: 4,
+    nodes: INSTRUCT_NODES, conns: INSTRUCT_CONNS
+  },
+  intake: {
+    reading_specs: 0, summarizing: 1, generating_backlog: 2, writing_output: 3, complete: 4,
+    nodes: INTAKE_NODES, conns: INTAKE_CONNS
+  },
+  rebuild: {
+    loading_backlog: 0, init_project: 1, tdd_pipeline: 2, testing: 3, reviewing: 4, git_tag: 5, complete: 6,
+    nodes: REBUILD_NODES, conns: REBUILD_CONNS
+  }
+};
+
+// ── Poll server for real pipeline stage ──
+function startStagePoller(sessionId, pipelineType, onDone) {
+  const map = STAGE_MAP[pipelineType];
+  if (!map) return null;
+
+  const interval = setInterval(async () => {
+    try {
+      const r = await fetch(`${API}/pipeline/${sessionId}/stage`, { signal: AbortSignal.timeout(3000) });
+      const d = await r.json();
+
+      if (d.status === 'unknown') return; // session not registered yet, keep polling
+
+      const idx = map[d.stage];
+      if (idx !== undefined && d.status === 'running') {
+        advanceFlow(map.nodes, map.conns, idx);
+        // Activate rebuild loop bracket when inside story loop
+        if (pipelineType === 'rebuild' && idx >= 2 && idx <= 5) {
+          document.getElementById('fr-loop').classList.add('active-loop');
+        }
+        // Update rebuild stats from story_progress if available
+        if (pipelineType === 'rebuild' && d.story_progress) {
+          const sp = d.story_progress;
+          if (sp.completed !== undefined) document.getElementById('statCompleted').textContent = sp.completed;
+          if (sp.failed !== undefined) document.getElementById('statFailed').textContent = sp.failed;
+          if (sp.total_stories !== undefined) document.getElementById('statTotal').textContent = sp.total_stories;
+          if (sp.total_stories > 0 && sp.story_index !== undefined) {
+            const pct = (sp.story_index / sp.total_stories) * 100;
+            document.getElementById('rebuildProgress').style.width = pct + '%';
+          }
+          if (sp.story && sp.epic) {
+            document.getElementById('rebuildStatus').innerHTML =
+              `<span class="spinner"></span> <strong>${escapeHtml(sp.epic)}</strong> / ${escapeHtml(sp.story)} (${sp.story_index || '?'}/${sp.total_stories || '?'})`;
+          }
+        }
+      } else if (d.status === 'completed') {
+        clearInterval(interval);
+        completeFlow(map.nodes, map.conns);
+        if (pipelineType === 'rebuild') document.getElementById('fr-loop').classList.remove('active-loop');
+        if (onDone) onDone(d);
+        setTimeout(() => resetFlow('', map.nodes, map.conns), 5000);
+      } else if (d.status === 'failed') {
+        clearInterval(interval);
+        const failIdx = idx !== undefined ? idx : 0;
+        failFlow(map.nodes, map.conns, failIdx);
+        if (pipelineType === 'rebuild') document.getElementById('fr-loop').classList.remove('active-loop');
+        if (onDone) onDone(d);
+        setTimeout(() => resetFlow('', map.nodes, map.conns), 5000);
+      }
+    } catch {
+      // Network error during poll — ignore, retry on next tick
+    }
+  }, 1500);
+
+  return interval;
+}
+
 // ── Health Check ──
 async function checkHealth() {
   const badge = document.getElementById('healthBadge');
@@ -885,31 +957,30 @@ instructForm.addEventListener('submit', async (e) => {
   instructBtn.disabled = true;
   instructBtn.innerHTML = '<span class="spinner"></span>';
 
-  // Flow: User Input → Agent
+  // Start with user_input shown as active immediately
   advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 0);
-  await new Promise(r => setTimeout(r, 150));
-  advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 1);
 
   try {
     const payload = { message };
     if (instructSessionId) payload.session_id = instructSessionId;
 
-    // Flow: Agent → Should Continue → Tools
-    advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 2);
-    await new Promise(r => setTimeout(r, 100));
-    advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 3);
-
-    const r = await fetch(`${API}/instruct`, {
+    // Fire the request — polling will update the flow graph from server state
+    const fetchPromise = fetch(`${API}/instruct`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+
+    // Start polling for real server-side stage (session_id may be generated server-side)
+    // We poll after a short delay to let the server register the session
+    let poller = null;
+    const r = await fetchPromise;
     const d = await r.json();
 
     if (r.ok) {
       instructSessionId = d.session_id;
       appendMessage('agent', d.response, `session: ${d.session_id} · messages: ${d.messages_count}`);
-      // Flow: → Response (complete)
+      // Server already completed — show completed flow
       completeFlow(INSTRUCT_NODES, INSTRUCT_CONNS);
       setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 4000);
     } else {
@@ -917,6 +988,7 @@ instructForm.addEventListener('submit', async (e) => {
       failFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 3);
       setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 5000);
     }
+    if (poller) clearInterval(poller);
   } catch (err) {
     appendMessage('agent', `Network error: ${err.message}`, null);
     failFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 1);
@@ -942,34 +1014,39 @@ async function runIntake() {
   result.className = 'intake-result visible';
   result.textContent = 'Pipeline running...';
 
-  // Flow: Read Specs
+  // Show initial flow state
   advanceFlow(INTAKE_NODES, INTAKE_CONNS, 0);
 
   try {
     const payload = { spec_dir: specDir, target_dir: targetDir || './target/' };
     if (sessionId) payload.session_id = sessionId;
 
-    // Flow: Summarize
-    await new Promise(r => setTimeout(r, 200));
-    advanceFlow(INTAKE_NODES, INTAKE_CONNS, 1);
+    // Generate session ID client-side so we can poll
+    const clientSessionId = sessionId || crypto.randomUUID();
+    payload.session_id = clientSessionId;
+
+    // Start polling for real server stage updates
+    const poller = startStagePoller(clientSessionId, 'intake', null);
 
     const r = await fetch(`${API}/intake`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-
-    // Flow: Gen Backlog → Write Output
-    advanceFlow(INTAKE_NODES, INTAKE_CONNS, 3);
+    if (poller) clearInterval(poller);
     const d = await r.json();
 
     if (r.ok) {
       result.innerHTML = `<strong style="color:var(--green-ok)">Status:</strong> ${escapeHtml(d.pipeline_status)}<br><strong>Session:</strong> ${escapeHtml(d.session_id)}<br><strong>Output:</strong> ${escapeHtml(d.output_dir)}${d.error ? `<br><strong style="color:var(--red-alert)">Error:</strong> ${escapeHtml(d.error)}` : ''}`;
-      completeFlow(INTAKE_NODES, INTAKE_CONNS);
+      if (d.pipeline_status === 'completed') {
+        completeFlow(INTAKE_NODES, INTAKE_CONNS);
+      } else {
+        failFlow(INTAKE_NODES, INTAKE_CONNS, 2);
+      }
       setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
     } else {
       result.innerHTML = `<strong style="color:var(--red-alert)">Error ${r.status}:</strong> ${escapeHtml(JSON.stringify(d))}`;
-      failFlow(INTAKE_NODES, INTAKE_CONNS, 2);
+      failFlow(INTAKE_NODES, INTAKE_CONNS, 0);
       setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
     }
   } catch (err) {
@@ -994,29 +1071,23 @@ async function runRebuild() {
   btn.innerHTML = '<span class="spinner"></span> Rebuilding...';
   status.innerHTML = '<span class="spinner"></span> Rebuild in progress...';
 
-  // Flow: Load Backlog → Init Project
+  // Show initial flow state
   advanceFlow(REBUILD_NODES, REBUILD_CONNS, 0);
-  document.getElementById('fr-loop').classList.add('active-loop');
 
   try {
     const payload = { target_dir: targetDir };
+    const clientSessionId = crypto.randomUUID();
+    payload.session_id = clientSessionId;
 
-    await new Promise(r => setTimeout(r, 200));
-    advanceFlow(REBUILD_NODES, REBUILD_CONNS, 1);
-
-    // Animate through the story loop while waiting
-    let loopStep = 2;
-    const loopInterval = setInterval(() => {
-      advanceFlow(REBUILD_NODES, REBUILD_CONNS, loopStep);
-      loopStep = loopStep >= 5 ? 2 : loopStep + 1;
-    }, 1500);
+    // Start polling — flow updates driven by server state
+    const poller = startStagePoller(clientSessionId, 'rebuild', null);
 
     const r = await fetch(`${API}/rebuild`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    clearInterval(loopInterval);
+    if (poller) clearInterval(poller);
     const d = await r.json();
 
     if (r.ok) {

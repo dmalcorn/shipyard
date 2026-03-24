@@ -16,6 +16,13 @@ from typing import Any
 
 from src.intake.backlog import load_backlog
 from src.intake.intervention_log import InterventionLogger
+from src.pipeline_tracker import (
+    advance_stage,
+    complete_pipeline,
+    fail_pipeline,
+    start_pipeline,
+    update_story_progress,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +54,15 @@ def run_rebuild(
         total_stories, elapsed_seconds.
     """
     start_time = time.time()
+    start_pipeline(session_id, "rebuild")
 
     # Load backlog
+    advance_stage(session_id, "loading_backlog")
     try:
         backlog = load_backlog(target_dir)
     except FileNotFoundError as e:
         logger.error("Backlog not found: %s", e)
+        fail_pipeline(session_id, str(e))
         return {
             "stories_completed": 0,
             "stories_failed": 0,
@@ -71,6 +81,7 @@ def run_rebuild(
         }
 
     # Initialize the target project
+    advance_stage(session_id, "init_project")
     _init_target_project(target_dir)
 
     # Group stories by epic
@@ -96,6 +107,18 @@ def run_rebuild(
             )
 
             logger.info("Starting story: %s (epic: %s)", story_name, epic_name)
+
+            # Update pipeline tracker with story-level progress
+            advance_stage(session_id, "tdd_pipeline")
+            update_story_progress(
+                session_id,
+                epic=epic_name,
+                story=story_name,
+                story_index=len(story_results) + 1,
+                total_stories=len(backlog),
+                completed=stories_completed,
+                failed=stories_failed,
+            )
 
             # Invoke the orchestrator pipeline
             result = _run_story_pipeline(
@@ -155,6 +178,7 @@ def run_rebuild(
             )
 
         # Tag epic completion
+        advance_stage(session_id, "git_tag")
         _git_tag_epic(target_dir, epic_name)
 
     elapsed = time.time() - start_time
@@ -168,6 +192,11 @@ def run_rebuild(
         elapsed_seconds=elapsed,
         is_final=True,
     )
+
+    if stories_failed > 0:
+        fail_pipeline(session_id, f"{stories_failed} stories failed")
+    else:
+        complete_pipeline(session_id)
 
     return {
         "stories_completed": stories_completed,

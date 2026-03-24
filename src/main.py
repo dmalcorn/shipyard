@@ -31,6 +31,13 @@ from src.intake.intervention_log import (
 from src.intake.pipeline import run_intake_pipeline
 from src.intake.rebuild import run_rebuild
 from src.audit_log.audit import AuditLogger
+from src.pipeline_tracker import (
+    advance_stage,
+    complete_pipeline,
+    fail_pipeline,
+    get_stage,
+    start_pipeline,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +153,22 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/pipeline/{session_id}/stage")
+async def pipeline_stage(session_id: str) -> dict[str, Any]:
+    """Poll the current stage of a running pipeline.
+
+    Args:
+        session_id: The session ID to query.
+
+    Returns:
+        Dict with pipeline type, current stage, status, and progress info.
+    """
+    stage = get_stage(session_id)
+    if not stage:
+        return {"status": "unknown", "error": "No such session"}
+    return stage
+
+
 @app.post("/instruct", response_model=InstructResponse)
 def instruct(request: InstructRequest) -> InstructResponse:
     """Process an instruction through the agent graph.
@@ -159,10 +182,14 @@ def instruct(request: InstructRequest) -> InstructResponse:
     session_id = request.session_id or str(uuid.uuid4())
     config = create_trace_config(session_id=session_id, task_id=session_id)
 
+    start_pipeline(session_id, "instruct")
+    advance_stage(session_id, "agent_node")
+
     audit = AuditLogger(session_id=session_id, task_description=request.message)
     audit.start_session()
 
     try:
+        advance_stage(session_id, "should_continue")
         result = graph.invoke(
             {
                 "messages": [HumanMessage(content=request.message)],
@@ -170,6 +197,11 @@ def instruct(request: InstructRequest) -> InstructResponse:
             },
             config=config,
         )
+        advance_stage(session_id, "response")
+        complete_pipeline(session_id)
+    except Exception:
+        fail_pipeline(session_id, "Agent invocation failed")
+        raise
     finally:
         audit.end_session()
 
