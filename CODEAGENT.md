@@ -1,5 +1,7 @@
 # CODEAGENT.md — Shipyard
 
+**Submission Tier:** MVP
+
 ## Agent Architecture (MVP)
 
 ### Overview
@@ -16,9 +18,20 @@ START → agent_node → should_continue → tool_node → agent_node → ... �
 
 - **`agent_node`**: Calls Claude with the system prompt + accumulated messages. Returns an AI message that may contain tool calls.
 - **`tool_node`**: Executes all tool calls from the last AI message. Returns `ToolMessage` results.
-- **`should_continue`** (conditional edge): If the AI message contains `tool_calls`, route to `tool_node`. Otherwise, route to `END`.
+- **`should_continue`** (conditional edge): If `retry_count >= 50`, route to `error_handler`. If the AI message contains `tool_calls`, route to `tool_node`. Otherwise, route to `END`.
 
 The loop continues until Claude responds without requesting any tool calls — meaning it has completed the task or is reporting a final answer.
+
+```mermaid
+graph TD
+    START([START]) --> agent[agent<br/>Call Claude with tools]
+    agent --> should_continue{should_continue}
+    should_continue -->|tool_calls present| tools[tools<br/>Execute tool calls]
+    should_continue -->|no tool_calls| END_NODE([END])
+    should_continue -->|retry_count >= 50| error[error_handler<br/>Log & halt]
+    tools --> agent
+    error --> END_NODE
+```
 
 ### State Schema
 
@@ -65,9 +78,9 @@ All tools follow a consistent contract: string parameters in, string result out.
 | `read_file` | Read file contents | `file_path: str` |
 | `edit_file` | Exact string replacement (surgical edit) | `file_path: str, old_string: str, new_string: str` |
 | `write_file` | Create or overwrite a file | `file_path: str, content: str` |
-| `list_files` | Glob pattern matching in a directory | `directory: str, pattern: str` |
-| `search_files` | Regex search across file contents | `directory: str, regex_pattern: str` |
-| `run_command` | Execute a shell command with timeout | `command: str` |
+| `list_files` | Glob pattern matching in a directory | `pattern: str, path: str = "."` |
+| `search_files` | Regex search across file contents | `pattern: str, path: str = "."` |
+| `run_command` | Execute a shell command with timeout | `command: str, timeout: str = "30"` |
 
 ### Context Injection
 
@@ -129,73 +142,166 @@ Claude's trained self-correction behavior handles this:
 
 ---
 
-## Multi-Agent Design (MVP)
+## Multi-Agent Design
 
 ### Orchestration Model
 
-**Hybrid: Subgraphs (sequential pipeline) + `Send` API (parallel review)**
+**Hybrid: Subgraphs (sequential pipeline) + `Send` API (parallel fan-out)**
 
-Each agent role is a compiled `StateGraph` subgraph. A parent orchestrator graph invokes them as nodes, transforming state at boundaries.
+The pipeline is inherently sequential — tests must pass before CI runs, CI must pass before review begins. The single exception is the review phase, where two reviewers analyze code independently. This maps naturally to a hybrid pattern:
 
-### How Agents Communicate
+- **Sequential stages:** Each pipeline phase is a node in a parent `StateGraph`, connected by conditional edges that route on pass/fail
+- **Parallel fan-out:** The `Send` API spawns two Review Agent instances concurrently, collecting results at a fan-in node
 
-**Filesystem is the coordination primitive.** Agents do not share message history or memory. Instead:
+The parent `StateGraph` (`src/multi_agent/orchestrator.py`) contains 16 nodes organized into 7 phases:
 
-- Each agent writes its output to designated files (test files, source code, review files, fix plans)
-- Downstream agents read those files as input via Layer 2 context injection
-- No automatic merging — the Architect agent reads all upstream outputs and makes deliberate decisions about what to incorporate
+1. **TDD Phase:** `test_agent` → `dev_agent`
+2. **Validation Phase:** `unit_test` → `ci` → `git_snapshot`
+3. **Review Phase:** `prepare_reviews` → `review_node` (×2 via Send) → `collect_reviews`
+4. **Architect Phase:** `architect_node` → `fix_dev_node`
+5. **Post-Fix Validation:** `post_fix_test` → `post_fix_ci`
+6. **System Validation:** `system_test` → `final_ci`
+7. **Delivery:** `git_push`
 
-### Agent Roles and Tool Access
+Plus `error_handler` for circuit-breaking when retry limits are exceeded.
 
-| Role | Model Tier | Can Read | Can Write | Tools |
+**Sub-agent spawning:** `create_agent_subgraph()` (`src/multi_agent/spawn.py`) builds a role-specific compiled graph with its own tools, system prompt, and model tier. Each sub-agent gets a fresh context window — no parent message history is inherited. This prevents context pollution between phases and keeps each agent focused on its specific task.
+
+### Agent Communication
+
+**File-based coordination.** Agents do not share message history or memory. Each agent writes output to designated files; downstream agents read those files as context input.
+
+Inter-agent files use YAML frontmatter for machine-parseable metadata:
+
+```yaml
+---
+agent_role: reviewer
+task_id: story-42
+timestamp: 2026-03-24T12:00:00+00:00
+input_files: [src/foo.py, tests/test_foo.py]
+reviewer_id: 1
+---
+
+# Code Review — Agent 1
+
+## Summary
+Found 2 issues in error handling paths.
+
+## Findings
+
+### 1. Missing timeout on subprocess call
+- **File:** src/tools/bash.py
+- **Issue:** run_command has no timeout default
+- **Severity:** major
+- **Action:** Add timeout=300 parameter
+```
+
+**Communication artifacts by role:**
+
+| Agent | Writes To | Read By |
+|---|---|---|
+| Test Agent | `tests/` (test files) | Dev Agent (reads to understand what to implement) |
+| Dev Agent | `src/` (source files, tracked in state) | Unit test node, CI node |
+| Review Agent 1 | `reviews/review-agent-1.md` | Architect Agent |
+| Review Agent 2 | `reviews/review-agent-2.md` | Architect Agent |
+| Architect Agent | `fix-plan.md` | Fix Dev Agent |
+| Fix Dev Agent | `src/` (fixed source files) | Post-fix test/CI nodes |
+
+**Why file-based:** Debuggable (every inter-agent artifact is a readable markdown file), persistent (survives crashes — checkpointed pipeline can resume), and avoids shared-memory complexity. An evaluator can inspect `reviews/` and `fix-plan.md` to understand exactly what each agent decided.
+
+### Parallel Review & Architect Merge
+
+**Fan-out:** The `route_to_reviewers()` function returns two `Send` objects targeting the same `review_node` graph node, each with a different `reviewer_id` and focus area. LangGraph executes them in parallel.
+
+**Reviewer differentiation:**
+- **Reviewer 1** focuses on correctness: logic errors, missing edge cases, test coverage gaps
+- **Reviewer 2** focuses on style: architectural patterns, naming conventions, maintainability
+
+**Fan-in:** Both reviews must complete before the `collect_reviews` node runs. It validates that both review files exist and contain YAML frontmatter. If validation fails, the pipeline records an error.
+
+**Architect gatekeeper:** The Architect Agent (Opus model tier for complex multi-file reasoning) reads both review files and every source file mentioned in findings. For each finding, it decides **fix** or **dismiss** with written justification. The output is a single `fix-plan.md` — the sole source of truth for the Fix Dev Agent. This prevents blind auto-merging of review suggestions and ensures a qualified agent evaluates conflicting recommendations.
+
+**Fix Dev Agent:** A fresh agent (no shared history with the original Dev Agent) reads `fix-plan.md` and applies only the approved fixes. Scope discipline is enforced — it cannot attempt fixes not in the plan.
+
+### Pipeline Diagram
+
+```mermaid
+graph TD
+    START([START]) --> test_agent[Test Agent<br/>Write failing tests]
+    test_agent --> dev_agent[Dev Agent<br/>Implement code]
+    dev_agent --> unit_test[Unit Tests<br/>pytest bash]
+    unit_test -->|pass| ci[CI<br/>ruff + mypy + pytest]
+    unit_test -->|fail, retries < 5| dev_agent
+    unit_test -->|fail, retries >= 5| error_handler
+    ci -->|pass| git_snapshot[Git Snapshot<br/>bash commit]
+    ci -->|fail, retries < 3| dev_agent
+    ci -->|fail, retries >= 3| error_handler
+    git_snapshot --> prepare_reviews[Prepare Reviews]
+    prepare_reviews --> reviewer_1[Review Agent 1<br/>Correctness]
+    prepare_reviews --> reviewer_2[Review Agent 2<br/>Style & Patterns]
+    reviewer_1 --> collect[Collect Reviews]
+    reviewer_2 --> collect
+    collect --> architect[Architect Agent<br/>Evaluate & plan fixes]
+    architect --> fix_dev[Fix Dev Agent<br/>Apply approved fixes]
+    fix_dev --> post_fix_test[Post-Fix Tests<br/>pytest bash]
+    post_fix_test -->|pass| post_fix_ci[Post-Fix CI<br/>bash]
+    post_fix_test -->|fail, retries < 5| fix_dev
+    post_fix_test -->|fail, retries >= 5| error_handler
+    post_fix_ci -->|pass| system_test[System Tests<br/>pytest -m system]
+    post_fix_ci -->|fail, retries < 3| fix_dev
+    post_fix_ci -->|fail, retries >= 3| error_handler
+    system_test -->|pass| final_ci[Final CI Gate<br/>bash]
+    system_test -->|fail, retries < 5| fix_dev
+    system_test -->|fail, retries >= 5| error_handler
+    final_ci -->|pass| git_push[Git Push<br/>commit + push]
+    final_ci -->|fail| error_handler
+    git_push --> END_NODE([END])
+    error_handler[Error Handler<br/>Failure report] --> END_NODE
+
+    style test_agent fill:#e1f5fe
+    style dev_agent fill:#e1f5fe
+    style fix_dev fill:#e1f5fe
+    style reviewer_1 fill:#fff3e0
+    style reviewer_2 fill:#fff3e0
+    style architect fill:#fce4ec
+    style unit_test fill:#e8f5e9
+    style ci fill:#e8f5e9
+    style post_fix_test fill:#e8f5e9
+    style post_fix_ci fill:#e8f5e9
+    style system_test fill:#e8f5e9
+    style final_ci fill:#e8f5e9
+    style git_snapshot fill:#f3e5f5
+    style git_push fill:#f3e5f5
+    style error_handler fill:#ffebee
+```
+
+**Legend:** Blue = LLM agent nodes, Orange = Review agents, Pink = Architect, Green = Bash validation nodes, Purple = Git operations, Red = Error handler.
+
+### Role Summary
+
+| Role | Model Tier | Tools | Output | Source File |
 |---|---|---|---|---|
-| Dev Agent | Sonnet | All files | Source files | read, edit, write, list, search, bash |
-| Test Agent | Sonnet | All files | Test files only | read, edit, write, list, search, bash |
-| Review Agent | Sonnet | All files | `reviews/review-agent-{n}.md` only | read, list, search, write (path-restricted) |
-| Architect Agent | Opus | Review files, source | `fix-plan.md` only | read, list, search, write (path-restricted) |
-| Fix Dev Agent | Sonnet | All files + fix plan | Source files | read, edit, write, list, search, bash |
+| Test Agent | Sonnet | read, write (tests/), list, search, bash | Test files in `tests/` | `src/multi_agent/roles.py` |
+| Dev Agent | Sonnet | read, edit, write, list, search, bash | Source files in `src/` | `src/multi_agent/roles.py` |
+| Review Agent | Sonnet | read, list, search, write (reviews/) | `reviews/review-agent-{n}.md` | `src/multi_agent/roles.py` |
+| Architect | Opus | read, list, search, write (reviews/, fix-plan.md) | `fix-plan.md` | `src/multi_agent/roles.py` |
+| Fix Dev | Sonnet | read, edit, write, list, search, bash | Fixed source files | `src/multi_agent/roles.py` |
 
-### MVP Coordination (2 agents minimum)
-
-Two agents as subgraph nodes in a parent `StateGraph`:
-
-```
-START → dev_agent → review_agent → END
-```
-
-Dev Agent writes code, Review Agent analyzes it and writes a review file. This satisfies the PRD's MVP requirement of "spawn and coordinate at least two agents."
-
-### Full Pipeline (Early Submission)
-
-```
-START → test_agent → dev_agent → bash(CI) → bash(git snapshot)
-      → Send(reviewer_1, reviewer_2) → architect_agent
-      → fix_dev_agent → bash(CI) → bash(system tests)
-      → bash(final CI) → bash(git push) → END
-```
-
-- `Send` API spawns 2 review agents concurrently — results merge via `Annotated[list, operator.add]` reducer
-- Bash nodes handle deterministic tasks (CI, git, test execution) to save LLM tokens
-- The same `StateGraph` from MVP grows to this pipeline by adding nodes and edges — no refactoring required
-
-### How Outputs Are Merged
-
-There is no automatic merge. The Architect Agent:
-1. Reads both review files (`reviews/review-agent-1.md`, `reviews/review-agent-2.md`)
-2. Evaluates each finding — decides which are genuine issues vs. acceptable
-3. Produces a fix plan file (`fix-plan.md`) with specific, actionable instructions
-4. A fresh Fix Dev Agent executes the approved fixes
-
-This ensures a qualified agent reviews before any changes are applied, preventing blind auto-merging.
+**Key implementation files:**
+- `src/multi_agent/orchestrator.py` — Parent StateGraph with all 16 nodes and conditional routing
+- `src/multi_agent/spawn.py` — `create_agent_subgraph()` and `run_sub_agent()` factory functions
+- `src/multi_agent/roles.py` — Role definitions, model tiers, tool permissions, trace config
+- `src/agent/prompts.py` — Role-specific system prompt templates
 
 ---
 
 ## Trace Links (MVP)
 
-_Populated after running the agent:_
+- **Trace 1 (normal run):** [https://smith.langchain.com/public/9d212cc9-7537-4656-8581-f8c4bc190a98/r](https://smith.langchain.com/public/9d212cc9-7537-4656-8581-f8c4bc190a98/r)
+  Normal execution path — agent reads a file, performs an edit, and completes successfully without errors.
 
-- Trace 1 (normal run):
-- Trace 2 (different execution path — error, branching condition, or different task type):
+- **Trace 2 (error recovery path):** [https://smith.langchain.com/public/114ea778-4414-4e01-aa2a-c97d915e5cc6/r](https://smith.langchain.com/public/114ea778-4414-4e01-aa2a-c97d915e5cc6/r)
+  Error recovery path — agent encounters an edit failure (stale or incorrect anchor), re-reads the file, and retries with corrected context.
 
 ---
 

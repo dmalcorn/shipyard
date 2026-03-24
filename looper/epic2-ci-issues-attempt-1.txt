@@ -1,0 +1,10 @@
+=== ruff check ===
+All checks passed!
+=== ruff format check ===
+Would reformat: src\logging\audit.py
+Would reformat: src\multi_agent\orchestrator.py
+Would reformat: src\tools\restricted.py
+Would reformat: tests\test_multi_agent\test_orchestrator.py
+Would reformat: tests\test_multi_agent\test_roles.py
+Would reformat: tests\test_multi_agent\test_spawn.py
+6 files would be reformatted, 34 files already formatted

