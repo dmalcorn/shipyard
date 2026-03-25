@@ -2,7 +2,7 @@
 app:
   name: "sandbox-app"
   version: "0.1.0"
-  debug: false
+  debug: true
 
 database:
   host: "localhost"

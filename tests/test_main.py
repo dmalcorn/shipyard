@@ -143,6 +143,71 @@ class TestCliArgParsing:
             mock_uvicorn.assert_called_once()
 
 
+class TestRebuildInterveneEndpoint:
+    """POST /rebuild/intervene processes interventions correctly."""
+
+    def test_valid_intervention(self, client: TestClient) -> None:
+        """Valid intervention returns 200 with logged=True."""
+        response = client.post(
+            "/rebuild/intervene",
+            json={
+                "session_id": "test-session",
+                "what_broke": "Tests failed",
+                "what_developer_did": "Fixed the import",
+                "agent_limitation": "Could not resolve import paths",
+                "action": "fix",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["session_id"] == "test-session"
+        assert data["action"] == "fix"
+        assert data["logged"] is True
+
+    def test_skip_action(self, client: TestClient) -> None:
+        """Skip action is accepted and returned."""
+        response = client.post(
+            "/rebuild/intervene",
+            json={
+                "session_id": "test-session",
+                "what_broke": "Flaky test",
+                "what_developer_did": "Skipping",
+                "agent_limitation": "Non-deterministic output",
+                "action": "skip",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["action"] == "skip"
+
+    def test_abort_action(self, client: TestClient) -> None:
+        """Abort action is accepted and returned."""
+        response = client.post(
+            "/rebuild/intervene",
+            json={
+                "session_id": "test-session",
+                "what_broke": "Critical failure",
+                "what_developer_did": "Aborting rebuild",
+                "agent_limitation": "Fundamental issue",
+                "action": "abort",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["action"] == "abort"
+
+    def test_missing_session_id_returns_422(self, client: TestClient) -> None:
+        """Missing session_id fails validation."""
+        response = client.post(
+            "/rebuild/intervene",
+            json={
+                "what_broke": "Tests failed",
+                "what_developer_did": "Fixed",
+                "agent_limitation": "Limitation",
+                "action": "fix",
+            },
+        )
+        assert response.status_code == 422
+
+
 class TestExtractResponse:
     """_extract_response pulls the last AI message content."""
 

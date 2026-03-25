@@ -39,7 +39,7 @@ graph TD
 class AgentState(MessagesState):
     task_id: str                                    # Unique task identifier
     retry_count: int                                # Current retry count for circuit breaking
-    current_phase: str                              # "test" | "dev" | "review" | "architect" | "fix" | "ci"
+    current_phase: str                              # "test" | "implementation" | "review" | "architect" | "fix" | "ci" | "post_fix_test" | "post_fix_ci"
     agent_role: str                                 # "dev" | "test" | "reviewer" | "architect" | "fix_dev"
     files_modified: Annotated[list[str], operator.add]  # Accumulated list of modified file paths
 ```
@@ -211,6 +211,8 @@ Found 2 issues in error handling paths.
 
 ### Parallel Review & Architect Merge
 
+**Prepare reviews:** The `prepare_reviews_node` clears the `reviews/` directory (removing stale files and subdirectories while preserving `.gitkeep`) before spawning reviewers. This ensures a clean slate for each pipeline run.
+
 **Fan-out:** The `route_to_reviewers()` function returns two `Send` objects targeting the same `review_node` graph node, each with a different `reviewer_id` and focus area. LangGraph executes them in parallel.
 
 **Reviewer differentiation:**
@@ -281,11 +283,11 @@ graph TD
 
 | Role | Model Tier | Tools | Output | Source File |
 |---|---|---|---|---|
-| Test Agent | Sonnet | read, write (tests/), list, search, bash | Test files in `tests/` | `src/multi_agent/roles.py` |
-| Dev Agent | Sonnet | read, edit, write, list, search, bash | Source files in `src/` | `src/multi_agent/roles.py` |
-| Review Agent | Sonnet | read, list, search, write (reviews/) | `reviews/review-agent-{n}.md` | `src/multi_agent/roles.py` |
-| Architect | Opus | read, list, search, write (reviews/, fix-plan.md) | `fix-plan.md` | `src/multi_agent/roles.py` |
-| Fix Dev | Sonnet | read, edit, write, list, search, bash | Fixed source files | `src/multi_agent/roles.py` |
+| Test Agent | Sonnet | read_file, write_file (tests/), list_files, search_files, run_command | Test files in `tests/` | `src/multi_agent/roles.py` |
+| Dev Agent | Sonnet | read_file, edit_file, write_file, list_files, search_files, run_command | Source files in `src/` | `src/multi_agent/roles.py` |
+| Review Agent | Sonnet | read_file, list_files, search_files, write_file (reviews/) | `reviews/review-agent-{n}.md` | `src/multi_agent/roles.py` |
+| Architect | Opus | read_file, list_files, search_files, write_file (reviews/, fix-plan.md) | `fix-plan.md` | `src/multi_agent/roles.py` |
+| Fix Dev | Sonnet | read_file, edit_file, write_file, list_files, search_files, run_command | Fixed source files | `src/multi_agent/roles.py` |
 
 **Key implementation files:**
 - `src/multi_agent/orchestrator.py` — Parent StateGraph with all 16 nodes and conditional routing

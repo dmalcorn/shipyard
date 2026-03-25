@@ -187,6 +187,68 @@ class TestInjectTaskContext:
 # ---------------------------------------------------------------------------
 
 
+class TestBuildSystemPromptWorkingDir:
+    """Tests for build_system_prompt with working_dir parameter (Story 4.5, AC#1)."""
+
+    def test_resolves_context_files_relative_to_working_dir(
+        self, tmp_coding_standards: str, tmp_path: Path
+    ) -> None:
+        """Context files with relative paths are resolved against working_dir."""
+        target_dir = tmp_path / "target_project"
+        target_dir.mkdir()
+        ctx_file = target_dir / "src" / "main.py"
+        ctx_file.parent.mkdir(parents=True)
+        ctx_file.write_text("print('hello')", encoding="utf-8")
+
+        result = build_system_prompt(
+            "dev", context_files=["src/main.py"], working_dir=str(target_dir)
+        )
+        assert "print('hello')" in result
+        assert "## Context: main.py" in result
+
+    def test_without_working_dir_uses_cwd(self, tmp_coding_standards: str) -> None:
+        """Without working_dir, relative paths resolve against CWD (existing behavior)."""
+        result = build_system_prompt("dev", context_files=["nonexistent_file.py"])
+        assert "(file not available)" in result
+
+    def test_absolute_paths_unaffected_by_working_dir(
+        self, tmp_coding_standards: str, tmp_context_file: str
+    ) -> None:
+        """Absolute context file paths are not affected by working_dir."""
+        result = build_system_prompt(
+            "dev",
+            context_files=[tmp_context_file],
+            working_dir="/some/other/dir",
+        )
+        assert "widget module" in result
+
+
+class TestInjectTaskContextWorkingDir:
+    """Tests for inject_task_context with working_dir parameter (Story 4.5, AC#1)."""
+
+    def test_resolves_context_files_relative_to_working_dir(self, tmp_path: Path) -> None:
+        """Context files with relative paths are resolved against working_dir."""
+        target_dir = tmp_path / "target_project"
+        target_dir.mkdir()
+        ctx_file = target_dir / "docs" / "spec.md"
+        ctx_file.parent.mkdir(parents=True)
+        ctx_file.write_text("# Spec\nDo the thing.", encoding="utf-8")
+
+        result = inject_task_context(
+            "Implement it",
+            context_files=["docs/spec.md"],
+            working_dir=str(target_dir),
+        )
+        content = result[0].content
+        assert "Do the thing." in content
+        assert "## Context: spec.md" in content
+
+    def test_without_working_dir_relative_paths_fail(self) -> None:
+        """Without working_dir, relative paths that don't exist show not available."""
+        result = inject_task_context("Do X", context_files=["nonexistent/file.md"])
+        assert "(file not available)" in result[0].content
+
+
 class TestLayer3ToolsAvailable:
     """AC #3: Read, Grep, Glob tools are available for on-demand context."""
 

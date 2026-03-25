@@ -15,12 +15,12 @@ from src.tools.file_ops import edit_file as base_edit_file
 from src.tools.file_ops import write_file as base_write_file
 
 PERMISSION_DENIED_MSG = (
-    "ERROR: Permission denied: {role} agents cannot edit source files. "
+    "ERROR: Permission denied: {role} agents cannot write outside allowed paths. "
     "Write to {allowed} directory only."
 )
 
 
-def _is_path_allowed(file_path: str, allowed_prefixes: tuple[str, ...]) -> bool:
+def is_path_allowed(file_path: str, allowed_prefixes: tuple[str, ...]) -> bool:
     """Check if file_path starts with one of the allowed prefixes."""
     # Normalize to forward slashes and resolve traversal sequences
     normalized = posixpath.normpath(file_path.replace("\\", "/"))
@@ -30,13 +30,18 @@ def _is_path_allowed(file_path: str, allowed_prefixes: tuple[str, ...]) -> bool:
     # Strip leading ./ that normpath may produce
     if normalized.startswith("./"):
         normalized = normalized[2:]
+    # Case-insensitive comparison for Windows compatibility
+    norm_lower = normalized.lower()
     for prefix in allowed_prefixes:
-        norm_prefix = prefix.replace("\\", "/").rstrip("/")
-        # Exact file match (e.g., "fix-plan.md")
-        if "/" not in norm_prefix and normalized == norm_prefix:
+        raw_prefix = prefix.replace("\\", "/")
+        norm_prefix = raw_prefix.rstrip("/")
+        prefix_lower = norm_prefix.lower()
+        is_dir_prefix = raw_prefix.endswith("/")
+        # Exact file match for non-directory prefixes (e.g., "fix-plan.md")
+        if not is_dir_prefix and norm_lower == prefix_lower:
             return True
-        # Directory prefix match (e.g., "reviews/")
-        if normalized.startswith(norm_prefix.rstrip("/") + "/") or normalized == norm_prefix:
+        # Directory prefix match — must contain a path component after the prefix
+        if norm_lower.startswith(prefix_lower + "/"):
             return True
     return False
 
@@ -61,7 +66,7 @@ def create_restricted_write_file(role_name: str, allowed_prefixes: tuple[str, ..
     @tool
     def write_file(file_path: str, content: str) -> str:
         """Create or overwrite a file (path-restricted). Used by: Reviewer, Test, Architect."""
-        if not _is_path_allowed(file_path, allowed_prefixes):
+        if not is_path_allowed(file_path, allowed_prefixes):
             return PERMISSION_DENIED_MSG.format(role=role_name, allowed=allowed_desc)
         try:
             result: str = base_write_file.invoke({"file_path": file_path, "content": content})
@@ -87,7 +92,7 @@ def create_restricted_edit_file(role_name: str, allowed_prefixes: tuple[str, ...
     @tool
     def edit_file(file_path: str, old_string: str, new_string: str) -> str:
         """Replace an exact string match (path-restricted). Used by: Test, Architect."""
-        if not _is_path_allowed(file_path, allowed_prefixes):
+        if not is_path_allowed(file_path, allowed_prefixes):
             return PERMISSION_DENIED_MSG.format(role=role_name, allowed=allowed_desc)
         try:
             result: str = base_edit_file.invoke(

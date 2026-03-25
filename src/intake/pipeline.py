@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from datetime import UTC, datetime
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -124,6 +125,10 @@ def create_backlog_node(state: IntakeState) -> dict[str, Any]:
 
 def output_node(state: IntakeState) -> dict[str, Any]:
     """Write spec summary and epics to the output directory."""
+    # Preserve earlier failure status (last-write-wins protection)
+    if state.get("pipeline_status") == "failed":
+        return {"pipeline_status": "failed", "error": state.get("error", "Earlier stage failed")}
+
     advance_stage(state.get("session_id", ""), "writing_output")
     output_dir = state.get("output_dir", "")
     spec_summary = state.get("spec_summary", "")
@@ -144,11 +149,22 @@ def output_node(state: IntakeState) -> dict[str, Any]:
         spec_path = os.path.join(output_dir, "spec-summary.md")
         epics_path = os.path.join(output_dir, "epics.md")
 
+        # Build YAML frontmatter per coding-standards.md
+        spec_files = state.get("spec_dir", "")
+        frontmatter = (
+            "---\n"
+            "agent_role: intake\n"
+            f"task_id: {state.get('session_id', 'unknown')}\n"
+            f"timestamp: {datetime.now(UTC).isoformat()}\n"
+            f"input_files: [{spec_files}]\n"
+            "---\n\n"
+        )
+
         with open(spec_path, "w", encoding="utf-8") as f:
-            f.write(spec_summary)
+            f.write(frontmatter + spec_summary)
 
         with open(epics_path, "w", encoding="utf-8") as f:
-            f.write(epics_and_stories)
+            f.write(frontmatter + epics_and_stories)
     except OSError as e:
         return {"pipeline_status": "failed", "error": f"Failed to write output: {e}"}
 
@@ -219,7 +235,13 @@ def run_intake_pipeline(
         "pipeline_status": "running",
     }
 
-    result = compiled.invoke(initial_state)  # type: ignore[arg-type]  # LangGraph Pregel generic not stable across versions
+    try:
+        result = compiled.invoke(initial_state)  # type: ignore[arg-type]  # LangGraph Pregel generic not stable across versions
+    except Exception as e:
+        logger.error("Pipeline execution failed: %s", e)
+        fail_pipeline(session_id, str(e))
+        return {"pipeline_status": "failed", "error": str(e)}
+
     result_dict = dict(result)
 
     if result_dict.get("pipeline_status") == "completed":

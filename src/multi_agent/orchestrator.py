@@ -30,11 +30,6 @@ from src.multi_agent.spawn import run_sub_agent
 logger = logging.getLogger(__name__)
 
 
-def _get_working_dir(state: Mapping[str, Any]) -> str | None:
-    """Extract working_dir from state, normalizing empty string to None."""
-    return state.get("working_dir") or None
-
-
 REVIEWS_DIR = "reviews"
 FIX_PLAN_PATH = "fix-plan.md"
 
@@ -114,6 +109,11 @@ class ReviewNodeInput(TypedDict):
 # ---------------------------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------------------------
+
+
+def _get_working_dir(state: Mapping[str, Any]) -> str | None:
+    """Extract working_dir from state, normalizing empty string to None."""
+    return state.get("working_dir") or None
 
 
 def _ensure_reviews_dir(working_dir: str | None = None) -> None:

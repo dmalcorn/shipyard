@@ -217,7 +217,7 @@ Run the autonomous rebuild loop on a target project using a previously generated
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `target_dir` | string | Yes | Path to the target project with `epics.md` |
+| `target_dir` | string | Yes | Path to the target project with `epics.md`. Must be outside Shipyard's tree. Relative paths are resolved to absolute. |
 | `session_id` | string | No | Session identifier |
 
 **Response:**
@@ -278,6 +278,15 @@ The rebuild loop:
 4. Tracks progress in `rebuild-status.md`
 5. Prompts for human intervention on failures (CLI mode)
 6. Produces `intervention-log.md` documenting every manual fix
+
+#### Target directory rules
+
+The `target_dir` must point to a directory **outside** Shipyard's own source tree. All agent operations — file reads/writes, bash commands (pytest, ruff, git), and tool executions — are scoped to this directory during a rebuild. This prevents agents from accidentally modifying Shipyard itself.
+
+- **Absolute paths** are used as-is: `--rebuild /home/user/myproject`
+- **Relative paths** are resolved to absolute before the pipeline starts: `--rebuild ./target/` becomes `/full/path/to/target/`
+- The target directory does not need to exist beforehand — Shipyard creates it and initializes a git repo if needed
+- Review files (`reviews/`) and git operations all run within the target directory, not Shipyard's working directory
 
 ## How the Agent Works
 

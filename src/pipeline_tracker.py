@@ -52,7 +52,15 @@ _stages: dict[str, PipelineStage] = {}
 # Stage definitions per pipeline type
 INSTRUCT_STAGES = ["user_input", "agent_node", "should_continue", "tool_calls", "response"]
 INTAKE_STAGES = ["reading_specs", "summarizing", "generating_backlog", "writing_output", "complete"]
-REBUILD_STAGES = ["loading_backlog", "init_project", "tdd_pipeline", "testing", "reviewing", "git_tag", "complete"]
+REBUILD_STAGES = [
+    "loading_backlog",
+    "init_project",
+    "tdd_pipeline",
+    "testing",
+    "reviewing",
+    "git_tag",
+    "complete",
+]
 
 
 def start_pipeline(session_id: str, pipeline_type: str) -> PipelineStage:

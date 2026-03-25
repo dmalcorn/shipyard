@@ -44,10 +44,13 @@ class InterventionEntry:
     files_involved: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        """Validate that evidence fields are non-empty."""
-        for fname in _EVIDENCE_FIELDS:
-            if not getattr(self, fname, "").strip():
-                raise ValueError(f"{fname} must not be empty — evidence-based entries required")
+        """Validate evidence fields and fill empty ones with defaults."""
+        _logger = _logging.getLogger(__name__)
+        empty_fields = [f for f in _EVIDENCE_FIELDS if not getattr(self, f, "").strip()]
+        if empty_fields:
+            _logger.warning("Intervention entry has empty evidence fields: %s", empty_fields)
+            for f in empty_fields:
+                object.__setattr__(self, f, "Not specified")
 
 
 @dataclass
@@ -93,8 +96,7 @@ class InterventionLogger:
         """Create the log file with header if it doesn't exist yet."""
         if self._initialized:
             return
-        path = Path(self.log_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialized = True
         self._rewrite_file()
 
@@ -254,17 +256,20 @@ class InterventionLogger:
 
     def _rewrite_file(self) -> None:
         """Write the full file (header only, used on init)."""
-        path = Path(self.log_path)
-        path.write_text(self._build_header(), encoding="utf-8")
+        self.log_path.write_text(self._build_header(), encoding="utf-8")
 
     def _rewrite_summary(self) -> None:
         """Rewrite just the summary section at the top of the file."""
-        path = Path(self.log_path)
-        content = path.read_text(encoding="utf-8")
+        content = self.log_path.read_text(encoding="utf-8")
 
-        # Find the end of the summary section (first ---)
-        marker = "---\n"
-        marker_pos = content.find(marker)
+        # Find the first --- marker within the first 10 lines (the summary section)
+        lines = content.split("\n")
+        marker_pos = -1
+        for i, line in enumerate(lines[:10]):
+            if line.strip() == "---" and i > 0:
+                marker_pos = sum(len(ln) + 1 for ln in lines[: i + 1])
+                break
+
         if marker_pos == -1:
             _logging.getLogger(__name__).warning(
                 "Summary marker '---' not found in %s",
@@ -272,9 +277,9 @@ class InterventionLogger:
             )
             return
 
-        rest = content[marker_pos + len(marker) :]
+        rest = content[marker_pos:]
         new_content = self._build_header() + rest
-        path.write_text(new_content, encoding="utf-8")
+        self.log_path.write_text(new_content, encoding="utf-8")
 
     def _append_section(self, section: str) -> None:
         """Append a markdown section to the log file."""
@@ -354,9 +359,9 @@ def cli_intervention_prompt(
         story=story,
         pipeline_phase=phase,
         failure_report=failure_report,
-        what_broke=what_broke or "Not specified",
-        what_developer_did=what_did or "Not specified",
-        agent_limitation=limitation or "Not specified",
+        what_broke=what_broke,
+        what_developer_did=what_did,
+        agent_limitation=limitation,
         retry_counts=retry_counts,
         files_involved=files_involved or [],
     )
@@ -436,9 +441,9 @@ def process_api_intervention(
         story=story,
         pipeline_phase=phase,
         failure_report=failure_report,
-        what_broke=what_broke or "Not specified",
-        what_developer_did=what_developer_did or "Not specified",
-        agent_limitation=agent_limitation or "Not specified",
+        what_broke=what_broke,
+        what_developer_did=what_developer_did,
+        agent_limitation=agent_limitation,
         retry_counts=retry_counts,
         files_involved=files_involved or [],
     )

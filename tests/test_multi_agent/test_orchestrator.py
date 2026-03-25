@@ -1444,7 +1444,7 @@ class TestCollectAndPrepareWorkingDir:
 
 
 # ---------------------------------------------------------------------------
-# Story 4.5: _get_working_dir helper tests (AC#3, AC#5)
+# Story 4.4: _get_working_dir helper tests (AC#3, AC#5)
 # ---------------------------------------------------------------------------
 
 
@@ -1469,7 +1469,7 @@ class TestGetWorkingDir:
 
 
 # ---------------------------------------------------------------------------
-# Story 4.5: ReviewNodeInput type tests (AC#4)
+# Story 4.4: ReviewNodeInput type tests (AC#4)
 # ---------------------------------------------------------------------------
 
 
@@ -1503,7 +1503,7 @@ class TestReviewNodeInputType:
 
 
 # ---------------------------------------------------------------------------
-# Story 4.5: route_to_reviewers working_dir consistency (AC#5)
+# Story 4.4: route_to_reviewers working_dir consistency (AC#5)
 # ---------------------------------------------------------------------------
 
 

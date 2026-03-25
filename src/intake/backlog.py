@@ -95,7 +95,10 @@ def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
                         current_criteria,
                     )
                 )
-            current_story = story_match.group(1).strip()
+            story_title = story_match.group(1).strip()
+            if not current_epic:
+                logger.warning("Story '%s' has no parent epic — defaulting to empty", story_title)
+            current_story = story_title
             current_description = ""
             current_criteria = []
             in_criteria = False
@@ -130,6 +133,12 @@ def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
                 current_description,
                 current_criteria,
             )
+        )
+
+    if not backlog and content.strip():
+        logger.warning(
+            "parse_epics_markdown returned 0 entries from %d lines of input",
+            len(content.split("\n")),
         )
 
     return backlog

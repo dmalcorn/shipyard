@@ -20,17 +20,29 @@ logger = logging.getLogger(__name__)
 CODING_STANDARDS_PATH = str(Path(__file__).resolve().parent.parent.parent / "coding-standards.md")
 
 
-def _read_file_safe(file_path: str) -> str | None:
-    """Read a file and return its contents, or None on failure."""
+def _read_file_safe(file_path: str, working_dir: str | None = None) -> str | None:
+    """Read a file and return its contents, or None on failure.
+
+    Args:
+        file_path: Path to the file to read.
+        working_dir: Optional directory to resolve relative paths against.
+    """
+    resolved = file_path
+    if working_dir and not os.path.isabs(file_path):
+        resolved = os.path.join(working_dir, file_path)
     try:
-        with open(file_path, encoding="utf-8") as f:
+        with open(resolved, encoding="utf-8") as f:
             return f.read()
     except Exception as e:
-        logger.warning("Failed to read context file %s: %s", file_path, e)
+        logger.warning("Failed to read context file %s: %s", resolved, e)
         return None
 
 
-def build_system_prompt(role: str, context_files: list[str] | None = None) -> str:
+def build_system_prompt(
+    role: str,
+    context_files: list[str] | None = None,
+    working_dir: str | None = None,
+) -> str:
     """Build a system prompt with Layer 1 context for the given agent role.
 
     Assembles the role-specific prompt template and always injects the
@@ -39,6 +51,7 @@ def build_system_prompt(role: str, context_files: list[str] | None = None) -> st
     Args:
         role: Agent role identifier (dev, test, reviewer, architect).
         context_files: Optional list of file paths to include as Layer 1 context.
+        working_dir: Optional directory to resolve relative context file paths against.
 
     Returns:
         Complete system prompt string with role description and injected context.
@@ -58,7 +71,7 @@ def build_system_prompt(role: str, context_files: list[str] | None = None) -> st
     # Additional Layer 1 context files
     if context_files:
         for file_path in context_files:
-            content = _read_file_safe(file_path)
+            content = _read_file_safe(file_path, working_dir=working_dir)
             if content:
                 basename = os.path.basename(file_path)
                 parts.append(f"## Context: {basename}\n{content}")
@@ -69,7 +82,9 @@ def build_system_prompt(role: str, context_files: list[str] | None = None) -> st
 
 
 def inject_task_context(
-    instruction: str, context_files: list[str] | None = None
+    instruction: str,
+    context_files: list[str] | None = None,
+    working_dir: str | None = None,
 ) -> list[BaseMessage]:
     """Build Layer 2 task context messages from instruction and context files.
 
@@ -79,6 +94,7 @@ def inject_task_context(
     Args:
         instruction: The task instruction text.
         context_files: Optional list of file paths to include as task context.
+        working_dir: Optional directory to resolve relative context file paths against.
 
     Returns:
         A list containing a single HumanMessage with context and instruction.
@@ -87,7 +103,7 @@ def inject_task_context(
 
     if context_files:
         for file_path in context_files:
-            content = _read_file_safe(file_path)
+            content = _read_file_safe(file_path, working_dir=working_dir)
             if content:
                 basename = os.path.basename(file_path)
                 parts.append(f"## Context: {basename}\n{content}")

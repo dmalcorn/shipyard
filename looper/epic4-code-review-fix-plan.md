@@ -1,582 +1,289 @@
-# Epic 4 — Fix Plan (Category A: Clear Fixes Only)
+# Epic 4 — Code Review Fix Plan
 
-**Scope:** Only unambiguous, non-controversial fixes. No architectural decisions. Each fix has exactly one correct approach.
-
-**Corresponding architect review:** `epic4-architect-review-needed.md` (Category B items)
-
----
-
-## P0 — Security / Blocks Core Feature
-
-These must be fixed first. They represent security vulnerabilities or broken core functionality.
+**Category A fixes only.** All items are clear, non-controversial, and require no architectural decisions.
+For architectural/controversial items, see `epic4-architect-review-needed.md`.
 
 ---
 
-### FIX-01: `list_files` bypasses scope validation (Analysis #21)
+## P0 — Critical / CI-Blocking (3 items)
 
-- **File:** `src/tools/scoped.py:123`
-- **Issue:** `list_files` calls `_resolve(path)` directly instead of `_validate(path)`. An absolute path or `../..` escapes the scoped directory.
-- **Fix:** Replace `_resolve(path)` with `_validate(path)` and handle the error string return.
-- **Action:**
+### A19: Abort action does not stop the entire rebuild
+- **File:** `src/intake/rebuild.py:139-156`
+- **Issue:** When `on_intervention` returns `None` (abort signal), the story is marked failed but the `for story_entry in stories:` loop continues to the next story. Spec explicitly requires "Support abort to stop the entire rebuild."
+- **Fix:** Add a check after `on_intervention` returns `None`: set a flag or `break` out of the story loop. Example:
   ```python
-  # Line 123: change _resolve(path) to _validate(path)
-  search_root = _validate(path)
-  if isinstance(search_root, str):
-      return search_root
+  fix_instruction = on_intervention(error)
+  if fix_instruction is None:
+      # Abort: stop entire rebuild
+      story_results.append({"story": story_title, "status": "aborted"})
+      break
   ```
-- **Verify:** Run `tests/test_tools/test_scoped.py` + add test for path escaping (see FIX-18)
+- **Verify:** Add test: call `run_rebuild` with a callback that returns `None` on first failure, assert remaining stories are not executed.
 
----
-
-### FIX-02: `search_files` bypasses scope validation (Analysis #22)
-
-- **File:** `src/tools/scoped.py:141`
-- **Issue:** Same as FIX-01 but for `search_files`. Uses `_resolve(path)` instead of `_validate(path)`.
-- **Fix:** Same pattern as FIX-01.
-- **Action:**
+### A02: output_node overwrites pipeline_status from "failed" to "completed"
+- **File:** `src/intake/pipeline.py:135-157`
+- **Issue:** LangGraph uses last-write-wins. When `read_specs_node` sets `pipeline_status="failed"` but subsequent LLM nodes produce non-empty output, `output_node` returns `pipeline_status: "completed"`, masking the original failure.
+- **Fix:** In `output_node`, check the existing `pipeline_status` before proceeding:
   ```python
-  # Line 141: change _resolve(path) to _validate(path)
-  search_root = _validate(path)
-  if isinstance(search_root, str):
-      return search_root
+  if state.get("pipeline_status") == "failed":
+      return {"pipeline_status": "failed", "error": state.get("error", "Earlier stage failed")}
   ```
-- **Verify:** Run `tests/test_tools/test_scoped.py` + add test for path escaping (see FIX-18)
+- **Verify:** Add test: invoke `output_node` with state containing `pipeline_status="failed"` and non-empty content, assert it preserves "failed" status.
+
+### A03: Import ordering violation in main.py (ruff I001)
+- **File:** `src/main.py:14-16`
+- **Issue:** `from pathlib import Path` is separated from other stdlib imports by a blank line. `src.audit_log.audit` import may not be alphabetically sorted with other `src.*` imports. This fails `ruff check`.
+- **Fix:** Move `from pathlib import Path` into the stdlib import block (contiguous, no blank line). Sort all `src.*` imports alphabetically. Run `ruff check --fix src/main.py`.
+- **Verify:** `ruff check src/main.py` passes.
 
 ---
 
-### FIX-03: Path injection via unsanitized `session_id` in file path (Analysis #43)
+## P1 — High Severity (3 items)
 
-- **File:** `src/main.py:245`
-- **Issue:** `session_id` from user request is directly interpolated into a file path: `f"./target/intervention-log-{request.session_id}.md"`. A session_id like `../../etc/cron` writes to arbitrary locations.
-- **Fix:** Sanitize `session_id` using the same regex pattern already used in `src/logging/audit.py`.
-- **Action:**
-  ```python
-  import re
-  # Before using session_id in file path:
-  safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", request.session_id)
-  intervention_logger = InterventionLogger(
-      log_path=f"./target/intervention-log-{safe_id}.md"
-  )
-  ```
-- **Verify:** Manually test with `session_id="../../etc/test"` — should produce `intervention-log-etctest.md` in `./target/`
-
----
-
-### FIX-04: `cli_intervention` returns literal `"retry"` not actual fix instruction (Analysis #33)
-
-- **File:** `src/main.py:362`
-- **Issue:** `cli_intervention` captures the developer's fix instruction via `cli_intervention_prompt()` but returns the literal string `"retry"`. At `rebuild.py:112-113`, the retry task description gets `"INTERVENTION FIX INSTRUCTION:\nretry"` instead of the actual fix the developer described.
-- **Fix:** Capture and return the `what_did` input from the CLI prompt.
-- **Action:**
-  ```python
-  # In cli_intervention callback (main.py ~line 348-362):
-  # Change cli_intervention_prompt to also return what_developer_did,
-  # or store what_did and return it instead of "retry"
-  # Simplest fix: change the return on line 362 from:
-  return "retry"
-  # to:
-  return what_did if what_did else "retry"
-  ```
-  Note: `cli_intervention_prompt` returns a Literal action, not the instruction text. The callback needs to capture the input text. The simplest approach: add `what_developer_did` as an attribute on the logger, or refactor `cli_intervention_prompt` to also return the instruction string. Since the prompt function already has `what_did` locally, change its return type to `tuple[Literal["fix", "skip", "abort"], str]` returning `(action, what_did)`.
-- **Verify:** Run rebuild CLI manually, enter a fix instruction, verify it appears in the retry task description.
-
----
-
-## P1 — Correctness (Fail-Loud, Error Handling)
-
-These fix silent failures, dead code connections, and missing error handling.
-
----
-
-### FIX-05: Empty LLM results propagate silently to `output_node` (Analysis #4)
-
-- **File:** `src/intake/pipeline.py:121-143`
-- **Issue:** If `run_sub_agent()` returns `{"final_message": ""}`, `output_node` writes empty files and reports `pipeline_status: "completed"`.
-- **Fix:** Add validation in `output_node` before writing.
-- **Action:**
-  ```python
-  # In output_node, after getting spec_summary and epics_and_stories:
-  if not spec_summary.strip() or not epics_and_stories.strip():
-      return {"pipeline_status": "failed", "error": "Intake produced empty spec summary or backlog"}
-  ```
-- **Verify:** Add unit test: invoke `output_node` with empty `spec_summary` → assert `pipeline_status == "failed"`
-
----
-
-### FIX-06: `output_node` file writes have no exception handling (Analysis #5)
-
-- **File:** `src/intake/pipeline.py:130-139`
-- **Issue:** `os.makedirs()` and `open()` calls are unprotected. A permission error crashes the pipeline instead of setting `pipeline_status: "failed"`. Other nodes (e.g., `read_specs_node`) do catch exceptions.
-- **Fix:** Wrap in try/except consistent with `read_specs_node` pattern.
-- **Action:**
+### A01: No exception handling around compiled.invoke() in run_intake_pipeline
+- **File:** `src/intake/pipeline.py:222-230`
+- **Issue:** If `compiled.invoke()` throws (LLM API failure, network error), `fail_pipeline()` is never called. Pipeline tracker stays in "running" status permanently.
+- **Fix:** Wrap `compiled.invoke()` in try/except:
   ```python
   try:
-      os.makedirs(output_dir, exist_ok=True)
-      # ... write files ...
-  except OSError as e:
-      return {"pipeline_status": "failed", "error": f"Failed to write output: {e}"}
+      result = compiled.invoke(initial_state)
+  except Exception as e:
+      logger.error("Pipeline execution failed: %s", e)
+      fail_pipeline(session_id, str(e))
+      return {"pipeline_status": "failed", "error": str(e)}
   ```
-- **Verify:** Unit test: mock `os.makedirs` to raise `PermissionError` → assert `pipeline_status == "failed"`
+- **Verify:** Add test: mock `compiled.invoke` to raise `RuntimeError`, assert `fail_pipeline` is called and error dict returned.
 
----
-
-### FIX-07: `_init_target_project` subprocess calls ignore return codes (Analysis #23)
-
-- **File:** `src/intake/rebuild.py:278-298`
-- **Issue:** `subprocess.run()` for `git init`, `git add`, `git commit` discard return codes. Silent failures violate fail-loud semantics.
-- **Fix:** Use `check=True` on critical subprocess calls, wrapped in try/except.
-- **Action:**
+### A11: _init_target_project re-raises CalledProcessError — crashes run_rebuild
+- **File:** `src/intake/rebuild.py:85, 364-366`
+- **Issue:** `_init_target_project()` re-raises `CalledProcessError`. `run_rebuild()` calls it without try/except, so a git init failure crashes with an unhandled exception rather than returning a structured error dict.
+- **Fix:** Wrap the call in `run_rebuild`:
   ```python
   try:
-      subprocess.run(["git", "init"], cwd=target_dir, capture_output=True, text=True, check=True)
-      # ... scaffold files ...
-      subprocess.run(["git", "add", "."], cwd=target_dir, capture_output=True, check=True)
-      subprocess.run(
-          ["git", "commit", "-m", "chore: initial project scaffold"],
-          cwd=target_dir, capture_output=True, text=True, check=True,
-      )
+      _init_target_project(target_dir)
   except subprocess.CalledProcessError as e:
-      logger.error("Git initialization failed: %s", e.stderr or e)
-      raise
+      fail_pipeline(session_id, str(e))
+      return {"pipeline_status": "failed", "error": f"Git initialization failed: {e}"}
   ```
-- **Verify:** Run `tests/test_intake/test_rebuild.py` — existing tests mock subprocess, so update mocks accordingly.
+- **Verify:** Add test: mock `_init_target_project` to raise `CalledProcessError`, assert structured error dict returned.
+
+### A16: git config commands missing check=True
+- **File:** `src/intake/rebuild.py:333-342`
+- **Issue:** `git config` commands don't use `check=True`. If they fail silently, the subsequent `git commit` at line 357 fails with a confusing "please tell me who you are" error.
+- **Fix:** Add `check=True` to the `subprocess.run` calls for `git config user.name` and `git config user.email`.
+- **Verify:** Add test: verify git config commands are called with `check=True` (mock subprocess).
 
 ---
 
-### FIX-08: `_git_tag_epic` subprocess call ignores return code (Analysis #24)
+## P2 — Medium Severity (12 items)
 
-- **File:** `src/intake/rebuild.py:309-314`
-- **Issue:** `git tag` failure (duplicate tag, no commits) is silently swallowed.
-- **Fix:** Log warning on failure instead of raising (tagging is non-critical).
-- **Action:**
+### A04: parse_epics_markdown silently returns empty list for non-conforming LLM output
+- **File:** `src/intake/backlog.py:66-86`
+- **Issue:** Case-sensitive regex (`^##\s+Epic\s+\d+:`) silently returns `[]` for variant LLM output formats. No warning logged.
+- **Fix:** Add a `logger.warning` when the function returns an empty list from non-empty input:
   ```python
-  result = subprocess.run(
-      ["git", "tag", tag_name], cwd=target_dir, capture_output=True, text=True,
-  )
-  if result.returncode != 0:
-      logger.warning("Git tag '%s' failed: %s", tag_name, result.stderr.strip())
+  if not backlog and lines:
+      logger.warning("parse_epics_markdown returned 0 entries from %d lines of input", len(lines))
   ```
-- **Verify:** Run `tests/test_intake/test_rebuild.py::test_git_tag_epic_*`
+- **Verify:** Add test: pass non-conforming markdown, assert warning is logged and empty list returned.
 
----
+### A05: Stories without parent epic get empty string for epic field
+- **File:** `src/intake/backlog.py:56-110`
+- **Issue:** If LLM output has story headers before any epic header, `current_epic` is `""`. Stories are created with `epic: ""`.
+- **Fix:** Add a `logger.warning` when a story is created with empty epic:
+  ```python
+  if not current_epic:
+      logger.warning("Story '%s' has no parent epic — defaulting to empty", story_title)
+  ```
+- **Verify:** Add test: input with stories before any epic header, assert warning logged.
 
-### FIX-09: Missing `epics.md` raises unhandled `FileNotFoundError` (Analysis #29)
+### A06: Output files lack required YAML frontmatter
+- **File:** `src/intake/pipeline.py:147-151`
+- **Issue:** `spec-summary.md` and `epics.md` are written as raw LLM output without YAML frontmatter. Per coding-standards.md, all inter-agent files must have frontmatter.
+- **Fix:** Add YAML frontmatter before writing:
+  ```python
+  frontmatter = (
+      "---\n"
+      f"agent_role: intake\n"
+      f"task_id: {state.get('session_id', 'unknown')}\n"
+      f"timestamp: {datetime.now(timezone.utc).isoformat()}\n"
+      f"input_files: [{', '.join(state.get('spec_files', []))}]\n"
+      "---\n\n"
+  )
+  ```
+- **Verify:** Read output files in test, assert they start with `---\n`.
 
-- **File:** `src/intake/rebuild.py:51`
-- **Issue:** `load_backlog(target_dir)` raises `FileNotFoundError` if `epics.md` doesn't exist. No try/except in `run_rebuild()`.
-- **Fix:** Catch the exception and return a failed result.
-- **Action:**
+### A12: search_files regex pattern unsanitized — ReDoS risk
+- **File:** `src/tools/scoped.py:175`
+- **Issue:** User-supplied regex compiled without validation. Catastrophic backtracking possible.
+- **Fix:** Add a timeout or limit regex complexity:
   ```python
   try:
-      backlog = load_backlog(target_dir)
-  except FileNotFoundError as e:
-      logger.error("Backlog not found: %s", e)
-      return {
-          "stories_completed": 0, "stories_failed": 0,
-          "interventions": 0, "total_stories": 0,
-          "elapsed_seconds": 0.0, "error": str(e),
-      }
+      regex = re.compile(pattern)
+  except re.error as e:
+      return f"ERROR: Invalid regex pattern: {e}"
   ```
-- **Verify:** Add test: call `run_rebuild()` with a directory missing `epics.md` → assert no exception, result has error.
+  And add a per-file timeout via `re.search` with a line-by-line approach (already the case), which limits blast radius.
+- **Verify:** Add test: pass a known-bad regex pattern, assert `ERROR:` returned.
 
----
-
-### FIX-10: `_run_rebuild_cli` doesn't pass `intervention_logger` to `run_rebuild` (Analysis #36)
-
-- **File:** `src/main.py:364`
-- **Issue:** `intervention_logger` is created at line 342 but not passed to `run_rebuild()` at line 364. Auto-recovery detection is dead code in CLI mode.
-- **Fix:** Pass the parameter.
-- **Action:**
+### A13: _intervention_loggers dict grows unbounded (memory leak)
+- **File:** `src/main.py:279`
+- **Issue:** Module-level dict accumulates an `InterventionLogger` per session, never cleaned up.
+- **Fix:** Add a max size or TTL. Simplest: cap the dict size and evict oldest entries:
   ```python
-  result = run_rebuild(
-      target_dir=target_dir,
-      session_id=session_id,
-      on_intervention=cli_intervention,
-      intervention_logger=intervention_logger,  # ADD THIS
-  )
+  _MAX_LOGGERS = 100
+  if len(_intervention_loggers) >= _MAX_LOGGERS:
+      oldest_key = next(iter(_intervention_loggers))
+      del _intervention_loggers[oldest_key]
   ```
-- **Verify:** Run `tests/test_intake/test_rebuild.py` — confirm auto-recovery path is exercised.
+- **Verify:** Add test: insert 101 loggers, assert dict size stays at 100.
 
----
+### A14: rebuild_intervene uses hardcoded ./target/ path
+- **File:** `src/main.py:296`
+- **Issue:** Intervention log path hardcoded to `./target/` regardless of actual `target_dir`.
+- **Fix:** Store `target_dir` alongside the logger (or in the logger itself) and use it for the log path. Requires threading `target_dir` through from the `/rebuild` call.
+- **Verify:** Add test: call endpoint with known session, verify log path uses correct directory.
 
-### FIX-11: `failure_report` not persisted to markdown output (Analysis #41)
-
-- **File:** `src/intake/intervention_log.py:200-213`
-- **Issue:** `_format_intervention` never writes `failure_report` to the markdown. The raw pipeline failure data is stored in memory but discarded during serialization.
-- **Fix:** Add `failure_report` to the formatted output.
-- **Action:**
+### A15: build_orchestrator() recompiled for every story
+- **File:** `src/intake/rebuild.py:277`
+- **Issue:** `build_orchestrator()` called inside `_run_story_pipeline()`. Identical graph compiled N times for N stories.
+- **Fix:** Compile once in `run_rebuild()` and pass the compiled graph to `_run_story_pipeline()`:
   ```python
-  # In _format_intervention, add after "Retry Counts" line:
-  f"- **Failure Report:** {entry.failure_report}\n"
+  compiled = build_orchestrator()
+  for story_entry in stories:
+      result = _run_story_pipeline(..., compiled=compiled)
   ```
-- **Verify:** Run `tests/test_intake/test_intervention_log.py` — update any assertions checking formatted output.
+- **Verify:** Existing tests pass; optionally add a test asserting `build_orchestrator` called once.
 
----
-
-### FIX-12: `_rewrite_summary` silently no-ops on missing marker (Analysis #45)
-
-- **File:** `src/intake/intervention_log.py:264-265`
-- **Issue:** If `---\n` marker not found, silently returns. Violates fail-loud semantics.
-- **Fix:** Add a log warning.
-- **Action:**
+### A20: InterventionEntry validation bypassed by "Not specified" defaults
+- **File:** `src/intake/intervention_log.py:357-361, 439-444`
+- **Issue:** Callers replace empty strings with `"Not specified"` before construction, making `__post_init__` validation unreachable.
+- **Fix:** Move the `"Not specified"` substitution into `__post_init__` itself, after validation warns:
   ```python
-  if marker_pos == -1:
-      import logging
-      logging.getLogger(__name__).warning("Summary marker '---' not found in %s", self.log_path)
-      return
+  def __post_init__(self):
+      empty_fields = [f for f in _EVIDENCE_FIELDS if not getattr(self, f)]
+      if empty_fields:
+          logger.warning("Intervention entry has empty evidence fields: %s", empty_fields)
+          for f in empty_fields:
+              object.__setattr__(self, f, "Not specified")
   ```
-- **Verify:** Run `tests/test_intake/test_intervention_log.py`
+- **Verify:** Add test: create entry with empty evidence fields, assert warning logged and fields filled.
 
----
+### A21: No tests for /rebuild/intervene API endpoint
+- **File:** `tests/test_main.py` (missing)
+- **Issue:** The `/rebuild/intervene` endpoint is completely untested.
+- **Fix:** Add a test class `TestRebuildInterveneEndpoint` with tests for: valid intervention, missing session_id, skip action, abort action.
+- **Verify:** Tests pass.
 
-### FIX-13: Invalid `action` silently defaults to `"fix"` (Analysis #46)
-
-- **File:** `src/main.py:250`
-- **Issue:** Invalid action string silently becomes `"fix"` with no error. Combined with FIX-14 (Literal type), Pydantic will handle validation, but as a defense-in-depth fix:
-- **Fix:** Once FIX-14 is applied (Literal type on `InterventionRequest.action`), Pydantic will reject invalid values with a 422 error automatically. This fix is then a no-op. If FIX-14 is applied, remove the fallback line entirely and use `request.action` directly.
-- **Action:**
+### A22: _rewrite_summary fragile marker detection
+- **File:** `src/intake/intervention_log.py:266-267`
+- **Issue:** Uses first `---\n` as marker, which could match content inside the file.
+- **Fix:** Use a more specific marker, e.g., search for `---\n` only within the first 10 lines (the frontmatter section):
   ```python
-  # Remove the fallback cast, rely on Pydantic validation:
-  action = request.action  # Already validated by Pydantic Literal type
+  lines = content.split("\n")
+  for i, line in enumerate(lines[:10]):
+      if line.strip() == "---" and i > 0:
+          marker_pos = sum(len(l) + 1 for l in lines[:i+1])
+          break
   ```
-- **Verify:** POST `/rebuild/intervene` with `action: "delete"` → assert 422 response.
+- **Verify:** Add test: file with `---` in content body, assert summary rewrite targets correct marker.
+
+### A24: Missing docstrings on ~15 new test methods
+- **File:** `tests/test_multi_agent/test_orchestrator.py` (lines 1150-1363)
+- **Issue:** Per coding-standards.md, all public functions require docstrings. New test methods in `TestBashNodesPassWorkingDir`, `TestLLMNodesPassWorkingDir` lack them.
+- **Fix:** Add single-line docstrings to each test method matching the style of existing tests in the same file.
+- **Verify:** `ruff check` passes; visual inspection confirms docstrings present.
+
+### A27: PEP 8 E302: missing blank line before _get_working_dir
+- **File:** `src/multi_agent/orchestrator.py:29-31`
+- **Issue:** Only 1 blank line between `logger` assignment and `_get_working_dir` function. PEP 8 requires 2.
+- **Fix:** Add one more blank line before `def _get_working_dir(...)`.
+- **Verify:** `ruff check src/multi_agent/orchestrator.py` passes.
+
+### A28: No tests for spawn.py working_dir threading to injection functions
+- **File:** Missing test coverage in `tests/test_multi_agent/`
+- **Issue:** `spawn.py` passes `working_dir` to `build_system_prompt()` and `inject_task_context()`, but no test verifies this. Removing the kwarg would break nothing.
+- **Fix:** Add tests in `test_spawn.py` (or existing test file) that mock `build_system_prompt` and `inject_task_context`, call `create_agent_subgraph` with a `working_dir`, and assert the kwarg was passed through.
+- **Verify:** Tests pass; remove kwarg temporarily to confirm test catches it.
 
 ---
 
-### FIX-14: `_group_by_epic` produces duplicates for non-contiguous stories (Analysis #30)
+## P3 — Low Severity (12 items)
 
-- **File:** `src/intake/rebuild.py:318-345`
-- **Issue:** Sequential scan creates separate groups for same epic if stories aren't contiguous (e.g., `[Epic1-S1, Epic2-S1, Epic1-S2]` → two groups for Epic1).
-- **Fix:** Use `dict` to group, then convert to list of tuples.
-- **Action:**
-  ```python
-  def _group_by_epic(backlog):
-      groups: dict[str, list[dict[str, Any]]] = {}
-      for entry in backlog:
-          epic = str(entry.get("epic", ""))
-          if epic not in groups:
-              groups[epic] = []
-          groups[epic].append(entry)
-      return list(groups.items())
-  ```
-- **Verify:** Add test with non-contiguous epics → assert single group per epic.
+### A07: Brittle edge count assertion in test
+- **File:** `tests/test_intake/test_pipeline.py:162-164`
+- **Issue:** Asserts `len(edges) == 5` on LangGraph internal representation.
+- **Fix:** Replace with assertion on specific edge pairs or remove the count assertion.
+- **Verify:** Test still passes after LangGraph upgrade.
 
----
+### A08: advance_stage called with empty session_id
+- **File:** `src/intake/pipeline.py:45`
+- **Issue:** `advance_stage("")` when `session_id` missing from state. Silently no-ops.
+- **Fix:** No code change needed — document that node-level tests don't exercise tracker integration. Optionally add guard: `if session_id: advance_stage(session_id, ...)`.
+- **Verify:** N/A (documentation only) or add guard and verify test coverage.
 
-### FIX-15: Git operations fail without `user.name`/`user.email` (Analysis #31)
+### A09: build_trace_config not used directly per dev notes
+- **File:** `src/intake/pipeline.py`
+- **Issue:** Dev notes say to reuse `build_trace_config()`, but `run_sub_agent` calls it internally.
+- **Fix:** No code change needed — current behavior is correct (trace config set inside `run_sub_agent`). Document that this is intentional delegation.
+- **Verify:** N/A.
 
-- **File:** `src/intake/rebuild.py:278-298`
-- **Issue:** `git commit` fails on fresh environments (CI, Docker) without git user config.
-- **Fix:** Set local git config before committing.
-- **Action:**
-  ```python
-  # After git init, before git commit:
-  subprocess.run(
-      ["git", "config", "user.name", "Shipyard"], cwd=target_dir, capture_output=True,
-  )
-  subprocess.run(
-      ["git", "config", "user.email", "shipyard@localhost"], cwd=target_dir, capture_output=True,
-  )
-  ```
-- **Verify:** Run in Docker container without global git config → assert `git commit` succeeds.
-
----
-
-## P2 — Type Safety / mypy / Lint
-
-These fix type errors, suppressed warnings, and lint issues.
-
----
-
-### FIX-16: mypy strict mode error at `pipeline.py:206` (Analysis #14)
-
-- **File:** `src/intake/pipeline.py:206`
-- **Issue:** `compiled.invoke(initial_state)` fails mypy strict. The `# type: ignore[arg-type]` comment is a workaround.
-- **Fix:** Cast the initial state to satisfy the Pregel overload:
-- **Action:**
-  ```python
-  result = compiled.invoke(dict(initial_state))
-  ```
-  Or if that doesn't work:
-  ```python
-  from typing import cast, Any
-  result = compiled.invoke(cast(Any, initial_state))
-  ```
-- **Verify:** Run `mypy src/intake/pipeline.py --strict`
-
----
-
-### FIX-17: `type: ignore` suppression on `build_intake_graph` return (Analysis #16)
-
-- **File:** `src/intake/pipeline.py:151`
-- **Issue:** `def build_intake_graph() -> StateGraph:  # type: ignore[type-arg]` suppresses missing generic.
-- **Fix:** Provide the generic type parameter or keep `type: ignore` with a justification comment. LangGraph's `StateGraph` typing varies by version, so this may be the best option. Add a comment explaining why:
-- **Action:**
-  ```python
-  def build_intake_graph() -> StateGraph:  # type: ignore[type-arg]  # LangGraph StateGraph generic not stable across versions
-  ```
-- **Verify:** Run `mypy src/intake/pipeline.py --strict`
-
----
-
-### FIX-18: `InterventionRequest.action` typed as `str` not `Literal` (Analysis #47)
-
-- **File:** `src/main.py:106`
-- **Issue:** Accepts any string. Should use `Literal` for Pydantic validation.
-- **Fix:**
-  ```python
-  action: Literal["fix", "skip", "abort"]
-  ```
-  Also add `from typing import Literal` if not already imported (it is — line 13).
-- **Verify:** POST `/rebuild/intervene` with invalid action → assert 422.
-
----
-
-### FIX-19: `InterventionResponse.action` typed as `str` not `Literal` (Analysis #48)
-
-- **File:** `src/main.py:113`
-- **Fix:**
-  ```python
-  action: Literal["fix", "skip", "abort"]
-  ```
-- **Verify:** Confirm API schema shows enum values for `action`.
-
----
-
-### FIX-20: `on_intervention` parameter uses `Any` instead of `Callable` (Analysis #38)
-
-- **File:** `src/intake/rebuild.py:27`
-- **Fix:**
-  ```python
-  from typing import Callable
-  on_intervention: Callable[[str], str | None] | None = None,
-  ```
-- **Verify:** Run `mypy src/intake/rebuild.py --strict`
-
----
-
-### FIX-21: `import re` inside function body in `search_files` (Analysis #39)
-
-- **File:** `src/tools/scoped.py:138`
-- **Issue:** `re` imported inside the function instead of at module level.
-- **Fix:** Move `import re` to the top of the file with other stdlib imports (after line 10).
-- **Verify:** `ruff check src/tools/scoped.py`
-
----
-
-### FIX-22: `InterventionLogger.log_path` should be `Path` not `str` (Analysis #55)
-
-- **File:** `src/intake/intervention_log.py:83-84`
-- **Issue:** Stored as `str` but used as `Path` throughout. Inconsistent with `AuditLogger` pattern.
-- **Fix:**
-  ```python
-  def __init__(self, log_path: str) -> None:
-      self.log_path = Path(log_path)
-  ```
-  Then update `_append_section` (line 273) which uses `open(self.log_path, ...)` — already works with `Path`.
-- **Verify:** Run `tests/test_intake/test_intervention_log.py`
-
----
-
-### FIX-23: `get_summary` return type uses `object` (Analysis #56)
-
-- **File:** `src/intake/intervention_log.py:143`
-- **Fix:**
-  ```python
-  def get_summary(self) -> dict[str, int | dict[str, int]]:
-  ```
-- **Verify:** Run `mypy src/intake/intervention_log.py --strict`
-
----
-
-## P3 — Tests, Edge Cases, Consistency
-
-Lower priority fixes that improve robustness and test coverage.
-
----
-
-### FIX-24: Weak edge count assertion (Analysis #6)
-
-- **File:** `tests/test_intake/test_pipeline.py:162-163`
-- **Fix:** Assert exact edge count: `assert len(edges) == 5`
-- **Verify:** Run `tests/test_intake/test_pipeline.py::test_graph_topology`
-
----
-
-### FIX-25: Symlink loops in spec directory (Analysis #7)
-
-- **File:** `src/intake/spec_reader.py:44`
-- **Fix:** Filter out symlinks in the rglob loop:
-  ```python
-  for file_path in sorted(spec_path.rglob("*")):
-      if not file_path.is_file() or file_path.is_symlink():
-          continue
-  ```
-- **Verify:** Add test with symlink loop → assert no infinite hang.
-
----
-
-### FIX-26: Windows path separators in file headers (Analysis #10)
-
-- **File:** `src/intake/spec_reader.py:60`
-- **Fix:** Use `as_posix()` for consistent forward-slash paths:
-  ```python
-  relative = file_path.relative_to(spec_path).as_posix()
-  ```
-- **Verify:** Run `tests/test_intake/test_spec_reader.py`
-
----
-
-### FIX-27: Sub-bullets incorrectly captured as top-level criteria (Analysis #9)
-
-- **File:** `src/intake/backlog.py:63-115`
-- **Issue:** `line.strip()` removes indentation before checking `startswith("- ")`, so `    - sub-detail` becomes a top-level criterion.
-- **Fix:** Check indentation before stripping:
-  ```python
-  # Before stripping, check if line has leading whitespace beyond 0-1 spaces
-  if in_criteria and line.startswith("- "):  # only top-level bullets
-      current_criteria.append(line.strip()[2:])
-  ```
-- **Verify:** Add test with nested bullets → assert sub-bullets not in criteria list.
-
----
-
-### FIX-28: Integration test missing `load_backlog` round-trip (Analysis #12)
-
-- **File:** `tests/test_intake/test_pipeline.py:169-203`
-- **Fix:** Add `load_backlog()` call at the end of integration test to verify generated `epics.md` is parseable.
-- **Verify:** Run `tests/test_intake/test_pipeline.py::test_end_to_end_with_mock_llm`
-
----
-
-### FIX-29: No test for pipeline failure propagation (Analysis #13)
-
+### A10: Pipeline tests don't mock pipeline_tracker functions
 - **File:** `tests/test_intake/test_pipeline.py`
-- **Fix:** Add test: invoke full pipeline with invalid `spec_dir` → assert `pipeline_status == "failed"` and downstream nodes were not invoked (mock `run_sub_agent` and assert not called).
-- **Verify:** Run `tests/test_intake/test_pipeline.py`
+- **Issue:** Tests call real `advance_stage`/`start_pipeline`/`complete_pipeline`/`fail_pipeline`, causing state leakage.
+- **Fix:** Add `@patch("src.intake.pipeline.advance_stage")` (and siblings) to pipeline node tests.
+- **Verify:** Tests pass with mocks; no hidden side-effect coupling.
+
+### A17: Empty backlog leaves pipeline tracker stale
+- **File:** `src/intake/rebuild.py:57-81`
+- **Issue:** Early return on empty backlog doesn't call `complete_pipeline()` or `fail_pipeline()`.
+- **Fix:** Add `complete_pipeline(session_id)` before the early return at line 74-81.
+- **Verify:** Add test: empty backlog, assert `complete_pipeline` called.
+
+### A18: Git tag name collision on same-named epics
+- **File:** `src/intake/rebuild.py:376`
+- **Issue:** Two epics with same name after normalization cause `git tag` failure (logged as warning).
+- **Fix:** No code change needed — warning is already logged and epic still completes. Optionally add a counter suffix.
+- **Verify:** N/A (already handled gracefully).
+
+### A23: Redundant Path() construction
+- **File:** `src/intake/intervention_log.py:96, 257, 262`
+- **Issue:** `Path(self.log_path)` when `self.log_path` is already a `Path`.
+- **Fix:** Use `self.log_path` directly instead of wrapping in `Path()`.
+- **Verify:** Existing tests pass.
+
+### A25: Test section comments reference "Story 4.5" instead of "Story 4.4"
+- **File:** `tests/test_multi_agent/test_orchestrator.py:1425, 1450, 1484`
+- **Issue:** Comments say "Story 4.5" but test Story 4.4 functionality.
+- **Fix:** Change "Story 4.5" to "Story 4.4" in all three comment blocks.
+- **Verify:** Visual inspection.
+
+### A26: os.chdir in test risks parallel interference
+- **File:** `tests/test_intake/test_rebuild.py:379-393`
+- **Issue:** `os.chdir(tmp_path)` modifies process-global state.
+- **Fix:** Replace with `monkeypatch.chdir(tmp_path)` which auto-restores.
+- **Verify:** Test passes with monkeypatch; remove manual try/finally.
+
+### A29: Cross-module import of private function _is_path_allowed
+- **File:** `src/tools/scoped.py:61`
+- **Issue:** Imports `_is_path_allowed` (private) from `restricted.py`.
+- **Fix:** Rename `_is_path_allowed` to `is_path_allowed` in `restricted.py` and update all imports.
+- **Verify:** `ruff check` and all tests pass.
+
+### A30: _get_working_dir placed outside Helper Functions section
+- **File:** `src/multi_agent/orchestrator.py:31`
+- **Issue:** Function is between logger and constants, not with other helpers (lines 112-198).
+- **Fix:** Move `_get_working_dir` to the Helper Functions section (after line 112).
+- **Verify:** All tests pass; function referenced by same name throughout.
 
 ---
 
-### FIX-30: Missing tests for scoped path escaping in `list_files`/`search_files` (Analysis #37)
+## Summary
 
-- **File:** `tests/test_tools/test_scoped.py`
-- **Fix:** Add tests:
-  ```python
-  def test_list_files_rejects_path_escape(scoped_tools, tmp_path):
-      result = scoped_tools["list_files"]("*", path=str(tmp_path.parent))
-      assert "ERROR:" in result
-
-  def test_search_files_rejects_path_escape(scoped_tools, tmp_path):
-      result = scoped_tools["search_files"]("test", path=str(tmp_path.parent))
-      assert "ERROR:" in result
-  ```
-- **Verify:** Tests fail before FIX-01/02, pass after.
-
----
-
-### FIX-31: Truncation suffix exceeds `MAX_FILE_CHARS` (Analysis #19)
-
-- **File:** `src/intake/spec_reader.py:57-58`
-- **Fix:**
-  ```python
-  suffix = f"\n\n(truncated, {len(content)} chars total)"
-  content = content[:MAX_FILE_CHARS - len(suffix)] + suffix
-  ```
-  Note: The suffix length depends on `len(content)` which is known before truncation. Pre-compute suffix, then slice.
-- **Verify:** Add test: file with exactly 5001 chars → assert output length <= 5000 + header.
-
----
-
-### FIX-32: Inconsistent `os.path` vs `pathlib` (Analysis #17)
-
-- **File:** `src/intake/backlog.py:37-38`, `src/intake/pipeline.py:130-133`
-- **Fix:** Convert `os.path` usage to `pathlib.Path` to match `spec_reader.py` pattern. Low priority — no functional change.
-- **Verify:** Run `tests/test_intake/` suite.
-
----
-
-### FIX-33: Empty `files_involved` produces trailing-space markdown (Analysis #49)
-
-- **File:** `src/intake/intervention_log.py:202`
-- **Fix:**
-  ```python
-  files_list = ", ".join(f"`{f}`" for f in entry.files_involved) if entry.files_involved else "None"
-  ```
-- **Verify:** Run `tests/test_intake/test_intervention_log.py`
-
----
-
-### FIX-34: Limitation categories case-sensitive fragmentation (Analysis #50)
-
-- **File:** `src/intake/intervention_log.py:108`
-- **Fix:** Normalize key to lowercase:
-  ```python
-  limitation = entry.agent_limitation.strip().lower()
-  ```
-- **Verify:** Add test: log two entries with "Cross-module" and "cross-module" → assert single category.
-
----
-
-### FIX-35: Duplicate git tags not handled (Analysis #34)
-
-- **File:** `src/intake/rebuild.py:309-314`
-- **Fix:** Already addressed by FIX-08 (logging on failure). Git tag failure is now logged as a warning.
-- **Verify:** See FIX-08.
-
----
-
-### FIX-36: Empty `working_dir` string treated as falsy (Analysis #32)
-
-- **File:** `src/multi_agent/roles.py:146` (approximate)
-- **Fix:** Change `if working_dir:` to `if working_dir is not None:`
-- **Verify:** Run `tests/test_multi_agent/test_roles.py`
-
----
-
-### FIX-37: No tests for `_detect_auto_recovery` (Analysis #53)
-
-- **File:** `tests/test_intake/test_rebuild.py` (new tests)
-- **Fix:** Add tests for `_detect_auto_recovery`:
-  - `test_cycle_count > 1` triggers `log_auto_recovery`
-  - `test_cycle_count <= 1` does not trigger
-  - Multiple cycle types trigger independently
-- **Verify:** Run `tests/test_intake/test_rebuild.py`
-
----
-
-### FIX-38: No tests for `/rebuild/intervene` endpoint (Analysis #54)
-
-- **File:** `tests/test_intake/test_intervention_log.py` or new test file
-- **Fix:** Add FastAPI `TestClient` test for the endpoint:
-  - Valid request → 200 with logged=True
-  - Invalid action → 422 (after FIX-18)
-  - Path injection session_id → sanitized (after FIX-03)
-- **Verify:** Run the new test.
-
----
-
-### FIX-39: Missing test for validation of other evidence fields (Analysis #57)
-
-- **File:** `tests/test_intake/test_intervention_log.py:201-215`
-- **Fix:** Add tests for `what_developer_did=""` and `agent_limitation=""` raising `ValueError`.
-- **Verify:** Run `tests/test_intake/test_intervention_log.py`
-
----
-
-### FIX-40: No test for `export_for_analysis` with multiple entries (Analysis #58)
-
-- **File:** `tests/test_intake/test_intervention_log.py`
-- **Fix:** Add test: log 3 interventions (2 same limitation, 1 different) → assert 2 categories, correct counts.
-- **Verify:** Run `tests/test_intake/test_intervention_log.py`
-
----
-
-## Implementation Order
-
-Recommended execution sequence to minimize test breakage:
-
-1. **P0 Security** (FIX-01, 02, 03): Scoped tools + path injection — independent, fix first
-2. **P0 Core Feature** (FIX-04): CLI intervention returns fix instruction
-3. **P1 Error Handling** (FIX-05 through 15): Can be done in any order, all independent
-4. **P2 Types** (FIX-16 through 23): Run mypy after each
-5. **P3 Tests** (FIX-24 through 40): Add after the corresponding fixes
+| Priority | Count | Estimated Effort |
+|---|---|---|
+| P0 (Critical) | 3 | Small — each is a targeted code change |
+| P1 (High) | 3 | Small-Medium — try/except wrapping + tests |
+| P2 (Medium) | 12 | Medium — mix of code fixes and new tests |
+| P3 (Low) | 12 | Small — cosmetic/doc/minor fixes |
+| **Total** | **30** | |

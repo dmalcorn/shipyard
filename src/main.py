@@ -11,9 +11,8 @@ import logging
 import os
 import re
 import uuid
-from typing import Any, Literal
-
 from pathlib import Path
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -23,6 +22,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
 from src.agent.graph import create_agent, create_trace_config
+from src.audit_log.audit import AuditLogger
 from src.intake.intervention_log import (
     InterventionLogger,
     cli_intervention_prompt,
@@ -30,7 +30,6 @@ from src.intake.intervention_log import (
 )
 from src.intake.pipeline import run_intake_pipeline
 from src.intake.rebuild import run_rebuild
-from src.audit_log.audit import AuditLogger
 from src.pipeline_tracker import (
     advance_stage,
     complete_pipeline,
@@ -277,6 +276,7 @@ def rebuild(request: RebuildRequest) -> RebuildResponse:
 
 # Module-level dict to hold active intervention loggers per session
 _intervention_loggers: dict[str, InterventionLogger] = {}
+_MAX_LOGGERS = 100
 
 
 @app.post("/rebuild/intervene", response_model=InterventionResponse)
@@ -291,6 +291,10 @@ def rebuild_intervene(request: InterventionRequest) -> InterventionResponse:
     """
     intervention_logger = _intervention_loggers.get(request.session_id)
     if not intervention_logger:
+        # Evict oldest entry if at capacity
+        if len(_intervention_loggers) >= _MAX_LOGGERS:
+            oldest_key = next(iter(_intervention_loggers))
+            del _intervention_loggers[oldest_key]
         # Create a logger if one doesn't exist for this session
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", request.session_id)
         intervention_logger = InterventionLogger(log_path=f"./target/intervention-log-{safe_id}.md")

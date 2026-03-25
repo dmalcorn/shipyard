@@ -17,11 +17,17 @@ from langchain_core.tools import BaseTool, tool
 logger = logging.getLogger(__name__)
 
 
-def get_scoped_tools(working_dir: str) -> dict[str, BaseTool]:
+def get_scoped_tools(
+    working_dir: str,
+    write_restrictions: tuple[str, ...] | None = None,
+) -> dict[str, BaseTool]:
     """Create tools scoped to the given working directory.
 
     Args:
         working_dir: Absolute or relative path to the target working directory.
+        write_restrictions: Optional tuple of allowed write path prefixes.
+            When set, write_file and edit_file validate paths against both
+            the sandbox boundary AND these role-based allowed prefixes.
 
     Returns:
         Dict mapping tool names to scoped BaseTool instances.
@@ -47,6 +53,20 @@ def get_scoped_tools(working_dir: str) -> dict[str, BaseTool]:
                 "All file operations must stay within the target project."
             )
         return resolved
+
+    def _check_write_restrictions(file_path: str) -> str | None:
+        """Check write restrictions if configured. Returns error string or None."""
+        if not write_restrictions:
+            return None
+        from src.tools.restricted import is_path_allowed
+
+        if not is_path_allowed(file_path, write_restrictions):
+            allowed_desc = ", ".join(write_restrictions)
+            return (
+                f"ERROR: Permission denied: write restricted to {allowed_desc}. "
+                f"Cannot write to {file_path}."
+            )
+        return None
 
     @tool
     def read_file(file_path: str) -> str:
@@ -75,6 +95,10 @@ def get_scoped_tools(working_dir: str) -> dict[str, BaseTool]:
             resolved = _validate(file_path)
             if isinstance(resolved, str):
                 return resolved
+            rel_path = str(resolved.relative_to(root))
+            restriction_error = _check_write_restrictions(rel_path)
+            if restriction_error:
+                return restriction_error
             if not old_string:
                 return "ERROR: old_string must not be empty. Provide the exact text to replace."
             if old_string == new_string:
@@ -110,6 +134,10 @@ def get_scoped_tools(working_dir: str) -> dict[str, BaseTool]:
             resolved = _validate(file_path)
             if isinstance(resolved, str):
                 return resolved
+            rel_path = str(resolved.relative_to(root))
+            restriction_error = _check_write_restrictions(rel_path)
+            if restriction_error:
+                return restriction_error
             resolved.parent.mkdir(parents=True, exist_ok=True)
             with open(resolved, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -144,7 +172,10 @@ def get_scoped_tools(working_dir: str) -> dict[str, BaseTool]:
                 return search_root
             if not search_root.exists():
                 return f"ERROR: Path not found: {path}"
-            regex = re.compile(pattern)
+            try:
+                regex = re.compile(pattern)
+            except re.error as e:
+                return f"ERROR: Invalid regex pattern: {e}"
             results: list[str] = []
             for file_path_obj in sorted(search_root.rglob("*")):
                 if not file_path_obj.is_file():
@@ -166,9 +197,30 @@ def get_scoped_tools(working_dir: str) -> dict[str, BaseTool]:
         except Exception as e:
             return f"ERROR: Search failed: {e}"
 
+    BLOCKED_PATTERNS = (
+        "rm -rf",
+        "rm -fr",
+        "rmdir /s",
+        "mkfs",
+        "dd if=",
+        ":(){ :|:& };:",
+        "chmod -R 777",
+        "curl|sh",
+        "wget|sh",
+        "> /dev/sd",
+        "shutdown",
+        "reboot",
+        "init 0",
+        "init 6",
+    )
+
     @tool
     def run_command(command: str, timeout: str = "30") -> str:
         """Execute a shell command in the target project directory. Used by: Dev."""
+        cmd_lower = command.lower().replace("\\", "/")
+        for pattern in BLOCKED_PATTERNS:
+            if pattern in cmd_lower:
+                return f"ERROR: Blocked dangerous command pattern: {pattern}"
         try:
             timeout_secs = int(timeout)
         except ValueError:

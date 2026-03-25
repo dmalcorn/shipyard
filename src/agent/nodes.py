@@ -14,8 +14,8 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.prebuilt import ToolNode
 
 from src.agent.state import AgentState
-from src.context.injection import build_system_prompt
 from src.audit_log.audit import get_logger
+from src.context.injection import build_system_prompt
 from src.tools import tools
 
 logger = logging.getLogger(__name__)

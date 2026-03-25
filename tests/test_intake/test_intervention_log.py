@@ -199,50 +199,50 @@ class TestInterventionLogger:
         assert "---" in content
 
     def test_required_fields_non_empty(self) -> None:
-        """InterventionEntry validates that required fields are non-empty."""
-        with pytest.raises(ValueError, match="what_broke"):
-            InterventionEntry(
-                timestamp="2026-03-24T14:30:00Z",
-                epic="E1",
-                story="S1",
-                pipeline_phase="ci",
-                failure_report="fail",
-                what_broke="",  # empty — should fail
-                what_developer_did="fixed",
-                agent_limitation="limit",
-                retry_counts="edit=1/3",
-                files_involved=["f.py"],
-            )
+        """InterventionEntry fills empty evidence fields with defaults."""
+        entry = InterventionEntry(
+            timestamp="2026-03-24T14:30:00Z",
+            epic="E1",
+            story="S1",
+            pipeline_phase="ci",
+            failure_report="fail",
+            what_broke="",  # empty — should be filled with default
+            what_developer_did="fixed",
+            agent_limitation="limit",
+            retry_counts="edit=1/3",
+            files_involved=["f.py"],
+        )
+        assert entry.what_broke == "Not specified"
 
-    def test_empty_what_developer_did_raises(self) -> None:
-        """InterventionEntry rejects empty what_developer_did."""
-        with pytest.raises(ValueError, match="what_developer_did"):
-            InterventionEntry(
-                timestamp="2026-03-24T14:30:00Z",
-                epic="E1",
-                story="S1",
-                pipeline_phase="ci",
-                failure_report="fail",
-                what_broke="broke",
-                what_developer_did="",
-                agent_limitation="limit",
-                retry_counts="edit=1/3",
-            )
+    def test_empty_what_developer_did_defaults(self) -> None:
+        """InterventionEntry fills empty what_developer_did with default."""
+        entry = InterventionEntry(
+            timestamp="2026-03-24T14:30:00Z",
+            epic="E1",
+            story="S1",
+            pipeline_phase="ci",
+            failure_report="fail",
+            what_broke="broke",
+            what_developer_did="",
+            agent_limitation="limit",
+            retry_counts="edit=1/3",
+        )
+        assert entry.what_developer_did == "Not specified"
 
-    def test_empty_agent_limitation_raises(self) -> None:
-        """InterventionEntry rejects empty agent_limitation."""
-        with pytest.raises(ValueError, match="agent_limitation"):
-            InterventionEntry(
-                timestamp="2026-03-24T14:30:00Z",
-                epic="E1",
-                story="S1",
-                pipeline_phase="ci",
-                failure_report="fail",
-                what_broke="broke",
-                what_developer_did="fixed",
-                agent_limitation="",
-                retry_counts="edit=1/3",
-            )
+    def test_empty_agent_limitation_defaults(self) -> None:
+        """InterventionEntry fills empty agent_limitation with default."""
+        entry = InterventionEntry(
+            timestamp="2026-03-24T14:30:00Z",
+            epic="E1",
+            story="S1",
+            pipeline_phase="ci",
+            failure_report="fail",
+            what_broke="broke",
+            what_developer_did="fixed",
+            agent_limitation="",
+            retry_counts="edit=1/3",
+        )
+        assert entry.agent_limitation == "Not specified"
 
     def test_summary_updates_in_log_file(
         self, logger: InterventionLogger, sample_entry: InterventionEntry

@@ -72,6 +72,7 @@ def run_rebuild(
             "error": str(e),
         }
     if not backlog:
+        complete_pipeline(session_id)
         return {
             "stories_completed": 0,
             "stories_failed": 0,
@@ -82,10 +83,26 @@ def run_rebuild(
 
     # Initialize the target project
     advance_stage(session_id, "init_project")
-    _init_target_project(target_dir)
+    try:
+        _init_target_project(target_dir)
+    except subprocess.CalledProcessError as e:
+        fail_pipeline(session_id, str(e))
+        return {
+            "stories_completed": 0,
+            "stories_failed": 0,
+            "interventions": 0,
+            "total_stories": 0,
+            "elapsed_seconds": 0.0,
+            "error": f"Git initialization failed: {e}",
+        }
 
     # Group stories by epic
     epics = _group_by_epic(backlog)
+
+    # Compile the orchestrator graph once (reused for all stories)
+    from src.multi_agent.orchestrator import build_orchestrator
+
+    compiled_orchestrator = build_orchestrator()
 
     stories_completed = 0
     stories_failed = 0
@@ -126,6 +143,7 @@ def run_rebuild(
                 session_id=session_id,
                 task_id=f"{epic_name}-{story_name}".replace(" ", "-").lower(),
                 task_description=task_description,
+                compiled=compiled_orchestrator,
             )
 
             status = result.get("pipeline_status", "failed")
@@ -142,7 +160,20 @@ def run_rebuild(
                 intervention_count += 1
                 total_interventions += 1
 
-                if fix_instruction and fix_instruction.lower() != "skip":
+                if fix_instruction is None:
+                    # Abort: stop entire rebuild
+                    story_results.append(
+                        {
+                            "epic": epic_name,
+                            "story": story_name,
+                            "status": "aborted",
+                            "interventions": intervention_count,
+                        }
+                    )
+                    stories_failed += 1
+                    break
+
+                if fix_instruction.lower() != "skip":
                     # Retry with fix instruction appended
                     retry_description = (
                         f"{task_description}\n\nINTERVENTION FIX INSTRUCTION:\n{fix_instruction}"
@@ -152,6 +183,7 @@ def run_rebuild(
                         session_id=session_id,
                         task_id=f"{epic_name}-{story_name}-retry".replace(" ", "-").lower(),
                         task_description=retry_description,
+                        compiled=compiled_orchestrator,
                     )
                     status = result.get("pipeline_status", "failed")
 
@@ -176,6 +208,9 @@ def run_rebuild(
                 total_stories=len(backlog),
                 total_interventions=total_interventions,
             )
+
+        if story_results and story_results[-1].get("status") == "aborted":
+            break
 
         # Tag epic completion
         advance_stage(session_id, "git_tag")
@@ -260,6 +295,7 @@ def _run_story_pipeline(
     session_id: str,
     task_id: str,
     task_description: str,
+    compiled: Any | None = None,
 ) -> dict[str, Any]:
     """Invoke the TDD orchestrator for a single story.
 
@@ -268,13 +304,18 @@ def _run_story_pipeline(
         session_id: Session ID for trace linking.
         task_id: Unique task identifier.
         task_description: Full story description with acceptance criteria.
+        compiled: Optional pre-compiled orchestrator graph. Built on demand if None.
 
     Returns:
         Orchestrator result dict with pipeline_status.
     """
     from src.multi_agent.orchestrator import OrchestratorState, build_orchestrator
 
-    compiled = build_orchestrator()
+    if compiled is None:
+        compiled = build_orchestrator()
+
+    # Resolve target_dir to an absolute path for sandbox scoping
+    abs_target_dir = os.path.abspath(target_dir)
 
     initial_state: OrchestratorState = {
         "task_id": task_id,
@@ -296,6 +337,7 @@ def _run_story_pipeline(
         "last_ci_output": "",
         "error_log": [],
         "error": "",
+        "working_dir": abs_target_dir,
     }
 
     try:
@@ -330,11 +372,13 @@ def _init_target_project(target_dir: str) -> None:
                 ["git", "config", "user.name", "Shipyard"],
                 cwd=target_dir,
                 capture_output=True,
+                check=True,
             )
             subprocess.run(
                 ["git", "config", "user.email", "shipyard@localhost"],
                 cwd=target_dir,
                 capture_output=True,
+                check=True,
             )
 
             # Create minimal scaffold

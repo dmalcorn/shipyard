@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.intake.intervention_log import InterventionLogger
 from src.intake.rebuild import (
     _detect_auto_recovery,
@@ -335,6 +337,59 @@ class TestWriteRebuildStatus:
         )
         content = (tmp_path / "rebuild-status.md").read_text(encoding="utf-8")
         assert "Total time: 2.0 minutes" in content
+
+
+class TestRunStoryPipelineWorkingDir:
+    """_run_story_pipeline() resolves target_dir to absolute and sets working_dir."""
+
+    @patch("src.multi_agent.orchestrator.build_orchestrator")
+    def test_sets_working_dir_in_initial_state(self, mock_build: MagicMock, tmp_path: Path) -> None:
+        """working_dir in initial_state is set to the absolute target_dir."""
+        from src.intake.rebuild import _run_story_pipeline
+
+        mock_compiled = MagicMock()
+        mock_compiled.invoke.return_value = {"pipeline_status": "completed"}
+        mock_build.return_value = mock_compiled
+
+        target = str(tmp_path / "myproject")
+
+        _run_story_pipeline(
+            target_dir=target,
+            session_id="s",
+            task_id="t",
+            task_description="desc",
+        )
+
+        call_args = mock_compiled.invoke.call_args[0][0]
+        assert call_args["working_dir"] == os.path.abspath(target)
+
+    @patch("src.multi_agent.orchestrator.build_orchestrator")
+    def test_resolves_relative_path_to_absolute(
+        self,
+        mock_build: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Relative target_dir is resolved to an absolute path."""
+        from src.intake.rebuild import _run_story_pipeline
+
+        mock_compiled = MagicMock()
+        mock_compiled.invoke.return_value = {"pipeline_status": "completed"}
+        mock_build.return_value = mock_compiled
+
+        # Use a deterministic cwd so os.path.abspath is predictable
+        monkeypatch.chdir(tmp_path)
+        _run_story_pipeline(
+            target_dir="./relative/path",
+            session_id="s",
+            task_id="t",
+            task_description="desc",
+        )
+
+        call_args = mock_compiled.invoke.call_args[0][0]
+        assert os.path.isabs(call_args["working_dir"])
+        expected = os.path.join(str(tmp_path), "relative", "path")
+        assert call_args["working_dir"] == expected
 
 
 class TestDetectAutoRecovery:

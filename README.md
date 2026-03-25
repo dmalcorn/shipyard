@@ -73,6 +73,18 @@ curl -X POST http://localhost:8000/instruct \
   -d '{"message": "Read the README.md file"}'
 ```
 
+### Autonomous rebuild
+
+Rebuild a project from a generated backlog:
+
+```bash
+python -m src.main --rebuild /path/to/target/project
+```
+
+The `target_dir` must be **outside** Shipyard's source tree. All agent file operations, bash commands, and git operations are scoped to the target directory. Relative paths (e.g. `./target/`) are resolved to absolute automatically.
+
+See [User's Guide](gauntlet_docs/users-guide.md) for full rebuild documentation.
+
 ## Architecture
 
 Shipyard uses a LangGraph state machine with tool-calling agents. The core loop: receive instruction → plan → execute tools → return result. Checkpoints persist conversation state in SQLite.
