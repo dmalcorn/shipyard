@@ -908,7 +908,7 @@ async function checkHealth() {
     const d = await r.json();
     if (d.status === 'ok') {
       badge.className = 'health-badge ok';
-      text.textContent = 'Systems Nominal';
+      text.textContent = 'SYSTEM HEALTH';
     } else {
       badge.className = 'health-badge error';
       text.textContent = 'Degraded';
