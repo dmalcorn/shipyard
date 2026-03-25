@@ -35,6 +35,9 @@ from src.multi_agent.orchestrator import (
     REVIEWER_2_FOCUS,
     OrchestratorState,
     ReviewNodeInput,
+    _ensure_reviews_dir,
+    _get_working_dir,
+    _review_file_path,
     architect_node,
     build_orchestrator,
     build_orchestrator_graph,
@@ -215,7 +218,7 @@ class TestBashNodes:
 
         result = unit_test_node(state)
 
-        mock_bash.assert_called_once_with(["pytest", "tests/", "-v"])
+        mock_bash.assert_called_once_with(["pytest", "tests/", "-v"], cwd=None)
         assert result["test_passed"] is True
         assert result["test_cycle_count"] == 1
 
@@ -227,7 +230,7 @@ class TestBashNodes:
 
         result = ci_node(state)
 
-        mock_bash.assert_called_once_with(["bash", "scripts/local_ci.sh"])
+        mock_bash.assert_called_once_with(["bash", "scripts/local_ci.sh"], cwd=None)
         assert result["test_passed"] is True
         assert result["ci_cycle_count"] == 1
 
@@ -251,7 +254,7 @@ class TestBashNodes:
 
         result = system_test_node(state)
 
-        mock_bash.assert_called_once_with(["pytest", "tests/", "-v", "-m", "system"])
+        mock_bash.assert_called_once_with(["pytest", "tests/", "-v", "-m", "system"], cwd=None)
         assert result["test_passed"] is True
 
     @patch("src.multi_agent.orchestrator._run_bash")
@@ -355,14 +358,17 @@ class TestRouteAfterPostFixTest:
     """Tests for route_after_post_fix_test conditional routing."""
 
     def test_pass_on_success(self) -> None:
+        """Routes to pass when post-fix tests succeed."""
         state: OrchestratorState = {"test_passed": True, "test_cycle_count": 1}
         assert route_after_post_fix_test(state) == "pass"
 
     def test_retry_on_failure(self) -> None:
+        """Routes to retry when post-fix tests fail below cycle limit."""
         state: OrchestratorState = {"test_passed": False, "test_cycle_count": 2}
         assert route_after_post_fix_test(state) == "retry"
 
     def test_error_at_limit(self) -> None:
+        """Routes to error when post-fix tests fail at max cycle limit."""
         state: OrchestratorState = {
             "test_passed": False,
             "test_cycle_count": MAX_TEST_CYCLES,
@@ -374,14 +380,17 @@ class TestRouteAfterPostFixCI:
     """Tests for route_after_post_fix_ci conditional routing."""
 
     def test_pass_on_success(self) -> None:
+        """Routes to pass when post-fix CI succeeds."""
         state: OrchestratorState = {"test_passed": True, "ci_cycle_count": 1}
         assert route_after_post_fix_ci(state) == "pass"
 
     def test_retry_on_failure(self) -> None:
+        """Routes to retry when post-fix CI fails below cycle limit."""
         state: OrchestratorState = {"test_passed": False, "ci_cycle_count": 1}
         assert route_after_post_fix_ci(state) == "retry"
 
     def test_error_at_limit(self) -> None:
+        """Routes to error when post-fix CI fails at max cycle limit."""
         state: OrchestratorState = {
             "test_passed": False,
             "ci_cycle_count": MAX_CI_CYCLES,
@@ -393,14 +402,17 @@ class TestRouteAfterSystemTest:
     """Tests for route_after_system_test conditional routing."""
 
     def test_pass_on_success(self) -> None:
+        """Routes to pass when system tests succeed."""
         state: OrchestratorState = {"test_passed": True, "test_cycle_count": 1}
         assert route_after_system_test(state) == "pass"
 
     def test_retry_on_failure(self) -> None:
+        """Routes to retry when system tests fail below cycle limit."""
         state: OrchestratorState = {"test_passed": False, "test_cycle_count": 2}
         assert route_after_system_test(state) == "retry"
 
     def test_error_at_limit(self) -> None:
+        """Routes to error when system tests fail at max cycle limit."""
         state: OrchestratorState = {
             "test_passed": False,
             "test_cycle_count": MAX_TEST_CYCLES,
@@ -505,7 +517,7 @@ class TestRouteToReviewers:
         state: OrchestratorState = {
             "task_id": "t",
             "session_id": "s",
-            "source_files": [],
+            "source_files": ["src/a.py"],
             "test_files": [],
         }
         result = route_to_reviewers(state)
@@ -517,7 +529,7 @@ class TestRouteToReviewers:
         state: OrchestratorState = {
             "task_id": "t",
             "session_id": "s",
-            "source_files": [],
+            "source_files": ["src/a.py"],
             "test_files": [],
         }
         result = route_to_reviewers(state)
@@ -529,7 +541,7 @@ class TestRouteToReviewers:
         state: OrchestratorState = {
             "task_id": "t",
             "session_id": "s",
-            "source_files": [],
+            "source_files": ["src/a.py"],
             "test_files": [],
         }
         result = route_to_reviewers(state)
@@ -1082,3 +1094,456 @@ class TestIntegrationFullPipeline:
         assert "reviewer" in agent_roles
         assert "architect" in agent_roles
         assert "fix_dev" in agent_roles
+
+
+# ---------------------------------------------------------------------------
+# Story 4.4: working_dir threading tests
+# ---------------------------------------------------------------------------
+
+
+class TestWorkingDirState:
+    """Tests that working_dir propagates through OrchestratorState."""
+
+    def test_orchestrator_state_accepts_working_dir(self) -> None:
+        """OrchestratorState accepts working_dir field."""
+        state: OrchestratorState = {"working_dir": "/some/path"}
+        assert state["working_dir"] == "/some/path"
+
+    def test_orchestrator_state_working_dir_empty_default(self) -> None:
+        """working_dir defaults to empty string when not set."""
+        state: OrchestratorState = {"task_id": "t"}
+        assert state.get("working_dir", "") == ""
+
+    def test_review_node_input_accepts_working_dir(self) -> None:
+        """ReviewNodeInput includes working_dir field."""
+        inp = ReviewNodeInput(
+            reviewer_id=1,
+            task_id="t",
+            session_id="s",
+            source_files=[],
+            test_files=[],
+            reviewer_focus="focus",
+            working_dir="/target",
+        )
+        assert inp["working_dir"] == "/target"
+
+
+class TestRunBashCwd:
+    """Tests that _run_bash passes cwd to subprocess.run."""
+
+    @patch("src.multi_agent.orchestrator.subprocess.run")
+    def test_cwd_passed_when_provided(self, mock_run: MagicMock) -> None:
+        """_run_bash passes cwd to subprocess.run when provided."""
+        from src.multi_agent.orchestrator import _run_bash
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        _run_bash(["echo", "hi"], cwd="/my/dir")
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs.get("cwd") == "/my/dir"
+
+    @patch("src.multi_agent.orchestrator.subprocess.run")
+    def test_cwd_none_when_omitted(self, mock_run: MagicMock) -> None:
+        """_run_bash passes cwd=None when not provided."""
+        from src.multi_agent.orchestrator import _run_bash
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        _run_bash(["echo", "hi"])
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs.get("cwd") is None
+
+
+class TestBashNodesPassWorkingDir:
+    """Tests that bash nodes read working_dir from state and pass as cwd."""
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_unit_test_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """Unit test node passes working_dir as cwd to _run_bash."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {
+            "session_id": "s",
+            "test_cycle_count": 0,
+            "working_dir": "/target",
+        }
+        unit_test_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_ci_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """CI node passes working_dir as cwd to _run_bash."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {
+            "session_id": "s",
+            "ci_cycle_count": 0,
+            "working_dir": "/target",
+        }
+        ci_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_git_snapshot_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """Git snapshot node passes working_dir as cwd to _run_bash."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "working_dir": "/target",
+        }
+        git_snapshot_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_system_test_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """System test node passes working_dir as cwd to _run_bash."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {
+            "session_id": "s",
+            "test_cycle_count": 0,
+            "working_dir": "/target",
+        }
+        system_test_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_final_ci_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """Final CI node passes working_dir as cwd to _run_bash."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {"session_id": "s", "working_dir": "/target"}
+        final_ci_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_git_push_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """Git push node passes working_dir as cwd to all _run_bash calls."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "working_dir": "/target",
+        }
+        git_push_node(state)
+        # Both commit and push calls should have cwd
+        for call in mock_bash.call_args_list:
+            assert call.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_post_fix_test_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """Post-fix test node passes working_dir as cwd to _run_bash."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {
+            "session_id": "s",
+            "test_cycle_count": 0,
+            "working_dir": "/target",
+        }
+        post_fix_test_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_post_fix_ci_node_passes_cwd(self, mock_bash: MagicMock) -> None:
+        """Post-fix CI node passes working_dir as cwd to _run_bash."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {
+            "session_id": "s",
+            "ci_cycle_count": 0,
+            "working_dir": "/target",
+        }
+        post_fix_ci_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") == "/target"
+
+    @patch("src.multi_agent.orchestrator._run_bash")
+    def test_bash_nodes_none_cwd_without_working_dir(self, mock_bash: MagicMock) -> None:
+        """Bash nodes pass cwd=None when working_dir is empty (backward compat)."""
+        mock_bash.return_value = (True, "ok")
+        state: OrchestratorState = {"session_id": "s", "test_cycle_count": 0}
+        unit_test_node(state)
+        assert mock_bash.call_args.kwargs.get("cwd") is None
+
+
+class TestLLMNodesPassWorkingDir:
+    """Tests that LLM agent nodes pass working_dir to run_sub_agent."""
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_test_agent_passes_working_dir(self, mock_run: MagicMock) -> None:
+        """Test agent node forwards working_dir to run_sub_agent."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "task_description": "spec",
+            "context_files": [],
+            "working_dir": "/target",
+        }
+        spawn_test_agent(state)
+        assert mock_run.call_args.kwargs["working_dir"] == "/target"
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_dev_agent_passes_working_dir(self, mock_run: MagicMock) -> None:
+        """Dev agent node forwards working_dir to run_sub_agent."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "task_description": "spec",
+            "context_files": [],
+            "working_dir": "/target",
+        }
+        dev_agent_node(state)
+        assert mock_run.call_args.kwargs["working_dir"] == "/target"
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_architect_passes_working_dir(self, mock_run: MagicMock) -> None:
+        """Architect node forwards working_dir to run_sub_agent."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": [],
+            "review_file_paths": [],
+            "working_dir": "/target",
+        }
+        architect_node(state)
+        assert mock_run.call_args.kwargs["working_dir"] == "/target"
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_fix_dev_passes_working_dir(self, mock_run: MagicMock) -> None:
+        """Fix dev node forwards working_dir to run_sub_agent."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": [],
+            "working_dir": "/target",
+        }
+        fix_dev_node(state)
+        assert mock_run.call_args.kwargs["working_dir"] == "/target"
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_review_node_passes_working_dir(self, mock_run: MagicMock) -> None:
+        """Review node forwards working_dir to run_sub_agent."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+        state = ReviewNodeInput(
+            reviewer_id=1,
+            task_id="t",
+            session_id="s",
+            source_files=[],
+            test_files=[],
+            reviewer_focus="focus",
+            working_dir="/target",
+        )
+        review_node(state)
+        assert mock_run.call_args.kwargs["working_dir"] == "/target"
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_llm_nodes_none_working_dir_without_state(self, mock_run: MagicMock) -> None:
+        """LLM nodes pass working_dir=None when not set (backward compat)."""
+        mock_run.return_value = {"files_modified": [], "final_message": "done"}
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "task_description": "spec",
+            "context_files": [],
+        }
+        spawn_test_agent(state)
+        assert mock_run.call_args.kwargs["working_dir"] is None
+
+    @patch("src.multi_agent.orchestrator.run_sub_agent")
+    def test_route_to_reviewers_includes_working_dir(self, mock_run: MagicMock) -> None:
+        """route_to_reviewers includes working_dir in ReviewNodeInput."""
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": [],
+            "test_files": [],
+            "working_dir": "/target",
+        }
+        sends = route_to_reviewers(state)
+        for send in sends:
+            assert send.arg["working_dir"] == "/target"
+
+
+class TestReviewHelperFunctions:
+    """Tests for _ensure_reviews_dir and _review_file_path with working_dir."""
+
+    def test_review_file_path_with_working_dir(self, tmp_path: Path) -> None:
+        """_review_file_path scopes output under working_dir/reviews/."""
+        result = _review_file_path(1, working_dir=str(tmp_path))
+        expected = os.path.join(str(tmp_path), "reviews", "review-agent-1.md")
+        assert result == expected
+
+    def test_review_file_path_without_working_dir(self) -> None:
+        """_review_file_path uses bare REVIEWS_DIR when working_dir is None."""
+        result = _review_file_path(2, working_dir=None)
+        expected = os.path.join("reviews", "review-agent-2.md")
+        assert result == expected
+
+    def test_ensure_reviews_dir_creates_under_working_dir(self, tmp_path: Path) -> None:
+        """_ensure_reviews_dir creates reviews/ inside working_dir."""
+        _ensure_reviews_dir(working_dir=str(tmp_path))
+        reviews = tmp_path / "reviews"
+        assert reviews.is_dir()
+        assert (reviews / ".gitkeep").exists()
+
+    def test_ensure_reviews_dir_cleans_existing_files(self, tmp_path: Path) -> None:
+        """_ensure_reviews_dir removes old review files but keeps .gitkeep."""
+        reviews = tmp_path / "reviews"
+        reviews.mkdir()
+        (reviews / ".gitkeep").touch()
+        (reviews / "review-agent-1.md").write_text("old")
+        _ensure_reviews_dir(working_dir=str(tmp_path))
+        assert not (reviews / "review-agent-1.md").exists()
+        assert (reviews / ".gitkeep").exists()
+
+    def test_ensure_reviews_dir_cleans_subdirectories(self, tmp_path: Path) -> None:
+        """_ensure_reviews_dir removes stale subdirectories inside reviews/."""
+        reviews = tmp_path / "reviews"
+        reviews.mkdir()
+        (reviews / ".gitkeep").touch()
+        subdir = reviews / "stale_subdir"
+        subdir.mkdir()
+        (subdir / "file.txt").write_text("stale")
+        _ensure_reviews_dir(working_dir=str(tmp_path))
+        assert not subdir.exists()
+        assert (reviews / ".gitkeep").exists()
+
+    def test_ensure_reviews_dir_without_working_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_ensure_reviews_dir uses bare REVIEWS_DIR when working_dir is None."""
+        monkeypatch.setattr(orch_module, "REVIEWS_DIR", str(tmp_path / "reviews"))
+        _ensure_reviews_dir(working_dir=None)
+        assert (tmp_path / "reviews").is_dir()
+
+
+class TestCollectAndPrepareWorkingDir:
+    """Tests that collect_reviews and prepare_reviews_node thread working_dir."""
+
+    def test_prepare_reviews_node_threads_working_dir(self, tmp_path: Path) -> None:
+        """prepare_reviews_node passes working_dir to _ensure_reviews_dir."""
+        state: OrchestratorState = {"working_dir": str(tmp_path)}
+        prepare_reviews_node(state)
+        assert (tmp_path / "reviews").is_dir()
+
+    def test_collect_reviews_uses_working_dir_paths(self, tmp_path: Path) -> None:
+        """collect_reviews reads review files from working_dir/reviews/."""
+        reviews = tmp_path / "reviews"
+        reviews.mkdir()
+        for i in (1, 2):
+            path = reviews / f"review-agent-{i}.md"
+            path.write_text(f"---\nrating: 8\n---\nReview {i}")
+        state: OrchestratorState = {"working_dir": str(tmp_path)}
+        result = collect_reviews(state)
+        assert len(result.get("review_file_paths", [])) == 2
+
+    def test_collect_reviews_without_working_dir(self, reviews_dir: Path) -> None:
+        """collect_reviews falls back to REVIEWS_DIR when working_dir absent."""
+        for i in (1, 2):
+            path = reviews_dir / f"review-agent-{i}.md"
+            path.write_text(f"---\nrating: 8\n---\nReview {i}")
+        state: OrchestratorState = {"task_id": "t"}
+        result = collect_reviews(state)
+        assert len(result.get("review_file_paths", [])) == 2
+
+
+# ---------------------------------------------------------------------------
+# Story 4.5: _get_working_dir helper tests (AC#3, AC#5)
+# ---------------------------------------------------------------------------
+
+
+class TestGetWorkingDir:
+    """Tests for _get_working_dir helper function."""
+
+    def test_returns_none_for_missing_key(self) -> None:
+        """Returns None when working_dir is not in state."""
+        assert _get_working_dir({}) is None
+
+    def test_returns_none_for_empty_string(self) -> None:
+        """Returns None when working_dir is empty string."""
+        assert _get_working_dir({"working_dir": ""}) is None
+
+    def test_returns_value_when_set(self) -> None:
+        """Returns the working_dir value when it's a non-empty string."""
+        assert _get_working_dir({"working_dir": "/tmp/project"}) == "/tmp/project"
+
+    def test_returns_none_for_none_value(self) -> None:
+        """Returns None when working_dir is explicitly None in state."""
+        assert _get_working_dir({"working_dir": None}) is None
+
+
+# ---------------------------------------------------------------------------
+# Story 4.5: ReviewNodeInput type tests (AC#4)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewNodeInputType:
+    """Tests for ReviewNodeInput TypedDict with NotRequired working_dir."""
+
+    def test_working_dir_is_optional(self) -> None:
+        """ReviewNodeInput can be constructed without working_dir."""
+        inp = ReviewNodeInput(
+            reviewer_id=1,
+            task_id="t",
+            session_id="s",
+            source_files=[],
+            test_files=[],
+            reviewer_focus="focus",
+        )
+        assert "working_dir" not in inp
+
+    def test_working_dir_can_be_provided(self) -> None:
+        """ReviewNodeInput accepts working_dir when provided."""
+        inp = ReviewNodeInput(
+            reviewer_id=1,
+            task_id="t",
+            session_id="s",
+            source_files=[],
+            test_files=[],
+            reviewer_focus="focus",
+            working_dir="/tmp/target",
+        )
+        assert inp["working_dir"] == "/tmp/target"
+
+
+# ---------------------------------------------------------------------------
+# Story 4.5: route_to_reviewers working_dir consistency (AC#5)
+# ---------------------------------------------------------------------------
+
+
+class TestRouteToReviewersWorkingDir:
+    """Tests for route_to_reviewers working_dir handling."""
+
+    def test_omits_working_dir_when_not_set(self) -> None:
+        """route_to_reviewers omits working_dir from ReviewNodeInput when absent."""
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": ["src/a.py"],
+            "test_files": [],
+        }
+        sends = route_to_reviewers(state)
+        assert len(sends) == 2
+        for send in sends:
+            assert "working_dir" not in send.arg
+
+    def test_includes_working_dir_when_set(self) -> None:
+        """route_to_reviewers passes working_dir to ReviewNodeInput when present."""
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": ["src/a.py"],
+            "test_files": [],
+            "working_dir": "/tmp/target",
+        }
+        sends = route_to_reviewers(state)
+        assert len(sends) == 2
+        for send in sends:
+            assert send.arg["working_dir"] == "/tmp/target"
+
+    def test_returns_empty_when_no_files(self) -> None:
+        """route_to_reviewers returns empty list when no files to review."""
+        state: OrchestratorState = {
+            "task_id": "t",
+            "session_id": "s",
+            "source_files": [],
+            "test_files": [],
+        }
+        sends = route_to_reviewers(state)
+        assert sends == []

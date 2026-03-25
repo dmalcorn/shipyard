@@ -14,9 +14,11 @@ from __future__ import annotations
 import logging
 import operator
 import os
+import shutil
 import subprocess
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -26,6 +28,12 @@ from src.audit_log.audit import get_logger
 from src.multi_agent.spawn import run_sub_agent
 
 logger = logging.getLogger(__name__)
+
+
+def _get_working_dir(state: Mapping[str, Any]) -> str | None:
+    """Extract working_dir from state, normalizing empty string to None."""
+    return state.get("working_dir") or None
+
 
 REVIEWS_DIR = "reviews"
 FIX_PLAN_PATH = "fix-plan.md"
@@ -83,6 +91,9 @@ class OrchestratorState(TypedDict, total=False):
     last_test_output: str
     last_ci_output: str
 
+    # Working directory for rebuild mode (scoped tools + bash cwd)
+    working_dir: str
+
     # Error accumulation
     error_log: Annotated[list[str], operator.add]
     error: str
@@ -97,6 +108,7 @@ class ReviewNodeInput(TypedDict):
     source_files: list[str]
     test_files: list[str]
     reviewer_focus: str
+    working_dir: NotRequired[str]
 
 
 # ---------------------------------------------------------------------------
@@ -104,26 +116,30 @@ class ReviewNodeInput(TypedDict):
 # ---------------------------------------------------------------------------
 
 
-def _ensure_reviews_dir() -> None:
+def _ensure_reviews_dir(working_dir: str | None = None) -> None:
     """Ensure reviews/ directory exists and is clean for a new pipeline run."""
-    if os.path.exists(REVIEWS_DIR):
-        for entry in os.listdir(REVIEWS_DIR):
+    reviews_dir = os.path.join(working_dir, REVIEWS_DIR) if working_dir else REVIEWS_DIR
+    if os.path.exists(reviews_dir):
+        for entry in os.listdir(reviews_dir):
             if entry == ".gitkeep":
                 continue
-            entry_path = os.path.join(REVIEWS_DIR, entry)
+            entry_path = os.path.join(reviews_dir, entry)
             if os.path.isfile(entry_path):
                 os.remove(entry_path)
+            elif os.path.isdir(entry_path):
+                shutil.rmtree(entry_path)
     else:
-        os.makedirs(REVIEWS_DIR, exist_ok=True)
-    gitkeep = os.path.join(REVIEWS_DIR, ".gitkeep")
+        os.makedirs(reviews_dir, exist_ok=True)
+    gitkeep = os.path.join(reviews_dir, ".gitkeep")
     if not os.path.exists(gitkeep):
         with open(gitkeep, "w", encoding="utf-8") as f:
             f.write("")
 
 
-def _review_file_path(reviewer_id: int) -> str:
+def _review_file_path(reviewer_id: int, working_dir: str | None = None) -> str:
     """Return the file path for a reviewer's output."""
-    return f"{REVIEWS_DIR}/review-agent-{reviewer_id}.md"
+    reviews_dir = os.path.join(working_dir, REVIEWS_DIR) if working_dir else REVIEWS_DIR
+    return os.path.join(reviews_dir, f"review-agent-{reviewer_id}.md")
 
 
 def _validate_review_file(file_path: str) -> bool:
@@ -139,11 +155,16 @@ def _validate_review_file(file_path: str) -> bool:
         return False
 
 
-def _run_bash(command: list[str], timeout: int = 300) -> tuple[bool, str]:
+def _run_bash(command: list[str], timeout: int = 300, cwd: str | None = None) -> tuple[bool, str]:
     """Execute a shell command and return (success, output).
 
     This is the shared execution path for all bash-based nodes.
     No LLM invocation — just command execution and result capture.
+
+    Args:
+        command: Command and arguments to execute.
+        timeout: Maximum execution time in seconds.
+        cwd: Optional working directory for the subprocess.
     """
     try:
         result = subprocess.run(
@@ -151,12 +172,15 @@ def _run_bash(command: list[str], timeout: int = 300) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=cwd,
         )
         output = result.stdout
         if result.stderr:
             output += "\n" + result.stderr
         if len(output) > 5000:
-            output = output[:5000] + f"\n(truncated, {len(output)} chars total)"
+            total = len(output)
+            suffix = f"\n(truncated, {total} chars total)"
+            output = output[: 5000 - len(suffix)] + suffix
         return result.returncode == 0, output
     except subprocess.TimeoutExpired:
         return False, f"Command timed out after {timeout}s: {' '.join(command)}"
@@ -182,6 +206,7 @@ def test_agent_node(state: OrchestratorState) -> dict[str, Any]:
     session_id = state.get("session_id", "")
     task_description = state.get("task_description", "")
     context_files = state.get("context_files", [])
+    working_dir = _get_working_dir(state)
 
     task_instruction = (
         f"Write failing tests for the following feature spec. "
@@ -198,6 +223,7 @@ def test_agent_node(state: OrchestratorState) -> dict[str, Any]:
         task_description=task_instruction,
         current_phase="test",
         context_files=context_files,
+        working_dir=working_dir,
     )
 
     logger.info("Test Agent completed: %s", result.get("final_message", "")[:100])
@@ -216,6 +242,7 @@ def dev_agent_node(state: OrchestratorState) -> dict[str, Any]:
     context_files = state.get("context_files", [])
     last_test_output = state.get("last_test_output", "")
     test_cycle = state.get("test_cycle_count", 0)
+    working_dir = _get_working_dir(state)
 
     task_instruction = (
         f"Implement code to pass the tests. "
@@ -238,6 +265,7 @@ def dev_agent_node(state: OrchestratorState) -> dict[str, Any]:
         task_description=task_instruction,
         current_phase="implementation",
         context_files=context_files,
+        working_dir=working_dir,
     )
 
     logger.info("Dev Agent completed: %s", result.get("final_message", "")[:100])
@@ -250,39 +278,44 @@ def dev_agent_node(state: OrchestratorState) -> dict[str, Any]:
 
 def prepare_reviews_node(state: OrchestratorState) -> dict[str, Any]:
     """Clean reviews/ directory before spawning reviewers."""
-    _ensure_reviews_dir()
+    working_dir = _get_working_dir(state)
+    _ensure_reviews_dir(working_dir=working_dir)
     return {"current_phase": "review"}
 
 
 def route_to_reviewers(state: OrchestratorState) -> list[Send]:
     """Return Send objects to fan-out to two parallel Review Agent instances."""
     task_id = state.get("task_id", "")
+    if not task_id:
+        logger.warning("task_id is empty in route_to_reviewers — review YAML will have task_id: ''")
     session_id = state.get("session_id", "")
     source_files = state.get("source_files", [])
     test_files = state.get("test_files", [])
+    working_dir = _get_working_dir(state)
+
+    if not source_files and not test_files:
+        logger.warning("No files to review — skipping reviewer dispatch")
+        return []
+
+    shared: ReviewNodeInput = ReviewNodeInput(
+        reviewer_id=0,
+        task_id=task_id,
+        session_id=session_id,
+        source_files=source_files,
+        test_files=test_files,
+        reviewer_focus="",
+    )
+    if working_dir:
+        shared["working_dir"] = working_dir
 
     return [
         Send(
             "review_node",
-            ReviewNodeInput(
-                reviewer_id=1,
-                task_id=task_id,
-                session_id=session_id,
-                source_files=source_files,
-                test_files=test_files,
-                reviewer_focus=REVIEWER_1_FOCUS,
-            ),
+            {**shared, "reviewer_id": 1, "reviewer_focus": REVIEWER_1_FOCUS},
         ),
         Send(
             "review_node",
-            ReviewNodeInput(
-                reviewer_id=2,
-                task_id=task_id,
-                session_id=session_id,
-                source_files=source_files,
-                test_files=test_files,
-                reviewer_focus=REVIEWER_2_FOCUS,
-            ),
+            {**shared, "reviewer_id": 2, "reviewer_focus": REVIEWER_2_FOCUS},
         ),
     ]
 
@@ -292,12 +325,14 @@ def review_node(state: ReviewNodeInput) -> dict[str, Any]:
     reviewer_id = state["reviewer_id"]
     task_id = state["task_id"]
     session_id = state["session_id"]
-    source_files = state.get("source_files", [])
-    test_files = state.get("test_files", [])
+    source_files = state["source_files"]
+    test_files = state["test_files"]
     reviewer_focus = state["reviewer_focus"]
+    working_dir = _get_working_dir(state)
 
-    output_path = _review_file_path(reviewer_id)
+    output_path = _review_file_path(reviewer_id, working_dir=working_dir)
     files_to_review = source_files + test_files
+    # Timestamp captured at node start; review execution may take minutes
     timestamp = datetime.now(UTC).isoformat()
 
     task_description = (
@@ -331,6 +366,7 @@ def review_node(state: ReviewNodeInput) -> dict[str, Any]:
         task_description=task_description,
         current_phase="review",
         context_files=files_to_review,
+        working_dir=working_dir,
     )
 
     logger.info("Reviewer %d completed: %s", reviewer_id, result.get("final_message", "")[:100])
@@ -340,7 +376,11 @@ def review_node(state: ReviewNodeInput) -> dict[str, Any]:
 
 def collect_reviews(state: OrchestratorState) -> dict[str, Any]:
     """Fan-in node: validate both review files exist and update state."""
-    review_paths = [_review_file_path(1), _review_file_path(2)]
+    working_dir = _get_working_dir(state)
+    review_paths = [
+        _review_file_path(1, working_dir=working_dir),
+        _review_file_path(2, working_dir=working_dir),
+    ]
     valid_paths: list[str] = []
 
     for path in review_paths:
@@ -368,6 +408,7 @@ def architect_node(state: OrchestratorState) -> dict[str, Any]:
     session_id = state.get("session_id", "")
     source_files = state.get("source_files", [])
     review_paths = state.get("review_file_paths", [])
+    working_dir = _get_working_dir(state)
     timestamp = datetime.now(UTC).isoformat()
 
     task_description = (
@@ -409,6 +450,7 @@ def architect_node(state: OrchestratorState) -> dict[str, Any]:
         task_description=task_description,
         current_phase="architect",
         context_files=context_files,
+        working_dir=working_dir,
     )
 
     logger.info("Architect completed: %s", result.get("final_message", "")[:100])
@@ -424,6 +466,7 @@ def fix_dev_node(state: OrchestratorState) -> dict[str, Any]:
     source_files = state.get("source_files", [])
     edit_retry = state.get("edit_retry_count", 0)
     last_test_output = state.get("last_test_output", "")
+    working_dir = _get_working_dir(state)
 
     task_description = (
         f"Execute the approved fixes from the fix plan.\n\n"
@@ -448,6 +491,7 @@ def fix_dev_node(state: OrchestratorState) -> dict[str, Any]:
         task_description=task_description,
         current_phase="fix",
         context_files=context_files,
+        working_dir=working_dir,
     )
 
     logger.info("Fix Dev completed: %s", result.get("final_message", "")[:100])
@@ -467,8 +511,9 @@ def unit_test_node(state: OrchestratorState) -> dict[str, Any]:
     """Run pytest via bash. No LLM call."""
     session_id = state.get("session_id", "")
     test_cycle = state.get("test_cycle_count", 0) + 1
+    working_dir = _get_working_dir(state)
 
-    passed, output = _run_bash(["pytest", "tests/", "-v"])
+    passed, output = _run_bash(["pytest", "tests/", "-v"], cwd=working_dir)
     _log_bash_to_audit(session_id, "pytest tests/ -v", "PASS" if passed else "FAIL")
 
     logger.info("Unit tests: cycle=%d passed=%s", test_cycle, passed)
@@ -482,11 +527,16 @@ def unit_test_node(state: OrchestratorState) -> dict[str, Any]:
 
 
 def ci_node(state: OrchestratorState) -> dict[str, Any]:
-    """Run local CI (ruff + mypy + pytest) via bash. No LLM call."""
+    """Run local CI (ruff + mypy + pytest) via bash. No LLM call.
+
+    Note: Reuses `test_passed` to signal gate pass/fail for routing,
+    even though CI includes linting and type checks beyond unit tests.
+    """
     session_id = state.get("session_id", "")
     ci_cycle = state.get("ci_cycle_count", 0) + 1
+    working_dir = _get_working_dir(state)
 
-    passed, output = _run_bash(["bash", "scripts/local_ci.sh"])
+    passed, output = _run_bash(["bash", "scripts/local_ci.sh"], cwd=working_dir)
     _log_bash_to_audit(session_id, "scripts/local_ci.sh", "PASS" if passed else "FAIL")
 
     logger.info("CI: cycle=%d passed=%s", ci_cycle, passed)
@@ -503,9 +553,10 @@ def git_snapshot_node(state: OrchestratorState) -> dict[str, Any]:
     """Create a git snapshot commit via bash. No LLM call."""
     task_id = state.get("task_id", "")
     session_id = state.get("session_id", "")
+    working_dir = _get_working_dir(state)
     message = f"snapshot: {task_id} — pre-review checkpoint"
 
-    passed, output = _run_bash(["bash", "scripts/git_snapshot.sh", message])
+    passed, output = _run_bash(["bash", "scripts/git_snapshot.sh", message], cwd=working_dir)
     _log_bash_to_audit(session_id, "scripts/git_snapshot.sh", "PASS" if passed else "FAIL")
 
     if not passed:
@@ -518,8 +569,9 @@ def post_fix_test_node(state: OrchestratorState) -> dict[str, Any]:
     """Run pytest after fixes. Shares logic with unit_test_node."""
     session_id = state.get("session_id", "")
     test_cycle = state.get("test_cycle_count", 0) + 1
+    working_dir = _get_working_dir(state)
 
-    passed, output = _run_bash(["pytest", "tests/", "-v"])
+    passed, output = _run_bash(["pytest", "tests/", "-v"], cwd=working_dir)
     _log_bash_to_audit(session_id, "pytest tests/ -v (post-fix)", "PASS" if passed else "FAIL")
 
     logger.info("Post-fix tests: cycle=%d passed=%s", test_cycle, passed)
@@ -542,8 +594,9 @@ def post_fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
     """Run local CI after fixes pass. Shares logic with ci_node."""
     session_id = state.get("session_id", "")
     ci_cycle = state.get("ci_cycle_count", 0) + 1
+    working_dir = _get_working_dir(state)
 
-    passed, output = _run_bash(["bash", "scripts/local_ci.sh"])
+    passed, output = _run_bash(["bash", "scripts/local_ci.sh"], cwd=working_dir)
     _log_bash_to_audit(session_id, "scripts/local_ci.sh (post-fix)", "PASS" if passed else "FAIL")
 
     logger.info("Post-fix CI: cycle=%d passed=%s", ci_cycle, passed)
@@ -565,8 +618,9 @@ def system_test_node(state: OrchestratorState) -> dict[str, Any]:
     """Run system/integration tests via bash. No LLM call."""
     session_id = state.get("session_id", "")
     test_cycle = state.get("test_cycle_count", 0) + 1
+    working_dir = _get_working_dir(state)
 
-    passed, output = _run_bash(["pytest", "tests/", "-v", "-m", "system"])
+    passed, output = _run_bash(["pytest", "tests/", "-v", "-m", "system"], cwd=working_dir)
     _log_bash_to_audit(session_id, "pytest -m system", "PASS" if passed else "FAIL")
 
     logger.info("System tests: cycle=%d passed=%s", test_cycle, passed)
@@ -582,8 +636,9 @@ def system_test_node(state: OrchestratorState) -> dict[str, Any]:
 def final_ci_node(state: OrchestratorState) -> dict[str, Any]:
     """Final CI gate before push. No LLM call."""
     session_id = state.get("session_id", "")
+    working_dir = _get_working_dir(state)
 
-    passed, output = _run_bash(["bash", "scripts/local_ci.sh"])
+    passed, output = _run_bash(["bash", "scripts/local_ci.sh"], cwd=working_dir)
     _log_bash_to_audit(session_id, "scripts/local_ci.sh (final)", "PASS" if passed else "FAIL")
 
     logger.info("Final CI: passed=%s", passed)
@@ -599,14 +654,15 @@ def git_push_node(state: OrchestratorState) -> dict[str, Any]:
     """Git commit and push after all gates pass. No LLM call."""
     task_id = state.get("task_id", "")
     session_id = state.get("session_id", "")
+    cwd = _get_working_dir(state)
     message = f"feat: {task_id} — implemented and reviewed"
 
     # Commit
-    commit_ok, commit_out = _run_bash(["bash", "scripts/git_snapshot.sh", message])
+    commit_ok, commit_out = _run_bash(["bash", "scripts/git_snapshot.sh", message], cwd=cwd)
     _log_bash_to_audit(session_id, "git commit", "PASS" if commit_ok else "FAIL")
 
     # Push
-    push_ok, push_out = _run_bash(["git", "push"])
+    push_ok, push_out = _run_bash(["git", "push"], cwd=cwd)
     _log_bash_to_audit(session_id, "git push", "PASS" if push_ok else "FAIL")
 
     if not push_ok:

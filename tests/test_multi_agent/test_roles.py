@@ -358,13 +358,36 @@ class TestGetToolsForRole:
         # Should not be permission denied (write may fail for sandbox reasons)
         assert "Permission denied" not in result
 
+    def test_reviewer_scoped_tools_enforce_write_restrictions(self, tmp_path: Path) -> None:
+        """Reviewer scoped tools enforce write_restrictions in rebuild mode (AC#2)."""
+        tools = get_tools_for_role("reviewer", working_dir=str(tmp_path))
+        write_tool = [t for t in tools if t.name == "write_file"][0]
+        result = write_tool.invoke({"file_path": "src/main.py", "content": "hack"})
+        assert "ERROR" in result
+        assert "Permission denied" in result
+
+    def test_reviewer_scoped_tools_allow_reviews_dir(self, tmp_path: Path) -> None:
+        """Reviewer scoped tools allow writes to reviews/ in rebuild mode (AC#2)."""
+        (tmp_path / "reviews").mkdir()
+        tools = get_tools_for_role("reviewer", working_dir=str(tmp_path))
+        write_tool = [t for t in tools if t.name == "write_file"][0]
+        result = write_tool.invoke({"file_path": "reviews/review.md", "content": "ok"})
+        assert "SUCCESS" in result
+
+    def test_dev_scoped_tools_unrestricted(self, tmp_path: Path) -> None:
+        """Dev scoped tools have no write_restrictions in rebuild mode."""
+        tools = get_tools_for_role("dev", working_dir=str(tmp_path))
+        write_tool = [t for t in tools if t.name == "write_file"][0]
+        result = write_tool.invoke({"file_path": "src/anything.py", "content": "code"})
+        assert "SUCCESS" in result
+
     def test_path_validation_error_message_exact(self) -> None:
         """Permission denied error matches expected format from AC#5."""
         tools = get_tools_for_role("reviewer")
         write_tool = [t for t in tools if t.name == "write_file"][0]
         result = write_tool.invoke({"file_path": "src/foo.py", "content": "x"})
         expected = (
-            "ERROR: Permission denied: Reviewer agents cannot edit source files. "
+            "ERROR: Permission denied: Reviewer agents cannot write outside allowed paths. "
             "Write to reviews/ directory only."
         )
         assert result == expected

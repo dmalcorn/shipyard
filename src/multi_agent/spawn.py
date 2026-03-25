@@ -7,6 +7,7 @@ and LangSmith trace linking back to the parent session.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
 from typing import Any
@@ -20,7 +21,7 @@ from langgraph.prebuilt import ToolNode
 
 from src.agent.state import AgentState
 from src.context.injection import build_system_prompt, inject_task_context
-from src.multi_agent.roles import MODEL_IDS, build_trace_config, get_role, get_tools_for_role
+from src.multi_agent.roles import MODEL_IDS, ROLES, build_trace_config, get_role, get_tools_for_role
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def _should_continue(state: AgentState) -> str:
     """Route after agent node: continue to tools, end, or error on retry cap."""
     if not state.get("messages"):
         return "end"
-    retry_count = state.get("retry_count", 0)
+    retry_count = state.get("retry_count", 0) or 0
     if retry_count >= MAX_LLM_TURNS:
         return "error"
     last = state["messages"][-1]
@@ -43,7 +44,18 @@ def _should_continue(state: AgentState) -> str:
 
 def _make_error_handler(state: AgentState) -> dict[str, Any]:
     """Append error message when sub-agent exceeds turn limit."""
-    return {"messages": [AIMessage(content=f"ERROR: Sub-agent exceeded {MAX_LLM_TURNS} turns.")]}
+    role = state.get("agent_role", "unknown")
+    retry = state.get("retry_count", 0)
+    return {
+        "messages": [
+            AIMessage(
+                content=(
+                    f"ERROR: Sub-agent (role={role}) exceeded {MAX_LLM_TURNS} turns "
+                    f"(retry_count={retry})."
+                )
+            )
+        ]
+    }
 
 
 def create_agent_subgraph(
@@ -80,7 +92,9 @@ def create_agent_subgraph(
     llm_with_tools = llm.bind_tools(tools)
 
     # Build system prompt (Layer 1)
-    system_prompt = build_system_prompt(role_config.system_prompt_key, context_files)
+    system_prompt = build_system_prompt(
+        role_config.system_prompt_key, context_files, working_dir=working_dir
+    )
 
     # Agent node: calls LLM and increments retry_count
     def agent_node(state: AgentState) -> dict[str, Any]:
@@ -111,12 +125,13 @@ def create_agent_subgraph(
     graph.add_edge("error_handler", END)
 
     # Compile with checkpointing
+    os.makedirs(os.path.dirname(checkpoints_db) or ".", exist_ok=True)
     conn = sqlite3.connect(checkpoints_db, check_same_thread=False)
     memory = SqliteSaver(conn)
     compiled = graph.compile(checkpointer=memory)
 
     # Build fresh initial state (context isolation — AC#2)
-    task_messages = inject_task_context(task_description, context_files)
+    task_messages = inject_task_context(task_description, context_files, working_dir=working_dir)
     initial_state: dict[str, Any] = {
         "messages": task_messages,
         "task_id": "",
@@ -159,9 +174,7 @@ def run_sub_agent(
     Returns:
         Dict with keys: files_modified (list[str]), final_message (str).
     """
-    role_config = get_role(role)
-
-    # Create subgraph and initial state
+    # Create subgraph and initial state (get_role() validates role internally)
     compiled, initial_state, conn = create_agent_subgraph(
         role=role,
         task_description=task_description,
@@ -176,11 +189,12 @@ def run_sub_agent(
     initial_state["current_phase"] = current_phase
 
     # Build config with trace metadata (AC#4 — parent_session linking)
+    # Role is already validated by create_agent_subgraph above
     config = build_trace_config(
         session_id=sub_thread_id,
         agent_role=role,
         task_id=task_id,
-        model_tier=role_config.model_tier,
+        model_tier=ROLES[role].model_tier,
         phase=current_phase,
         parent_session=parent_session_id,
     )

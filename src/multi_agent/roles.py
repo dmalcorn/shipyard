@@ -146,7 +146,10 @@ def get_tools_for_role(role: str, working_dir: str | None = None) -> list[BaseTo
     if working_dir is not None:
         from src.tools.scoped import get_scoped_tools
 
-        scoped = get_scoped_tools(working_dir)
+        scoped = get_scoped_tools(
+            working_dir,
+            write_restrictions=role_config.write_restrictions or None,
+        )
         result: list[BaseTool] = []
         for tool_name in role_config.tools:
             if tool_name in scoped:

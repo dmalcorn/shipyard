@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from src.multi_agent.roles import get_tools_for_role
 from src.multi_agent.spawn import (
@@ -431,3 +432,75 @@ class TestRunSubAgent:
             )
 
         mock_conn.close.assert_called_once()
+
+
+class TestSpawnWorkingDirThreading:
+    """Tests that spawn.py passes working_dir to build_system_prompt and inject_task_context."""
+
+    @patch("src.multi_agent.spawn.inject_task_context")
+    @patch("src.multi_agent.spawn.build_system_prompt")
+    @patch("src.multi_agent.spawn.ChatAnthropic")
+    @patch("src.multi_agent.spawn.SqliteSaver")
+    @patch("src.multi_agent.spawn.sqlite3.connect")
+    def test_working_dir_passed_to_build_system_prompt(
+        self,
+        mock_connect: MagicMock,
+        mock_saver: MagicMock,
+        mock_chat: MagicMock,
+        mock_build_prompt: MagicMock,
+        mock_inject: MagicMock,
+        checkpoints_db: str,
+    ) -> None:
+        """create_agent_subgraph passes working_dir to build_system_prompt."""
+        mock_connect.return_value = MagicMock()
+        mock_saver.return_value = InMemorySaver()
+        mock_build_prompt.return_value = "system prompt"
+        mock_inject.return_value = []
+        mock_llm = MagicMock()
+        mock_llm.bind_tools.return_value = mock_llm
+        mock_chat.return_value = mock_llm
+
+        _, _, conn = create_agent_subgraph(
+            role="dev",
+            task_description="task",
+            checkpoints_db=checkpoints_db,
+            working_dir="/my/target",
+        )
+        conn.close()
+
+        mock_build_prompt.assert_called_once()
+        assert mock_build_prompt.call_args.kwargs.get("working_dir") == "/my/target"
+
+    @patch("src.multi_agent.spawn.inject_task_context")
+    @patch("src.multi_agent.spawn.build_system_prompt")
+    @patch("src.multi_agent.spawn.ChatAnthropic")
+    @patch("src.multi_agent.spawn.SqliteSaver")
+    @patch("src.multi_agent.spawn.sqlite3.connect")
+    def test_working_dir_passed_to_inject_task_context(
+        self,
+        mock_connect: MagicMock,
+        mock_saver: MagicMock,
+        mock_chat: MagicMock,
+        mock_build_prompt: MagicMock,
+        mock_inject: MagicMock,
+        checkpoints_db: str,
+    ) -> None:
+        """create_agent_subgraph passes working_dir to inject_task_context."""
+        mock_connect.return_value = MagicMock()
+        mock_saver.return_value = InMemorySaver()
+        mock_build_prompt.return_value = "system prompt"
+        mock_inject.return_value = []
+        mock_llm = MagicMock()
+        mock_llm.bind_tools.return_value = mock_llm
+        mock_chat.return_value = mock_llm
+
+        _, _, conn = create_agent_subgraph(
+            role="dev",
+            task_description="task",
+            checkpoints_db=checkpoints_db,
+            working_dir="/my/target",
+        )
+        conn.close()
+
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args.kwargs.get("working_dir") == "/my/target"
