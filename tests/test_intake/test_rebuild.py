@@ -1,4 +1,9 @@
-"""Tests for src/intake/rebuild.py — autonomous rebuild loop."""
+"""Tests for src/intake/rebuild.py — autonomous rebuild loop.
+
+The TestRunRebuild tests mock the graph invocation since run_rebuild()
+now delegates to the rebuild graph (Level 1). Legacy helper tests
+remain for backwards compatibility.
+"""
 
 from __future__ import annotations
 
@@ -48,21 +53,27 @@ SAMPLE_EPICS = """\
 
 
 class TestRunRebuild:
-    """run_rebuild() iterates over backlog and invokes orchestrator."""
+    """run_rebuild() invokes the rebuild graph and returns results."""
 
-    @patch("src.intake.rebuild._run_story_pipeline")
-    @patch("src.intake.rebuild._git_tag_epic")
-    @patch("src.intake.rebuild._init_target_project")
+    @patch("src.intake.rebuild.build_rebuild")
     def test_runs_all_stories(
         self,
-        mock_init: MagicMock,
-        mock_tag: MagicMock,
-        mock_pipeline: MagicMock,
+        mock_build: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Invokes pipeline for each story in the backlog."""
+        """Returns correct stats from graph result."""
         (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
-        mock_pipeline.return_value = {"pipeline_status": "completed"}
+
+        mock_compiled = MagicMock()
+        mock_compiled.invoke.return_value = {
+            "stories_completed": 3,
+            "stories_failed": 0,
+            "total_interventions": 0,
+            "total_stories": 3,
+            "pipeline_status": "completed",
+            "all_story_results": [],
+        }
+        mock_build.return_value = mock_compiled
 
         result = run_rebuild(
             target_dir=str(tmp_path),
@@ -72,25 +83,27 @@ class TestRunRebuild:
         assert result["total_stories"] == 3
         assert result["stories_completed"] == 3
         assert result["stories_failed"] == 0
-        assert mock_pipeline.call_count == 3
+        mock_compiled.invoke.assert_called_once()
 
-    @patch("src.intake.rebuild._run_story_pipeline")
-    @patch("src.intake.rebuild._git_tag_epic")
-    @patch("src.intake.rebuild._init_target_project")
+    @patch("src.intake.rebuild.build_rebuild")
     def test_tracks_failures(
         self,
-        mock_init: MagicMock,
-        mock_tag: MagicMock,
-        mock_pipeline: MagicMock,
+        mock_build: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Counts failed stories correctly."""
         (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
-        mock_pipeline.side_effect = [
-            {"pipeline_status": "completed"},
-            {"pipeline_status": "failed", "error": "test failure"},
-            {"pipeline_status": "completed"},
-        ]
+
+        mock_compiled = MagicMock()
+        mock_compiled.invoke.return_value = {
+            "stories_completed": 2,
+            "stories_failed": 1,
+            "total_interventions": 0,
+            "total_stories": 3,
+            "pipeline_status": "failed",
+            "all_story_results": [],
+        }
+        mock_build.return_value = mock_compiled
 
         result = run_rebuild(
             target_dir=str(tmp_path),
@@ -100,77 +113,55 @@ class TestRunRebuild:
         assert result["stories_completed"] == 2
         assert result["stories_failed"] == 1
 
-    @patch("src.intake.rebuild._run_story_pipeline")
-    @patch("src.intake.rebuild._git_tag_epic")
-    @patch("src.intake.rebuild._init_target_project")
-    def test_intervention_callback(
+    @patch("src.intake.rebuild.build_rebuild")
+    def test_intervention_count(
         self,
-        mock_init: MagicMock,
-        mock_tag: MagicMock,
-        mock_pipeline: MagicMock,
+        mock_build: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Calls intervention callback on failure and retries."""
+        """Returns intervention count from graph."""
         (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
-        # First story fails, retry succeeds. Others pass.
-        mock_pipeline.side_effect = [
-            {"pipeline_status": "failed", "error": "test broke"},
-            {"pipeline_status": "completed"},  # retry
-            {"pipeline_status": "completed"},
-            {"pipeline_status": "completed"},
-        ]
 
-        intervention_cb = MagicMock(return_value="fix the test")
+        mock_compiled = MagicMock()
+        mock_compiled.invoke.return_value = {
+            "stories_completed": 3,
+            "stories_failed": 0,
+            "total_interventions": 2,
+            "total_stories": 3,
+            "pipeline_status": "completed",
+            "all_story_results": [],
+        }
+        mock_build.return_value = mock_compiled
 
         result = run_rebuild(
             target_dir=str(tmp_path),
             session_id="test-session",
-            on_intervention=intervention_cb,
         )
 
-        assert result["interventions"] == 1
+        assert result["interventions"] == 2
         assert result["stories_completed"] == 3
-        intervention_cb.assert_called_once()
 
-    @patch("src.intake.rebuild._run_story_pipeline")
-    @patch("src.intake.rebuild._git_tag_epic")
-    @patch("src.intake.rebuild._init_target_project")
-    def test_writes_rebuild_status(
+    @patch("src.intake.rebuild.build_rebuild")
+    def test_graph_exception_returns_error(
         self,
-        mock_init: MagicMock,
-        mock_tag: MagicMock,
-        mock_pipeline: MagicMock,
+        mock_build: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Updates rebuild-status.md after each story."""
+        """Returns error dict when graph raises."""
         (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
-        mock_pipeline.return_value = {"pipeline_status": "completed"}
 
-        run_rebuild(target_dir=str(tmp_path), session_id="test-session")
+        mock_compiled = MagicMock()
+        mock_compiled.invoke.side_effect = RuntimeError("graph crashed")
+        mock_build.return_value = mock_compiled
 
-        status_path = tmp_path / "rebuild-status.md"
-        assert status_path.exists()
-        content = status_path.read_text(encoding="utf-8")
-        assert "Stories completed: 3/3" in content
-        assert "Total time:" in content  # Final summary
+        result = run_rebuild(
+            target_dir=str(tmp_path),
+            session_id="test-session",
+        )
 
-    @patch("src.intake.rebuild._run_story_pipeline")
-    @patch("src.intake.rebuild._git_tag_epic")
-    @patch("src.intake.rebuild._init_target_project")
-    def test_tags_epic_completion(
-        self,
-        mock_init: MagicMock,
-        mock_tag: MagicMock,
-        mock_pipeline: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """Tags git after each epic completes."""
-        (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
-        mock_pipeline.return_value = {"pipeline_status": "completed"}
-
-        run_rebuild(target_dir=str(tmp_path), session_id="test-session")
-
-        assert mock_tag.call_count == 2  # 2 epics
+        assert result["stories_completed"] == 0
+        assert "error" in result
+        assert "graph crashed" in result["error"]
 
     def test_empty_backlog(self, tmp_path: Path) -> None:
         """Returns zeroed stats for empty backlog."""

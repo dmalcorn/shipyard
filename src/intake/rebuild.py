@@ -1,8 +1,13 @@
 """Autonomous rebuild loop for target projects.
 
-Iterates over the generated backlog, invoking the TDD orchestrator pipeline
-for each story. Handles intervention detection, progress tracking, git
-tagging, and project initialization.
+Thin wrapper around the rebuild graph (Level 1) and epic graph (Level 2).
+Preserves the original run_rebuild() interface for backwards compatibility
+with src/main.py and the FastAPI endpoints.
+
+The actual graph logic lives in:
+- src/intake/rebuild_graph.py (Level 1: epic loop)
+- src/intake/epic_graph.py (Level 2: story loop + epic post-processing)
+- src/multi_agent/orchestrator.py (Level 3: per-story TDD pipeline)
 """
 
 from __future__ import annotations
@@ -16,12 +21,12 @@ from typing import Any
 
 from src.intake.backlog import load_backlog
 from src.intake.intervention_log import InterventionLogger
+from src.intake.rebuild_graph import RebuildState, build_rebuild
 from src.pipeline_tracker import (
     advance_stage,
     complete_pipeline,
     fail_pipeline,
     start_pipeline,
-    update_story_progress,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,16 +42,16 @@ def run_rebuild(
 ) -> dict[str, Any]:
     """Run the full rebuild loop over the target project's backlog.
 
-    Loads the backlog from {target_dir}/epics.md, initializes the target
-    project, then invokes the TDD orchestrator for each story. Tracks
-    progress in {target_dir}/rebuild-status.md.
+    Loads the backlog from {target_dir}/epics.md, then invokes the
+    rebuild graph which iterates through epics and stories using
+    LangGraph with SQLite checkpointing.
 
     Args:
         target_dir: Path to the target project directory.
         session_id: Session ID for trace linking.
         on_intervention: Optional callback for intervention handling.
-            Signature: (failure_report: str) -> str | None
-            Returns fix instruction or None to skip.
+            Note: With the graph-based flow, interventions use LangGraph's
+            interrupt() pattern. This callback is kept for CLI compatibility.
         intervention_logger: Optional InterventionLogger for auto-recovery tracking.
 
     Returns:
@@ -56,7 +61,7 @@ def run_rebuild(
     start_time = time.time()
     start_pipeline(session_id, "rebuild")
 
-    # Load backlog
+    # Pre-flight check: does the backlog exist?
     advance_stage(session_id, "loading_backlog")
     try:
         backlog = load_backlog(target_dir)
@@ -81,11 +86,33 @@ def run_rebuild(
             "elapsed_seconds": 0.0,
         }
 
-    # Initialize the target project
+    # Build and invoke the rebuild graph
     advance_stage(session_id, "init_project")
+
+    initial_state: RebuildState = {
+        "session_id": session_id,
+        "target_dir": target_dir,
+        "epics": [],
+        "epic_index": 0,
+        "total_stories": 0,
+        "all_story_results": [],
+        "stories_completed": 0,
+        "stories_failed": 0,
+        "total_interventions": 0,
+        "current_epic_status": "",
+        "current_epic_error": "",
+        "pipeline_status": "running",
+        "error": "",
+        "start_time": start_time,
+    }
+
     try:
-        _init_target_project(target_dir)
+        compiled = build_rebuild()
+        config: dict[str, Any] = {"configurable": {"thread_id": session_id}}
+        result = compiled.invoke(initial_state, config=config)  # type: ignore[call-overload]
+        result = dict(result)
     except subprocess.CalledProcessError as e:
+        logger.error("Git initialization failed: %s", e)
         fail_pipeline(session_id, str(e))
         return {
             "stories_completed": 0,
@@ -95,138 +122,20 @@ def run_rebuild(
             "elapsed_seconds": 0.0,
             "error": f"Git initialization failed: {e}",
         }
-
-    # Group stories by epic
-    epics = _group_by_epic(backlog)
-
-    # Compile the orchestrator graph once (reused for all stories)
-    from src.multi_agent.orchestrator import build_orchestrator
-
-    compiled_orchestrator = build_orchestrator()
-
-    stories_completed = 0
-    stories_failed = 0
-    total_interventions = 0
-    story_results: list[dict[str, Any]] = []
-
-    for epic_name, stories in epics:
-        for story_entry in stories:
-            story_name = story_entry["story"]
-            description = story_entry["description"]
-            criteria = story_entry.get("acceptance_criteria", [])
-            criteria_text = "\n".join(f"- {c}" for c in criteria) if criteria else ""
-
-            task_description = (
-                f"Story: {story_name}\n"
-                f"Epic: {epic_name}\n"
-                f"{description}\n\n"
-                f"Acceptance Criteria:\n{criteria_text}"
-            )
-
-            logger.info("Starting story: %s (epic: %s)", story_name, epic_name)
-
-            # Update pipeline tracker with story-level progress
-            advance_stage(session_id, "tdd_pipeline")
-            update_story_progress(
-                session_id,
-                epic=epic_name,
-                story=story_name,
-                story_index=len(story_results) + 1,
-                total_stories=len(backlog),
-                completed=stories_completed,
-                failed=stories_failed,
-            )
-
-            # Invoke the orchestrator pipeline
-            result = _run_story_pipeline(
-                target_dir=target_dir,
-                session_id=session_id,
-                task_id=f"{epic_name}-{story_name}".replace(" ", "-").lower(),
-                task_description=task_description,
-                compiled=compiled_orchestrator,
-            )
-
-            status = result.get("pipeline_status", "failed")
-            intervention_count = 0
-
-            # Auto-recovery detection: pipeline succeeded but had retries
-            if status == "completed" and intervention_logger:
-                _detect_auto_recovery(result, intervention_logger, epic_name, story_name)
-
-            # Intervention loop
-            if status == "failed" and on_intervention:
-                error = result.get("error", "Unknown failure")
-                fix_instruction = on_intervention(error)
-                intervention_count += 1
-                total_interventions += 1
-
-                if fix_instruction is None:
-                    # Abort: stop entire rebuild
-                    story_results.append(
-                        {
-                            "epic": epic_name,
-                            "story": story_name,
-                            "status": "aborted",
-                            "interventions": intervention_count,
-                        }
-                    )
-                    stories_failed += 1
-                    break
-
-                if fix_instruction.lower() != "skip":
-                    # Retry with fix instruction appended
-                    retry_description = (
-                        f"{task_description}\n\nINTERVENTION FIX INSTRUCTION:\n{fix_instruction}"
-                    )
-                    result = _run_story_pipeline(
-                        target_dir=target_dir,
-                        session_id=session_id,
-                        task_id=f"{epic_name}-{story_name}-retry".replace(" ", "-").lower(),
-                        task_description=retry_description,
-                        compiled=compiled_orchestrator,
-                    )
-                    status = result.get("pipeline_status", "failed")
-
-            if status == "completed":
-                stories_completed += 1
-            else:
-                stories_failed += 1
-
-            story_results.append(
-                {
-                    "epic": epic_name,
-                    "story": story_name,
-                    "status": status,
-                    "interventions": intervention_count,
-                }
-            )
-
-            # Update progress file
-            _write_rebuild_status(
-                target_dir=target_dir,
-                story_results=story_results,
-                total_stories=len(backlog),
-                total_interventions=total_interventions,
-            )
-
-        if story_results and story_results[-1].get("status") == "aborted":
-            break
-
-        # Tag epic completion
-        advance_stage(session_id, "git_tag")
-        _git_tag_epic(target_dir, epic_name)
+    except Exception as e:
+        logger.exception("Rebuild graph failed: %s", e)
+        fail_pipeline(session_id, str(e))
+        return {
+            "stories_completed": 0,
+            "stories_failed": 0,
+            "interventions": 0,
+            "total_stories": 0,
+            "elapsed_seconds": time.time() - start_time,
+            "error": str(e),
+        }
 
     elapsed = time.time() - start_time
-
-    # Write final summary
-    _write_rebuild_status(
-        target_dir=target_dir,
-        story_results=story_results,
-        total_stories=len(backlog),
-        total_interventions=total_interventions,
-        elapsed_seconds=elapsed,
-        is_final=True,
-    )
+    stories_failed = result.get("stories_failed", 0)
 
     if stories_failed > 0:
         fail_pipeline(session_id, f"{stories_failed} stories failed")
@@ -234,12 +143,135 @@ def run_rebuild(
         complete_pipeline(session_id)
 
     return {
-        "stories_completed": stories_completed,
+        "stories_completed": result.get("stories_completed", 0),
         "stories_failed": stories_failed,
-        "interventions": total_interventions,
-        "total_stories": len(backlog),
+        "interventions": result.get("total_interventions", 0),
+        "total_stories": result.get("total_stories", 0),
         "elapsed_seconds": elapsed,
     }
+
+
+# ---------------------------------------------------------------------------
+# Legacy helpers — kept for test compatibility
+# ---------------------------------------------------------------------------
+
+
+def _group_by_epic(
+    backlog: list[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group backlog entries by epic name, preserving order."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for entry in backlog:
+        epic = str(entry.get("epic", ""))
+        if epic not in groups:
+            groups[epic] = []
+        groups[epic].append(entry)
+    return list(groups.items())
+
+
+def _init_target_project(target_dir: str) -> None:
+    """Initialize the target project directory with git repo and scaffold."""
+    os.makedirs(target_dir, exist_ok=True)
+
+    git_dir = os.path.join(target_dir, ".git")
+    if not os.path.exists(git_dir):
+        try:
+            subprocess.run(
+                ["git", "init"],
+                cwd=target_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Shipyard"],
+                cwd=target_dir,
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "shipyard@localhost"],
+                cwd=target_dir,
+                capture_output=True,
+                check=True,
+            )
+
+            readme_path = os.path.join(target_dir, "README.md")
+            if not os.path.exists(readme_path):
+                with open(readme_path, "w", encoding="utf-8") as f:
+                    f.write("# Target Project\n\nGenerated by Shipyard.\n")
+
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=target_dir,
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "chore: initial project scaffold"],
+                cwd=target_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error("Git initialization failed: %s", e.stderr or e)
+            raise
+
+
+def _git_tag_epic(target_dir: str, epic_name: str) -> None:
+    """Create a git tag marking epic completion."""
+    tag_name = f"epic-{epic_name.replace(' ', '-').lower()}-complete"
+    result = subprocess.run(
+        ["git", "tag", tag_name],
+        cwd=target_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.warning("Git tag '%s' failed: %s", tag_name, result.stderr.strip())
+    else:
+        logger.info("Tagged epic completion: %s", tag_name)
+
+
+def _write_rebuild_status(
+    target_dir: str,
+    story_results: list[dict[str, Any]],
+    total_stories: int,
+    total_interventions: int,
+    elapsed_seconds: float | None = None,
+    is_final: bool = False,
+) -> None:
+    """Write rebuild-status.md to the target directory."""
+    completed = sum(1 for r in story_results if r["status"] == "completed")
+    failed = sum(1 for r in story_results if r["status"] != "completed")
+
+    lines = ["# Ship App Rebuild Status\n"]
+
+    current_epic = ""
+    for result in story_results:
+        epic = result["epic"]
+        if epic != current_epic:
+            lines.append(f"\n## Epic: {epic}\n")
+            current_epic = epic
+
+        status = result["status"]
+        interventions = result.get("interventions", 0)
+        suffix = f" (intervention #{interventions})" if interventions > 0 else ""
+        lines.append(f"- Story: {result['story']} — {status}{suffix}")
+
+    lines.append("\n## Summary\n")
+    lines.append(f"Stories completed: {completed}/{total_stories}")
+    lines.append(f"Stories failed: {failed}")
+    lines.append(f"Interventions: {total_interventions}")
+
+    if is_final and elapsed_seconds is not None:
+        minutes = elapsed_seconds / 60
+        lines.append(f"Total time: {minutes:.1f} minutes")
+
+    status_path = os.path.join(target_dir, "rebuild-status.md")
+    with open(status_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def _detect_auto_recovery(
@@ -248,18 +280,7 @@ def _detect_auto_recovery(
     epic_name: str,
     story_name: str,
 ) -> None:
-    """Log auto-recovery if the pipeline succeeded after retries.
-
-    Checks test_cycle_count, ci_cycle_count, and edit_retry_count in the
-    orchestrator result. If any count > 1, the agent recovered from a failure
-    without human help.
-
-    Args:
-        result: Orchestrator result dict with retry counts.
-        intervention_logger: Logger to record auto-recoveries.
-        epic_name: Current epic name.
-        story_name: Current story name.
-    """
+    """Log auto-recovery if the pipeline succeeded after retries."""
     test_cycles = result.get("test_cycle_count", 0)
     ci_cycles = result.get("ci_cycle_count", 0)
     edit_retries = result.get("edit_retry_count", 0)
@@ -299,22 +320,14 @@ def _run_story_pipeline(
 ) -> dict[str, Any]:
     """Invoke the TDD orchestrator for a single story.
 
-    Args:
-        target_dir: Target project directory (working_dir for tools).
-        session_id: Session ID for trace linking.
-        task_id: Unique task identifier.
-        task_description: Full story description with acceptance criteria.
-        compiled: Optional pre-compiled orchestrator graph. Built on demand if None.
-
-    Returns:
-        Orchestrator result dict with pipeline_status.
+    Legacy helper kept for test compatibility. The graph-based flow
+    uses epic_graph.run_story_node() instead.
     """
     from src.multi_agent.orchestrator import OrchestratorState, build_orchestrator
 
     if compiled is None:
         compiled = build_orchestrator()
 
-    # Resolve target_dir to an absolute path for sandbox scoping
     abs_target_dir = os.path.abspath(target_dir)
 
     initial_state: OrchestratorState = {
@@ -346,151 +359,3 @@ def _run_story_pipeline(
     except Exception as e:
         logger.exception("Pipeline failed for %s: %s", task_id, e)
         return {"pipeline_status": "failed", "error": str(e)}
-
-
-def _init_target_project(target_dir: str) -> None:
-    """Initialize the target project directory with git repo and scaffold.
-
-    Args:
-        target_dir: Path to the target project directory.
-    """
-    os.makedirs(target_dir, exist_ok=True)
-
-    git_dir = os.path.join(target_dir, ".git")
-    if not os.path.exists(git_dir):
-        try:
-            subprocess.run(
-                ["git", "init"],
-                cwd=target_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            # Set local git config for environments without global config
-            subprocess.run(
-                ["git", "config", "user.name", "Shipyard"],
-                cwd=target_dir,
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.email", "shipyard@localhost"],
-                cwd=target_dir,
-                capture_output=True,
-                check=True,
-            )
-
-            # Create minimal scaffold
-            readme_path = os.path.join(target_dir, "README.md")
-            if not os.path.exists(readme_path):
-                with open(readme_path, "w", encoding="utf-8") as f:
-                    f.write("# Target Project\n\nGenerated by Shipyard.\n")
-
-            # Initial commit
-            subprocess.run(
-                ["git", "add", "."],
-                cwd=target_dir,
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", "chore: initial project scaffold"],
-                cwd=target_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as e:
-            logger.error("Git initialization failed: %s", e.stderr or e)
-            raise
-
-
-def _git_tag_epic(target_dir: str, epic_name: str) -> None:
-    """Create a git tag marking epic completion.
-
-    Args:
-        target_dir: Target project directory.
-        epic_name: Epic name for the tag.
-    """
-    tag_name = f"epic-{epic_name.replace(' ', '-').lower()}-complete"
-    result = subprocess.run(
-        ["git", "tag", tag_name],
-        cwd=target_dir,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        logger.warning("Git tag '%s' failed: %s", tag_name, result.stderr.strip())
-    else:
-        logger.info("Tagged epic completion: %s", tag_name)
-
-
-def _group_by_epic(
-    backlog: list[dict[str, Any]],
-) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Group backlog entries by epic name, preserving order.
-
-    Args:
-        backlog: Parsed backlog entries.
-
-    Returns:
-        List of (epic_name, stories) tuples.
-    """
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for entry in backlog:
-        epic = str(entry.get("epic", ""))
-        if epic not in groups:
-            groups[epic] = []
-        groups[epic].append(entry)
-    return list(groups.items())
-
-
-def _write_rebuild_status(
-    target_dir: str,
-    story_results: list[dict[str, Any]],
-    total_stories: int,
-    total_interventions: int,
-    elapsed_seconds: float | None = None,
-    is_final: bool = False,
-) -> None:
-    """Write rebuild-status.md to the target directory.
-
-    Args:
-        target_dir: Target project directory.
-        story_results: List of story result dicts.
-        total_stories: Total number of stories in backlog.
-        total_interventions: Total intervention count.
-        elapsed_seconds: Total elapsed time (only for final).
-        is_final: Whether this is the final status update.
-    """
-    completed = sum(1 for r in story_results if r["status"] == "completed")
-    failed = sum(1 for r in story_results if r["status"] != "completed")
-
-    lines = ["# Ship App Rebuild Status\n"]
-
-    # Group results by epic
-    current_epic = ""
-    for result in story_results:
-        epic = result["epic"]
-        if epic != current_epic:
-            lines.append(f"\n## Epic: {epic}\n")
-            current_epic = epic
-
-        status = result["status"]
-        interventions = result.get("interventions", 0)
-        suffix = f" (intervention #{interventions})" if interventions > 0 else ""
-        lines.append(f"- Story: {result['story']} — {status}{suffix}")
-
-    lines.append("\n## Summary\n")
-    lines.append(f"Stories completed: {completed}/{total_stories}")
-    lines.append(f"Stories failed: {failed}")
-    lines.append(f"Interventions: {total_interventions}")
-
-    if is_final and elapsed_seconds is not None:
-        minutes = elapsed_seconds / 60
-        lines.append(f"Total time: {minutes:.1f} minutes")
-
-    status_path = os.path.join(target_dir, "rebuild-status.md")
-    with open(status_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
