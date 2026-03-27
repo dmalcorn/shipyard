@@ -14,9 +14,9 @@ from src.intake.epic_graph import (
     epic_complete_node,
     epic_error_node,
     process_story_result_node,
+    route_after_category_a,
     route_after_epic_architect,
-    route_after_epic_final_ci,
-    route_after_epic_post_fix_ci,
+    route_after_epic_ci,
     route_after_story_result,
     route_next_story,
     select_story_node,
@@ -124,6 +124,16 @@ class TestRouteNextStory:
         assert route_next_story(state) == "epic_done"
 
 
+class TestRouteAfterCategoryA:
+    """route_after_category_a checks Category B items."""
+
+    def test_has_category_b(self) -> None:
+        assert route_after_category_a({"has_category_b_items": True}) == "has_category_b"
+
+    def test_no_category_b(self) -> None:
+        assert route_after_category_a({"has_category_b_items": False}) == "no_category_b"
+
+
 class TestRouteAfterEpicArchitect:
     """route_after_epic_architect checks if fixes are needed."""
 
@@ -134,29 +144,14 @@ class TestRouteAfterEpicArchitect:
         assert route_after_epic_architect({"epic_fixes_needed": False}) == "no_fix"
 
 
-class TestRouteAfterEpicPostFixCi:
-    """route_after_epic_post_fix_ci handles pass/retry/error."""
+class TestRouteAfterEpicCi:
+    """route_after_epic_ci routes pass or error."""
 
     def test_pass(self) -> None:
-        assert route_after_epic_post_fix_ci({"epic_test_passed": True}) == "pass"
-
-    def test_retry(self) -> None:
-        state: EpicState = {"epic_test_passed": False, "epic_fix_cycle": 1}
-        assert route_after_epic_post_fix_ci(state) == "retry"
+        assert route_after_epic_ci({"epic_test_passed": True}) == "pass"
 
     def test_error(self) -> None:
-        state: EpicState = {"epic_test_passed": False, "epic_fix_cycle": 2}
-        assert route_after_epic_post_fix_ci(state) == "error"
-
-
-class TestRouteAfterEpicFinalCi:
-    """route_after_epic_final_ci routes pass or error."""
-
-    def test_pass(self) -> None:
-        assert route_after_epic_final_ci({"epic_test_passed": True}) == "pass"
-
-    def test_error(self) -> None:
-        assert route_after_epic_final_ci({"epic_test_passed": False}) == "error"
+        assert route_after_epic_ci({"epic_test_passed": False}) == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -200,3 +195,16 @@ class TestBuildEpicGraph:
         graph = build_epic_graph()
         compiled = graph.compile()
         assert compiled is not None
+
+    def test_has_expected_nodes(self) -> None:
+        """Graph contains all expected nodes."""
+        graph = build_epic_graph()
+        node_names = set(graph.nodes.keys())
+        expected = {
+            "select_story", "run_story", "process_result", "advance_story",
+            "prepare_epic_reviews", "epic_review_node", "collect_epic_reviews",
+            "analyze_reviews", "fix_category_a",
+            "epic_architect", "epic_fix", "epic_ci",
+            "epic_git_commit", "epic_error", "epic_complete",
+        }
+        assert expected.issubset(node_names), f"Missing: {expected - node_names}"

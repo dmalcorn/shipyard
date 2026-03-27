@@ -37,6 +37,9 @@ RUN mkdir -p /app/workspace
 RUN git config --global user.email "shipyard@pipeline.local" \
     && git config --global user.name "Shipyard Pipeline"
 
+# Prevent Claude CLI "config file not found" warnings
+RUN echo '{}' > /root/.claude.json
+
 WORKDIR /app/shipyard
 
 ENTRYPOINT ["python", "-m", "src.main", "--rebuild", "/app/workspace"]

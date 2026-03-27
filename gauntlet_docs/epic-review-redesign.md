@@ -1,6 +1,6 @@
 # Epic Code Review Redesign: Looper-Aligned LangGraph Implementation
 
-## Status: PROPOSAL — Do not implement until discussed with user
+## Status: IMPLEMENTED — Decisions finalized and code updated 2026-03-26
 
 ---
 
@@ -50,23 +50,25 @@ The original bash scripts (`looper/code-review-loop-bmad.sh`, `looper/code-revie
 
 ## Proposed Redesign
 
-### Overview: 8-Node Epic Review Pipeline
+### Overview: Epic Review Pipeline (Implemented)
 
 ```
 ...all stories done
   → prepare_epic_reviews (clean review dir)
-  → 3 parallel review agents (fan-out via Send)
-     - Agent 1: BMAD 3-layer adversarial (via Claude CLI + bmad-code-review skill)
-     - Agent 2: Claude integration/correctness review (via Claude CLI, read-only)
-     - Agent 3: Claude architecture/maintainability review (via Claude CLI, read-only)
+  → 2 parallel review agents (fan-out via Send)
+     - Agent 1: BMAD 3-layer adversarial (via Claude CLI + bmad-code-review skill, read-only)
+     - Agent 2: Claude integration/architecture review (via Claude CLI, read-only)
   → collect_reviews (fan-in, validate files)
-  → analyze_reviews (compare, deduplicate, classify A vs B)
-  → fix_category_a (apply obvious fixes, run quick checks)
-  → epic_architect (review Category B, make decisions, update CLAUDE.md)
-  → fix_architect_plan (apply architect's approved fixes)
-  → epic_ci (run full CI with auto-fix retry loop)
+  → analyze_reviews (compare, deduplicate, classify A vs B — dev agent via Claude CLI)
+  → fix_category_a (apply obvious fixes, run quick checks — dev agent via Claude CLI)
+  → route: has Category B items?
+     → yes: epic_architect (review Category B, make decisions, update CLAUDE.md — Claude CLI --model opus)
+            → route: fixes needed?
+               → yes: epic_fix (apply fixes — dev agent via Claude CLI)
+     → no: skip architect
+  → epic_ci (run CI with auto-fix retry loop, up to 4 attempts)
   → epic_git_commit
-  → END
+  → epic_complete → END
 ```
 
 ### Detailed Node Design
@@ -243,15 +245,17 @@ The changes are isolated to `src/intake/epic_graph.py`:
 
 No changes needed to: orchestrator.py, rebuild_graph.py, bmad_invoke.py, spawn.py.
 
-### Open Questions for Discussion
+### Decisions (Finalized)
 
-1. **3 reviewers vs 2**: Having 3 parallel agents is more thorough but costs more. The BMAD agent in particular takes ~5 minutes for a full 3-layer review. With 3 agents running in parallel, wall time is gated by the slowest one. Is the cost/time tradeoff acceptable?
+1. **2 reviewers** (not 3): BMAD 3-layer adversarial + Claude integration/architecture review. Reduced from 3 to avoid cost/time overhead.
 
-2. **BMAD reviewer via skill or baked prompt**: The looper bakes the BMAD 3-layer review logic directly into the prompt to avoid interactive HALT statements. Should we do the same, or invoke the `bmad-code-review` skill and trust it to run in automated mode?
+2. **BMAD reviewer uses skill** (not baked prompt): HALT statements were already removed from customized skills. Skill invocation keeps the review logic evolving with the skill definition.
 
-3. **Analyze node engine**: Claude CLI vs LangGraph sub-agent for the analysis/classification step. Claude CLI is simpler and consistent. LangGraph sub-agent gives us Opus for better classification decisions.
+3. **Analyze node**: Claude CLI with dev-agent role. Classification/comparison doesn't need Opus.
 
-4. **Architect engine**: Currently a LangGraph sub-agent (Opus). Should we switch to Claude CLI for consistency with the rest of the pipeline? The tradeoff: Claude CLI uses whatever model the user's Claude subscription provides, while LangGraph sub-agent lets us explicitly request Opus.
+4. **Architect node**: Claude CLI with `--model opus` flag. `invoke_bmad_agent` and `invoke_claude_cli` now accept a `model` parameter that maps to `claude --model`. This gives explicit model control while keeping all agents on the same CLI invocation path.
+
+5. **Per-story review**: Preserved as-is. Not stripped for rebuild mode.
 
 ---
 
@@ -259,7 +263,7 @@ No changes needed to: orchestrator.py, rebuild_graph.py, bmad_invoke.py, spawn.p
 
 | Aspect | Current | Proposed |
 |--------|---------|----------|
-| Review agents | 2 LangGraph sub-agents (same method, different focus) | 3 Claude CLI agents (BMAD + 2 Claude with different perspectives) |
+| Review agents | 2 LangGraph sub-agents (same method, different focus) | 2 Claude CLI agents (BMAD 3-layer + Claude integration/architecture) |
 | Review output | Agents write their own files (wrong-path bug) | Nodes capture output and write files (no wrong-path bug) |
 | Pre-triage | None — everything goes to architect | Category A/B classification with agreement analysis |
 | Obvious fixes | Architect decides everything | Category A fixes applied immediately by dev agent |

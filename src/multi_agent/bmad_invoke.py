@@ -163,6 +163,7 @@ def invoke_bmad_agent(
     working_dir: str | None = None,
     timeout: int = TIMEOUT_MEDIUM,
     extra_context: str = "",
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Invoke a BMAD agent via Claude CLI in an isolated session.
 
@@ -176,6 +177,8 @@ def invoke_bmad_agent(
         working_dir: Working directory for the Claude CLI process.
         timeout: Maximum execution time in seconds.
         extra_context: Optional additional context for the prompt.
+        model: Optional model override (e.g. "opus", "sonnet",
+            or full name like "claude-opus-4-6").
 
     Returns:
         Dict with keys: output (str), files_modified (list[str]),
@@ -192,21 +195,26 @@ def invoke_bmad_agent(
     for line in prompt.splitlines():
         print(f"      [bmad]   {line}")
     print(f"      [bmad] --- END PROMPT ---")
-    print(f"      [bmad] Streaming via claude --print --output-format stream-json ...")
+    model_label = f" (model={model})" if model else ""
+    print(f"      [bmad] Streaming via claude --print --output-format stream-json{model_label} ...")
     start_time = time.time()
 
     output_chunks: list[str] = []
     stderr_lines: list[str] = []
 
     try:
+        cli_args = [
+            "claude", "--print", "--verbose",
+            "--output-format", "stream-json",
+            "--setting-sources", "project",
+            "--allowedTools", tools,
+        ]
+        if model:
+            cli_args.extend(["--model", model])
+        cli_args.extend(["--", prompt])
+
         proc = subprocess.Popen(
-            [
-                "claude", "--print", "--verbose",
-                "--output-format", "stream-json",
-                "--setting-sources", "project",
-                "--allowedTools", tools,
-                "--", prompt,
-            ],
+            cli_args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -283,6 +291,127 @@ def invoke_bmad_agent(
         print(f"      --- END IDENTIFICATION ---\n")
     else:
         print(f"      [bmad] WARNING: No agent identification block found in {bmad_agent} output")
+
+    return {
+        "output": output,
+        "files_modified": files_modified,
+        "success": success,
+        "exit_code": exit_code,
+    }
+
+
+def invoke_claude_cli(
+    prompt: str,
+    tools: str,
+    working_dir: str | None = None,
+    timeout: int = TIMEOUT_MEDIUM,
+    model: str | None = None,
+    label: str = "claude",
+) -> dict[str, Any]:
+    """Invoke Claude CLI directly (no BMAD skill wrapper).
+
+    Used for agents that don't need a BMAD persona — plain Claude
+    review, analysis/classification, architect decisions.
+
+    Args:
+        prompt: The full prompt to send to Claude CLI.
+        tools: Comma-separated tool permission string.
+        working_dir: Working directory for the Claude CLI process.
+        timeout: Maximum execution time in seconds.
+        model: Optional model override (e.g. "opus", "sonnet").
+        label: Label for log output (e.g. "claude-review", "analyze").
+
+    Returns:
+        Dict with keys: output (str), files_modified (list[str]),
+        success (bool), exit_code (int).
+    """
+    cwd = working_dir or os.getcwd()
+
+    model_label = f" (model={model})" if model else ""
+    print(f"\n      [{label}] === INVOCATION START ===")
+    print(f"      [{label}] Tools: {tools}")
+    print(f"      [{label}] Timeout: {timeout}s | CWD: {cwd}{model_label}")
+    print(f"      [{label}] --- PROMPT ---")
+    for line in prompt.splitlines():
+        print(f"      [{label}]   {line}")
+    print(f"      [{label}] --- END PROMPT ---")
+    start_time = time.time()
+
+    output_chunks: list[str] = []
+    stderr_lines: list[str] = []
+
+    try:
+        cli_args = [
+            "claude", "--print", "--verbose",
+            "--output-format", "stream-json",
+            "--setting-sources", "project",
+            "--allowedTools", tools,
+        ]
+        if model:
+            cli_args.extend(["--model", model])
+        cli_args.extend(["--", prompt])
+
+        proc = subprocess.Popen(
+            cli_args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+        )
+
+        def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                line = line.rstrip()
+                if line:
+                    stderr_lines.append(line)
+                    print(f"      [{label}:err] {line[:200]}")
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            raw_line = raw_line.rstrip()
+            if not raw_line:
+                continue
+            try:
+                event = json.loads(raw_line)
+                _print_stream_event(event, label, start_time, output_chunks)
+            except json.JSONDecodeError:
+                print(f"      [{label}:raw] {raw_line[:200]}")
+                output_chunks.append(raw_line)
+
+        proc.wait(timeout=30)
+        stderr_thread.join(timeout=5)
+
+        exit_code = proc.returncode
+        success = exit_code == 0
+
+    except subprocess.TimeoutExpired:
+        elapsed = time.time() - start_time
+        print(f"      [{label}] TIMEOUT after {elapsed:.0f}s")
+        proc.kill()
+        proc.wait()
+        output_chunks.append(f"TIMEOUT: Claude CLI did not respond within {timeout}s")
+        success = False
+        exit_code = 124
+
+    except Exception as e:
+        print(f"      [{label}] ERROR: {e}")
+        output_chunks.append(f"ERROR: Failed to invoke Claude CLI: {e}")
+        success = False
+        exit_code = 1
+
+    output = "\n".join(output_chunks)
+    elapsed = time.time() - start_time
+    print(f"\n      [{label}] Finished in {elapsed:.1f}s (exit={exit_code})")
+
+    files_modified = _detect_modified_files(cwd)
+    print(f"      [{label}] Complete: exit={exit_code} files_modified={len(files_modified)} output_len={len(output)}")
 
     return {
         "output": output,
