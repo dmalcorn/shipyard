@@ -29,6 +29,17 @@ cp .env.example .env
 # Edit .env — fill in your API keys
 ```
 
+Required variables:
+
+| Variable | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | Claude model access |
+| `LANGCHAIN_API_KEY` | LangSmith trace collection |
+| `LANGCHAIN_TRACING_V2` | Set `true` to enable tracing |
+| `LANGCHAIN_PROJECT` | LangSmith project name (default: `shipyard`) |
+| `SHIPYARD_RELAY_URL` | Public dashboard relay endpoint (optional) |
+| `SHIPYARD_RELAY_KEY` | Shared secret for relay auth (optional) |
+
 ### 3. Run
 
 **CLI mode** — interactive REPL:
@@ -83,13 +94,17 @@ python -m src.main --rebuild /path/to/target/project
 
 The `target_dir` must be **outside** Shipyard's source tree. All agent file operations, bash commands, and git operations are scoped to the target directory. Relative paths (e.g. `./target/`) are resolved to absolute automatically.
 
+**Docker rebuild** — runs the pipeline in a container with the target project mounted:
+
+```bash
+docker compose -f docker-compose.rebuild.yml up
+```
+
 See [User's Guide](gauntlet_docs/users-guide.md) for full rebuild documentation.
 
 ## Architecture
 
 Shipyard uses a LangGraph state machine with tool-calling agents. The core loop: receive instruction → plan → execute tools → return result. Checkpoints persist conversation state in SQLite.
-
-For detailed architecture and multi-agent design, see `CODEAGENT.md` (Epic 2).
 
 ```
 src/
@@ -97,8 +112,13 @@ src/
 ├── agent/               # LangGraph graph, state, prompts
 ├── tools/               # File ops, search, execution tools
 ├── context/             # Context injection system
-├── logging/             # LangSmith tracing + audit logger
-└── multi_agent/         # Sub-agent spawning + orchestration
+├── intake/              # Rebuild pipeline, backlog parsing, cost tracking
+├── multi_agent/         # Sub-agent spawning + orchestration
+├── audit_log/           # Structured audit logger
+├── static/              # Public monitoring dashboard
+├── log_relay.py         # Postgres log relay for dashboard streaming
+├── web_relay.py         # Web relay client for pushing events
+└── pipeline_tracker.py  # Pipeline stage tracking
 ```
 
 ## Development
