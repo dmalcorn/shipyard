@@ -365,7 +365,10 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
         extra = (
             f"CI failed. Here is the CI output:\n\n"
             f"```\n{last_ci_output[:5000]}\n```\n\n"
-            f"Fix all lint errors (ruff), type errors (mypy), and test failures."
+            f"Fix all errors reported by the CI pipeline — this may "
+            f"include lint errors, type-check errors, security scan "
+            f"findings, and test failures. Read the output carefully "
+            f"to determine which tools reported issues."
         )
 
     result = invoke_bmad_agent(
@@ -392,10 +395,360 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
 
 def _detect_test_command(working_dir: str | None) -> list[str]:
     """Detect the appropriate test command for the project type."""
+    project_type = _detect_project_type(working_dir)
+    test_commands: dict[str, list[str]] = {
+        "python": ["pytest", "tests/", "-v"],
+        "node": ["npm", "test"],
+        "rust": ["cargo", "test"],
+        "go": ["go", "test", "./..."],
+    }
+    return test_commands.get(project_type, ["pytest", "tests/", "-v"])
+
+
+def _ensure_dependencies(working_dir: str | None) -> None:
+    """Auto-install missing dependencies based on project type.
+
+    Runs the appropriate package-manager install command if dependency
+    artifacts are missing (e.g. node_modules, .venv). Safe to call
+    multiple times — each check is idempotent.
+    """
     base = working_dir or "."
-    if os.path.isfile(os.path.join(base, "package.json")):
-        return ["npm", "test"]
-    return ["pytest", "tests/", "-v"]
+    project_type = _detect_project_type(working_dir)
+
+    if project_type == "node":
+        if (
+            os.path.isfile(os.path.join(base, "package.json"))
+            and not os.path.isdir(os.path.join(base, "node_modules"))
+        ):
+            print(f"    [deps] node_modules missing — running npm install")
+            _run_bash(["npm", "install"], cwd=working_dir)
+
+    elif project_type == "python":
+        req_file = os.path.join(base, "requirements.txt")
+        req_dev = os.path.join(base, "requirements-dev.txt")
+        if os.path.isfile(req_dev):
+            print(f"    [deps] Installing from requirements-dev.txt")
+            _run_bash(["python", "-m", "pip", "install", "-r", req_dev, "--quiet"], cwd=working_dir)
+        elif os.path.isfile(req_file):
+            print(f"    [deps] Installing from requirements.txt")
+            _run_bash(["python", "-m", "pip", "install", "-r", req_file, "--quiet"], cwd=working_dir)
+
+    elif project_type == "rust":
+        # cargo build/test auto-downloads deps, but fetch is faster for pre-warming
+        cargo_lock = os.path.join(base, "Cargo.lock")
+        if os.path.isfile(os.path.join(base, "Cargo.toml")) and not os.path.isfile(cargo_lock):
+            print(f"    [deps] Cargo.lock missing — running cargo fetch")
+            _run_bash(["cargo", "fetch"], cwd=working_dir)
+
+    elif project_type == "go":
+        go_sum = os.path.join(base, "go.sum")
+        if os.path.isfile(os.path.join(base, "go.mod")) and not os.path.isfile(go_sum):
+            print(f"    [deps] go.sum missing — running go mod download")
+            _run_bash(["go", "mod", "download"], cwd=working_dir)
+
+
+# Migration framework detection: (marker_file, check_command, generate_command, label)
+# check_command returns exit 0 if migrations are up-to-date, non-zero if pending.
+# generate_command auto-creates any missing migration files.
+_MIGRATION_FRAMEWORKS: list[tuple[str, list[str], list[str], str]] = [
+    # Django — manage.py in project root or common subdirs
+    (
+        "manage.py",
+        ["python", "manage.py", "makemigrations", "--check", "--dry-run"],
+        ["python", "manage.py", "makemigrations"],
+        "Django",
+    ),
+    # Alembic (Flask / FastAPI / SQLAlchemy)
+    (
+        "alembic.ini",
+        ["alembic", "check"],
+        ["alembic", "revision", "--autogenerate", "-m", "auto"],
+        "Alembic",
+    ),
+    # Prisma (Node.js)
+    (
+        "prisma/schema.prisma",
+        ["npx", "prisma", "migrate", "status"],
+        ["npx", "prisma", "migrate", "dev", "--name", "auto"],
+        "Prisma",
+    ),
+    # Diesel (Rust)
+    (
+        "diesel.toml",
+        ["diesel", "migration", "pending"],
+        ["diesel", "migration", "run"],
+        "Diesel",
+    ),
+]
+
+
+def _ensure_migrations(working_dir: str | None) -> None:
+    """Check for pending database migrations and auto-generate if needed.
+
+    Detects the migration framework from marker files, runs the check
+    command, and auto-generates migrations when they're out of date.
+    Also searches common subdirectories (e.g. backend/) for the marker
+    file, since many projects nest the app server.
+    """
+    base = working_dir or "."
+
+    for marker, check_cmd, generate_cmd, label in _MIGRATION_FRAMEWORKS:
+        # Search project root and one level of common subdirs
+        search_dirs = [base]
+        for subdir in ("backend", "server", "api", "app", "src"):
+            candidate = os.path.join(base, subdir)
+            if os.path.isdir(candidate):
+                search_dirs.append(candidate)
+
+        for search_dir in search_dirs:
+            marker_path = os.path.join(search_dir, marker)
+            if not os.path.isfile(marker_path):
+                continue
+
+            print(f"    [migrations] {label} detected in {search_dir}")
+            passed, output = _run_bash(check_cmd, cwd=search_dir)
+
+            if passed:
+                print(f"    [migrations] {label} migrations up to date")
+            else:
+                print(f"    [migrations] Pending migrations — auto-generating...")
+                gen_passed, gen_output = _run_bash(generate_cmd, cwd=search_dir)
+                if gen_passed:
+                    print(f"    [migrations] {label} migrations generated")
+                    # Stage the generated migration files
+                    _run_bash(["git", "add", "-A"], cwd=search_dir)
+                else:
+                    print(f"    [migrations] WARNING: auto-generate failed")
+                    logger.warning(
+                        "Migration auto-generate failed for %s in %s: %s",
+                        label, search_dir, gen_output[:500],
+                    )
+
+            # Only handle the first matching framework per project
+            return
+
+
+def _makefile_has_target(makefile_path: str, target: str) -> bool:
+    """Check whether a Makefile declares the given target."""
+    try:
+        with open(makefile_path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(f"{target}:") or line.startswith(f".PHONY: {target}"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _detect_project_type(working_dir: str | None) -> str:
+    """Detect project type from marker files. Returns a type key."""
+    base = working_dir or "."
+    markers = {
+        "python": ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
+        "node": ["package.json"],
+        "rust": ["Cargo.toml"],
+        "go": ["go.mod"],
+    }
+    for project_type, files in markers.items():
+        for marker in files:
+            if os.path.isfile(os.path.join(base, marker)):
+                return project_type
+    return "unknown"
+
+
+# CI script templates per project type.
+# Each template is a complete, runnable bash script that the target project
+# can later customise. The script must accept --story STORY and --quick flags
+# for compatibility with the per-story pipeline.
+_CI_TEMPLATES: dict[str, str] = {
+    "python": """\
+#!/usr/bin/env bash
+# Auto-generated CI script (Python project) — customise as needed.
+set -euo pipefail
+
+STORY_FILTER=""
+QUICK_MODE=false
+TEST_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --story)  STORY_FILTER="$2"; shift 2 ;;
+        --quick)  QUICK_MODE=true; shift ;;
+        --test)   TEST_ONLY=true; shift ;;
+        *)        shift ;;
+    esac
+done
+
+# --- Lint ---
+if ! $TEST_ONLY; then
+    echo "=== lint ==="
+    if command -v ruff &>/dev/null; then
+        python -m ruff check .
+        python -m ruff format --check .
+    fi
+
+    echo "=== typecheck ==="
+    if command -v mypy &>/dev/null; then
+        python -m mypy .
+    fi
+fi
+
+# --- Tests ---
+echo "=== tests ==="
+if [ -n "$STORY_FILTER" ]; then
+    PATTERN=$(echo "$STORY_FILTER" | tr '-' '_')
+    python -m pytest tests/ -v -k "story_${PATTERN}" || python -m pytest tests/ -v
+elif $QUICK_MODE; then
+    python -m pytest tests/ -x -q
+else
+    python -m pytest tests/ -v
+fi
+
+echo "=== All checks passed ==="
+""",
+    "node": """\
+#!/usr/bin/env bash
+# Auto-generated CI script (Node.js project) — customise as needed.
+set -euo pipefail
+
+STORY_FILTER=""
+QUICK_MODE=false
+TEST_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --story)  STORY_FILTER="$2"; shift 2 ;;
+        --quick)  QUICK_MODE=true; shift ;;
+        --test)   TEST_ONLY=true; shift ;;
+        *)        shift ;;
+    esac
+done
+
+# --- Lint ---
+if ! $TEST_ONLY; then
+    echo "=== lint ==="
+    if [ -f .eslintrc* ] || grep -q '"eslint"' package.json 2>/dev/null; then
+        npx eslint . || true
+    fi
+
+    echo "=== typecheck ==="
+    if [ -f tsconfig.json ]; then
+        npx tsc --noEmit || true
+    fi
+fi
+
+# --- Tests ---
+echo "=== tests ==="
+npm test
+
+echo "=== All checks passed ==="
+""",
+    "rust": """\
+#!/usr/bin/env bash
+# Auto-generated CI script (Rust project) — customise as needed.
+set -euo pipefail
+
+echo "=== lint ==="
+cargo clippy -- -D warnings
+
+echo "=== tests ==="
+cargo test
+
+echo "=== All checks passed ==="
+""",
+    "go": """\
+#!/usr/bin/env bash
+# Auto-generated CI script (Go project) — customise as needed.
+set -euo pipefail
+
+echo "=== lint ==="
+if command -v golangci-lint &>/dev/null; then
+    golangci-lint run ./...
+else
+    go vet ./...
+fi
+
+echo "=== tests ==="
+go test ./...
+
+echo "=== All checks passed ==="
+""",
+    "unknown": """\
+#!/usr/bin/env bash
+# Auto-generated CI script (unknown project type) — customise as needed.
+set -euo pipefail
+echo "WARNING: Could not detect project type. Add your CI commands here."
+echo "=== All checks passed ==="
+""",
+}
+
+
+def _scaffold_ci_script(working_dir: str | None) -> str:
+    """Generate a default scripts/ci.sh for the target project.
+
+    Returns the absolute path to the created script.
+    """
+    base = working_dir or "."
+    project_type = _detect_project_type(working_dir)
+    template = _CI_TEMPLATES.get(project_type, _CI_TEMPLATES["unknown"])
+
+    scripts_dir = os.path.join(base, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+
+    ci_path = os.path.join(scripts_dir, "ci.sh")
+    with open(ci_path, "w", encoding="utf-8") as f:
+        f.write(template)
+    os.chmod(ci_path, 0o755)
+
+    logger.info("Scaffolded CI script at %s (type=%s)", ci_path, project_type)
+    print(f"    [ci] Scaffolded scripts/ci.sh for {project_type} project")
+    return ci_path
+
+
+def resolve_ci_command(
+    working_dir: str | None,
+    *,
+    story_id: str | None = None,
+) -> list[str]:
+    """Resolve the CI command for a target project.
+
+    Fallback chain:
+      1. scripts/ci.sh exists             → bash scripts/ci.sh [--story ID]
+      2. Makefile with ci / ci-story target → make ci[-story STORY=ID]
+      3. Neither exists                    → scaffold scripts/ci.sh, then use it
+
+    Args:
+        working_dir: Target project root (None = cwd).
+        story_id: Optional story identifier for scoped CI (e.g. "0-3").
+                  When None, runs the full (epic-level) CI.
+
+    Returns:
+        Command as a list of strings suitable for subprocess.
+    """
+    base = working_dir or "."
+
+    # --- 1. scripts/ci.sh ---
+    ci_script = os.path.join(base, "scripts", "ci.sh")
+    if os.path.isfile(ci_script):
+        cmd = ["bash", "scripts/ci.sh"]
+        if story_id:
+            cmd += ["--story", story_id]
+        return cmd
+
+    # --- 2. Makefile targets ---
+    makefile = os.path.join(base, "Makefile")
+    if os.path.isfile(makefile):
+        if story_id and _makefile_has_target(makefile, "ci-story"):
+            return ["make", "ci-story", f"STORY={story_id}"]
+        if _makefile_has_target(makefile, "ci"):
+            return ["make", "ci"]
+
+    # --- 3. Scaffold a default CI script ---
+    _scaffold_ci_script(working_dir)
+    cmd = ["bash", "scripts/ci.sh"]
+    if story_id:
+        cmd += ["--story", story_id]
+    return cmd
 
 
 def run_tests_node(state: OrchestratorState) -> dict[str, Any]:
@@ -404,20 +757,13 @@ def run_tests_node(state: OrchestratorState) -> dict[str, Any]:
     test_cycle = state.get("test_cycle_count", 0) + 1
     working_dir = _get_working_dir(state)
 
-    # Auto-install npm dependencies if package.json exists but node_modules doesn't
-    base = working_dir or "."
-    if (
-        os.path.isfile(os.path.join(base, "package.json"))
-        and not os.path.isdir(os.path.join(base, "node_modules"))
-    ):
-        print(f"    [run_tests] node_modules missing — running npm install")
-        _run_bash(["npm", "install"], cwd=working_dir)
+    _ensure_dependencies(working_dir)
 
     test_cmd = _detect_test_command(working_dir)
     print(f"\n>>> [run_tests] Running {' '.join(test_cmd)} (cycle={test_cycle})")
 
     passed, output = _run_bash(test_cmd, cwd=working_dir)
-    _log_bash_to_audit(session_id, "pytest tests/ -v", "PASS" if passed else "FAIL")
+    _log_bash_to_audit(session_id, " ".join(test_cmd), "PASS" if passed else "FAIL")
 
     print(f"    [run_tests] Result: {'PASS' if passed else 'FAIL'} (cycle={test_cycle})")
 
@@ -465,31 +811,28 @@ def check_review_node(state: OrchestratorState) -> dict[str, Any]:
 
 
 def run_ci_node(state: OrchestratorState) -> dict[str, Any]:
-    """Run local CI via bash. No LLM call."""
+    """Run local CI via bash. No LLM call.
+
+    Uses resolve_ci_command() to find or scaffold the CI script.
+    Per-story scope: passes task_id as story filter so only the
+    current story's tests run (lint/typecheck still run fully).
+    """
     session_id = state.get("session_id", "")
     ci_cycle = state.get("ci_cycle_count", 0) + 1
     working_dir = _get_working_dir(state)
+    task_id = state.get("task_id", "")
     print(f"\n>>> [run_ci] Running CI (cycle={ci_cycle})")
 
-    # Auto-install npm dependencies if package.json exists but node_modules doesn't
-    base = working_dir or "."
-    if (
-        os.path.isfile(os.path.join(base, "package.json"))
-        and not os.path.isdir(os.path.join(base, "node_modules"))
-    ):
-        print(f"    [run_ci] node_modules missing — running npm install")
-        _run_bash(["npm", "install"], cwd=working_dir)
+    _ensure_dependencies(working_dir)
+    _ensure_migrations(working_dir)
 
-    # Use local_ci.sh if available, otherwise detect test framework
-    ci_script = os.path.join(working_dir, "scripts", "local_ci.sh") if working_dir else "scripts/local_ci.sh"
-    if os.path.isfile(ci_script):
-        ci_cmd = ["bash", "scripts/local_ci.sh"]
-    else:
-        ci_cmd = _detect_test_command(working_dir)
+    # Resolve CI command via fallback chain (script → Makefile → scaffold)
+    # Pass task_id as story_id for per-story scoping
+    ci_cmd = resolve_ci_command(working_dir, story_id=task_id or None)
     print(f"    Running: {' '.join(ci_cmd)}")
     passed, output = _run_bash(ci_cmd, cwd=working_dir)
 
-    _log_bash_to_audit(session_id, "local_ci", "PASS" if passed else "FAIL")
+    _log_bash_to_audit(session_id, "ci", "PASS" if passed else "FAIL")
 
     print(f"    [run_ci] Result: {'PASS' if passed else 'FAIL'} (cycle={ci_cycle})")
 

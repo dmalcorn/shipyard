@@ -34,8 +34,10 @@ from src.multi_agent.bmad_invoke import (
 )
 from src.multi_agent.orchestrator import (
     OrchestratorState,
+    _ensure_migrations,
     _run_bash,
     build_orchestrator,
+    resolve_ci_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -669,7 +671,7 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
         f"3. If any fix CANNOT be applied cleanly (ambiguous, file changed, "
         f"multiple valid approaches), DO NOT attempt it — instead append it "
         f"to `{cat_b_path}` for architect review\n"
-        f"4. Run quick verification: `pytest` on relevant test files\n"
+        f"4. Run quick verification using the project's test runner on relevant test files\n"
         f"5. Write an execution log to `{done_path}` listing each fix "
         f"attempted and its outcome (applied/skipped)\n"
     )
@@ -852,16 +854,19 @@ def epic_fix_node(state: EpicState) -> dict[str, Any]:
 
 
 def epic_ci_node(state: EpicState) -> dict[str, Any]:
-    """Run CI with auto-fix retry loop (up to 4 attempts)."""
+    """Run full CI with auto-fix retry loop (up to 4 attempts).
+
+    Uses resolve_ci_command() with no story_id so the full CI pipeline
+    runs (lint + typecheck + all tests), not just the test suite.
+    """
     working_dir = state.get("target_dir") or None
     session_id = state.get("session_id", "")
 
-    # Detect CI command: npm test if package.json, else pytest
-    base = working_dir or "."
-    if os.path.exists(os.path.join(base, "package.json")):
-        ci_command = ["npm", "test"]
-    else:
-        ci_command = ["pytest", "tests/", "-v"]
+    # Pre-CI: ensure migrations are up to date
+    _ensure_migrations(working_dir)
+
+    # Full CI (no story scoping) via the same fallback chain as per-story
+    ci_command = resolve_ci_command(working_dir, story_id=None)
 
     result = invoke_ci_with_fix(
         ci_command=ci_command,

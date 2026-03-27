@@ -145,18 +145,18 @@ class TestBashNodes:
     """Bash nodes call shell commands, never LLM."""
 
     @patch("src.multi_agent.orchestrator._run_bash", return_value=(True, "ok"))
-    def test_run_tests_node_calls_pytest(self, mock_bash: MagicMock) -> None:
+    def test_run_tests_node_calls_test_command(self, mock_bash: MagicMock) -> None:
         state: OrchestratorState = {"session_id": "s1", "test_cycle_count": 0}
         result = run_tests_node(state)
-        mock_bash.assert_called_once()
+        mock_bash.assert_called()
         assert result["test_passed"] is True
         assert result["test_cycle_count"] == 1
 
     @patch("src.multi_agent.orchestrator._run_bash", return_value=(True, "ok"))
-    def test_run_ci_node_calls_ci_script(self, mock_bash: MagicMock) -> None:
+    def test_run_ci_node_calls_ci(self, mock_bash: MagicMock) -> None:
         state: OrchestratorState = {"session_id": "s1", "ci_cycle_count": 0}
         result = run_ci_node(state)
-        mock_bash.assert_called_once()
+        mock_bash.assert_called()
         assert result["test_passed"] is True
         assert result["ci_cycle_count"] == 1
 

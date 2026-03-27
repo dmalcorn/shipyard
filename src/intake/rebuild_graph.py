@@ -30,6 +30,7 @@ from src.intake.backlog import load_backlog
 from src.intake.cost_tracker import get_invocation_count, get_total_cost
 from src.intake.epic_graph import EpicState, build_epic_runner
 from src.intake.pause import is_pause_requested
+from src.multi_agent.orchestrator import _detect_project_type
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,85 @@ def _tool_version(tool: str) -> str | None:
         return "(version unknown)"
 
 
+def _check_tools(
+    tools: list[str],
+    *,
+    required: bool,
+    label: str,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """Check a list of CLI tools and record errors or warnings."""
+    for tool in tools:
+        version = _tool_version(tool)
+        if not version:
+            msg = f"'{tool}' not found on PATH ({label})"
+            if required:
+                errors.append(msg)
+                print(f"  FAIL: {tool} ({label})")
+            else:
+                warnings.append(f"'{tool}' not found — CI may be limited")
+                print(f"  WARN: {tool} not found ({label})")
+        else:
+            print(f"  OK:   {tool} — {version}")
+
+
+def _auto_install_python_deps(target_dir: str, tools: list[str]) -> list[str]:
+    """Attempt to pip-install missing Python tools. Returns still-missing tools."""
+    missing = [t for t in tools if not shutil.which(t)]
+    if not missing:
+        return []
+
+    req_file = os.path.join(target_dir, "requirements-dev.txt")
+    if os.path.isfile(req_file):
+        print(f"  INFO: Missing {', '.join(missing)} — installing from requirements-dev.txt...")
+        install_result = subprocess.run(
+            ["python", "-m", "pip", "install", "-r", req_file, "--quiet"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if install_result.returncode == 0:
+            print(f"  OK:   pip install succeeded")
+        else:
+            print(f"  WARN: pip install failed: {install_result.stderr[:200]}")
+    else:
+        print(f"  INFO: Missing {', '.join(missing)} — attempting pip install...")
+        subprocess.run(
+            ["python", "-m", "pip", "install", *missing, "--quiet"],
+            capture_output=True, text=True, timeout=120,
+        )
+
+    return [t for t in tools if not shutil.which(t)]
+
+
+# Per-project-type tool requirements.
+# "runtime" = hard requirement (errors), "dev" = soft (warnings).
+_PROJECT_TOOL_REQS: dict[str, dict[str, list[str]]] = {
+    "python": {
+        "runtime": ["python"],
+        "dev": ["ruff", "mypy", "pytest"],
+    },
+    "node": {
+        "runtime": ["node", "npm"],
+        "dev": ["npx"],
+    },
+    "rust": {
+        "runtime": ["rustc", "cargo"],
+        "dev": [],
+    },
+    "go": {
+        "runtime": ["go"],
+        "dev": ["golangci-lint"],
+    },
+}
+
+
 def preflight_check_node(state: RebuildState) -> dict[str, Any]:
-    """Verify required tools are installed before starting the pipeline."""
+    """Verify required tools are installed before starting the pipeline.
+
+    Uses _detect_project_type() to determine the target project's stack,
+    then checks for the appropriate runtime and dev tools. Python projects
+    get an auto-install attempt for missing dev tools.
+    """
     target_dir = state.get("target_dir", "")
     errors: list[str] = []
     warnings: list[str] = []
@@ -107,94 +185,53 @@ def preflight_check_node(state: RebuildState) -> dict[str, Any]:
     print("\n--- Preflight Check ---")
 
     # Always required: claude, git
-    for tool in ("claude", "git"):
-        version = _tool_version(tool)
-        if not version:
-            errors.append(f"'{tool}' not found on PATH")
-            print(f"  FAIL: {tool}")
-        else:
-            print(f"  OK:   {tool} — {version}")
-
-    # Always required: make (used by BMAD agent tool permissions)
-    version = _tool_version("make")
-    if not version:
-        errors.append("'make' not found on PATH (required by BMAD agent tools)")
-        print(f"  FAIL: make")
-    else:
-        print(f"  OK:   make — {version}")
-
-    # Detect project type from target dir and check runtime
-    package_json = os.path.join(target_dir, "package.json")
-    has_python_markers = any(
-        os.path.isfile(os.path.join(target_dir, f))
-        for f in ("setup.py", "pyproject.toml", "requirements.txt", "Pipfile")
+    _check_tools(
+        ["claude", "git"], required=True,
+        label="always required", errors=errors, warnings=warnings,
     )
 
-    if os.path.isfile(package_json):
-        # Node project
-        for tool in ("node", "npm"):
-            version = _tool_version(tool)
-            if not version:
-                errors.append(f"'{tool}' not found on PATH (required for Node project)")
-                print(f"  FAIL: {tool} (Node project detected)")
-            else:
-                print(f"  OK:   {tool} — {version}")
-    elif has_python_markers:
-        # Python project
-        for tool in ("python", "pytest"):
-            version = _tool_version(tool)
-            if not version:
-                errors.append(f"'{tool}' not found on PATH (required for Python project)")
-                print(f"  FAIL: {tool} (Python project detected)")
-            else:
-                print(f"  OK:   {tool} — {version}")
+    # Always required: make (used by BMAD agent tool permissions)
+    _check_tools(
+        ["make"], required=True,
+        label="required by BMAD agent tools", errors=errors, warnings=warnings,
+    )
+
+    # Detect project type and check appropriate tools
+    project_type = _detect_project_type(target_dir or None)
+    print(f"  INFO: Detected project type: {project_type}")
+
+    reqs = _PROJECT_TOOL_REQS.get(project_type)
+    if reqs:
+        _check_tools(
+            reqs["runtime"], required=True,
+            label=f"{project_type} project", errors=errors, warnings=warnings,
+        )
+
+        # For Python projects, attempt auto-install of missing dev tools
+        if project_type == "python" and target_dir:
+            still_missing = _auto_install_python_deps(target_dir, reqs["dev"])
+            for tool in reqs["dev"]:
+                if tool in still_missing:
+                    warnings.append(f"'{tool}' not found — CI may be limited")
+                    print(f"  WARN: {tool} not found (optional, used by CI)")
+                else:
+                    version = _tool_version(tool)
+                    print(f"  OK:   {tool} — {version or 'installed'}")
+        elif reqs["dev"]:
+            _check_tools(
+                reqs["dev"], required=False,
+                label=f"{project_type} dev tool", errors=errors, warnings=warnings,
+            )
     else:
-        # Unknown project type — check both, warn if neither available
-        has_node = shutil.which("node") and shutil.which("npm")
-        has_py = shutil.which("python") and shutil.which("pytest")
-        if not has_node and not has_py:
-            errors.append("No runtime found: need node/npm or python/pytest on PATH")
-            print(f"  FAIL: no node/npm or python/pytest found")
-        else:
-            if has_node:
-                print(f"  OK:   node/npm available")
-            if has_py:
-                print(f"  OK:   python/pytest available")
-
-    # Python dev tools — attempt auto-install if missing
-    py_dev_tools = ("ruff", "mypy", "pytest")
-    missing_py_tools = [t for t in py_dev_tools if not shutil.which(t)]
-
-    if missing_py_tools:
-        # Try auto-install from requirements-dev.txt
-        req_file = os.path.join(target_dir, "requirements-dev.txt")
-        if os.path.isfile(req_file):
-            print(f"  INFO: Missing {', '.join(missing_py_tools)} — installing from requirements-dev.txt...")
-            install_result = subprocess.run(
-                ["python", "-m", "pip", "install", "-r", req_file, "--quiet"],
-                capture_output=True, text=True, timeout=120,
-            )
-            if install_result.returncode == 0:
-                print(f"  OK:   pip install succeeded")
-                missing_py_tools = [t for t in py_dev_tools if not shutil.which(t)]
-            else:
-                print(f"  WARN: pip install failed: {install_result.stderr[:200]}")
-        else:
-            # No requirements file — try to install tools directly
-            print(f"  INFO: Missing {', '.join(missing_py_tools)} — attempting pip install...")
-            subprocess.run(
-                ["python", "-m", "pip", "install", *missing_py_tools, "--quiet"],
-                capture_output=True, text=True, timeout=120,
-            )
-            missing_py_tools = [t for t in py_dev_tools if not shutil.which(t)]
-
-    for tool in py_dev_tools:
-        version = _tool_version(tool)
-        if not version:
-            warnings.append(f"'{tool}' not found — CI fix phase may be limited")
-            print(f"  WARN: {tool} not found (optional, used by CI fix)")
-        else:
-            print(f"  OK:   {tool} — {version}")
+        # Unknown project type — check if any runtime is available
+        has_any = False
+        for ptype, preqs in _PROJECT_TOOL_REQS.items():
+            if all(shutil.which(t) for t in preqs["runtime"]):
+                print(f"  OK:   {ptype} runtime available")
+                has_any = True
+        if not has_any:
+            errors.append("No recognized runtime found on PATH")
+            print(f"  FAIL: no recognized runtime (python, node, rustc, go)")
 
     if errors:
         msg = "Preflight failed:\n" + "\n".join(f"  - {e}" for e in errors)
@@ -322,7 +359,19 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
         gitignore_path = os.path.join(target_dir, ".gitignore")
         if not os.path.exists(gitignore_path):
             with open(gitignore_path, "w", encoding="utf-8") as f:
-                f.write("node_modules/\n.env\n*.log\n")
+                f.write(
+                    # Common
+                    ".env\n*.log\n.DS_Store\n"
+                    # Python
+                    "__pycache__/\n*.pyc\n.venv/\n*.egg-info/\n"
+                    "dist/\nhtmlcov/\n.coverage\n"
+                    # Node
+                    "node_modules/\n"
+                    # Rust
+                    "target/\n"
+                    # Go
+                    "vendor/\n"
+                )
 
         readme_path = os.path.join(target_dir, "README.md")
         if not os.path.exists(readme_path):

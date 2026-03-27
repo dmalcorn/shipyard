@@ -29,14 +29,36 @@ TIMEOUT_MEDIUM = 25 * 60  # 25 min — code review, test automation
 TIMEOUT_LONG = 45 * 60    # 45 min — implementation, CI fix
 
 # ---------------------------------------------------------------------------
-# Scoped tool permissions per phase (from looper/build-loop.sh)
+# Scoped tool permissions per phase
+#
+# Language-agnostic: includes Python, Node, Rust, and Go toolchains so
+# agents can work with any target project. Having unused permissions is
+# harmless; missing ones block the agent.
 # ---------------------------------------------------------------------------
-TOOLS_SM = "Read,Edit,Write,Glob,Grep,Task,TodoWrite,Skill"
-TOOLS_TEA = "Read,Edit,Write,Glob,Grep,Task,TodoWrite,Bash(npm *),Bash(npx *),Bash(pytest *),Bash(make *),Skill"
-TOOLS_TEA_FIX = "Read,Edit,Write,Glob,Grep,Task,TodoWrite,Bash(python *),Bash(npm *),Bash(npx *),Bash(pytest *),Bash(make *),Skill"
-TOOLS_DEV = "Read,Edit,Write,Glob,Grep,Task,TodoWrite,Bash(python *),Bash(pip *),Bash(npm *),Bash(npx *),Bash(pytest *),Bash(make *),Bash(git *),Skill"
-TOOLS_CODE_REVIEW = "Read,Edit,Write,Glob,Grep,Task,TodoWrite,Bash(npm *),Bash(npx *),Bash(pytest *),Bash(make *),Skill"
-TOOLS_CI_FIX = "Read,Edit,Write,Glob,Grep,Task,TodoWrite,Bash(python *),Bash(pip *),Bash(npm *),Bash(npx *),Bash(pytest *),Bash(ruff *),Bash(mypy *),Skill"
+
+# Common bash tools shared across build/test/CI phases
+_BASH_BUILD = ",".join([
+    # Python
+    "Bash(python *)", "Bash(pip *)", "Bash(pytest *)",
+    "Bash(ruff *)", "Bash(mypy *)", "Bash(bandit *)",
+    # Node / TypeScript
+    "Bash(npm *)", "Bash(npx *)", "Bash(tsc *)", "Bash(eslint *)",
+    # Rust
+    "Bash(cargo *)", "Bash(rustc *)",
+    # Go
+    "Bash(go *)", "Bash(golangci-lint *)",
+    # General
+    "Bash(make *)",
+])
+
+_BASE_TOOLS = "Read,Edit,Write,Glob,Grep,Task,TodoWrite"
+
+TOOLS_SM = f"{_BASE_TOOLS},Skill"
+TOOLS_TEA = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
+TOOLS_TEA_FIX = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
+TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},Bash(git *),Skill"
+TOOLS_CODE_REVIEW = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
+TOOLS_CI_FIX = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
 TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite"
 
 
@@ -490,8 +512,10 @@ def invoke_ci_with_fix(
             fix_context = (
                 f"CI failed. Here is the CI output:\n\n"
                 f"```\n{ci_output[:5000]}\n```\n\n"
-                f"Fix all lint errors (ruff), type errors (mypy), "
-                f"and test failures."
+                f"Fix all errors reported by the CI pipeline — this may "
+                f"include lint errors, type-check errors, security scan "
+                f"findings, and test failures. Read the output carefully "
+                f"to determine which tools reported issues."
             )
 
             fix_result = invoke_bmad_agent(
