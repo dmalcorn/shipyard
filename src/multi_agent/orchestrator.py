@@ -580,39 +580,23 @@ def _detect_type_from_architecture_md(base: str) -> str:
         return "unknown"
 
     # Order matters: check most-distinctive keywords first.
-    # Rust and Node/Python have very distinctive markers; Go keywords
-    # overlap with English ("go module", "gin" = PostgreSQL GIN indexes),
-    # so Go is checked last with regex word-boundary patterns.
-    import re as _re
-
+    # Each entry is (type_key, list_of_indicator_patterns).
     stack_signals: list[tuple[str, list[str]]] = [
         ("rust", ["cargo.toml", "tokio", "axum", "rocket", "serde"]),
-        ("node", [
-            "package.json", "pnpm", "npm install", "yarn", "express",
-            "react", "next.js", "vite", "typescript",
-        ]),
+        ("go", ["go mod", "go module", "goroutine", "gin", "echo framework"]),
         ("python", [
             "fastapi", "django", "flask", "langgraph", "pyproject",
-            "pip install", "pytest", "requirements.txt",
+            "pip install", "pytest", "python",
+        ]),
+        ("node", [
+            "package.json", "pnpm", "npm", "yarn", "express",
+            "react", "next.js", "vite", "typescript",
         ]),
     ]
 
     for project_type, keywords in stack_signals:
         if any(kw in content for kw in keywords):
             return project_type
-
-    # Go checked last with stricter patterns to avoid false positives
-    # ("GIN indexes" is PostgreSQL, "Go module" can appear in non-Go docs).
-    go_patterns = [
-        r"\bgo\.mod\b",        # the actual file name
-        r"\bgoroutines?\b",
-        r"\bnet/http\b",
-        r"\bfmt\.print",
-        r"\bfunc\s+main\(",
-        r"\bgin\.default\b",
-    ]
-    if any(_re.search(pat, content) for pat in go_patterns):
-        return "go"
 
     return "unknown"
 
