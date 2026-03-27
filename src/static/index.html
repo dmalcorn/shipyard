@@ -87,6 +87,12 @@ header {
   transform: rotate(-5deg);
 }
 
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
 .health-badge {
   display: flex;
   align-items: center;
@@ -118,6 +124,38 @@ header {
 .health-badge.error .health-dot { background: var(--red-alert); box-shadow: 0 0 8px var(--red-alert); }
 .health-badge.checking .health-dot { background: var(--text-dim); animation: pulse-dim 1.2s ease infinite; }
 
+.live-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.35rem 0.8rem;
+  border-radius: 20px;
+  border: 1px solid var(--amber);
+  background: var(--amber-glow);
+  color: var(--amber);
+  animation: live-pulse 2s ease infinite;
+  display: none;
+}
+
+.live-badge.active { display: flex; }
+
+.live-badge .live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 8px var(--amber);
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 @keyframes pulse-dim {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
@@ -125,9 +163,8 @@ header {
 
 /* ── Layout ── */
 .bridge {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: auto auto;
+  display: flex;
+  flex-direction: column;
   gap: 1px;
   max-width: 1400px;
   margin: 1.5rem auto;
@@ -171,215 +208,71 @@ header {
   letter-spacing: 0.05em;
 }
 
-.tag-post { background: rgba(96, 165, 250, 0.15); color: var(--blue-data); }
 .tag-live { background: var(--amber-glow); color: var(--amber); }
+.tag-replay { background: var(--blue-glow); color: var(--blue-data); }
+
+.panel-header .spacer { flex: 1; }
 
 .panel-body { padding: 1.1rem; flex: 1; }
 
-/* ── Instruct Panel (spans left column, both rows) ── */
-.panel-instruct {
-  grid-column: 1;
-  grid-row: 1 / 3;
-  min-height: 600px;
+/* ── Session Picker ── */
+.session-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.instruct-output {
+.session-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-weld);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.6rem;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  outline: none;
+  cursor: pointer;
+  min-width: 220px;
+}
+
+.session-select:focus { border-color: var(--amber); }
+
+/* ── Terminal Viewer ── */
+.terminal {
   background: var(--bg-input);
   border: 1px solid var(--border-weld);
   border-radius: var(--radius);
   padding: 0.9rem;
-  min-height: 320px;
-  max-height: 460px;
+  min-height: 500px;
+  max-height: 70vh;
   overflow-y: auto;
-  font-size: 0.8rem;
-  line-height: 1.65;
-  color: var(--text-secondary);
-  margin-bottom: 0.8rem;
-  scroll-behavior: smooth;
-}
-
-.instruct-output::-webkit-scrollbar { width: 5px; }
-.instruct-output::-webkit-scrollbar-track { background: transparent; }
-.instruct-output::-webkit-scrollbar-thumb { background: var(--border-weld); border-radius: 3px; }
-
-.msg { margin-bottom: 0.7rem; padding-bottom: 0.7rem; border-bottom: 1px solid rgba(42, 47, 62, 0.4); }
-.msg:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
-.msg-role {
-  font-size: 0.65rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  margin-bottom: 0.25rem;
-}
-.msg-role.human { color: var(--amber); }
-.msg-role.agent { color: var(--blue-data); }
-.msg-body { color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
-.msg-meta { font-size: 0.6rem; color: var(--text-dim); margin-top: 0.2rem; }
-
-.instruct-form { display: flex; gap: 0.5rem; }
-
-.instruct-input {
-  flex: 1;
-  background: var(--bg-input);
-  border: 1px solid var(--border-weld);
-  border-radius: var(--radius);
-  padding: 0.7rem 0.9rem;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  outline: none;
-  transition: border-color var(--transition);
-}
-
-.instruct-input:focus { border-color: var(--amber); }
-.instruct-input::placeholder { color: var(--text-dim); }
-
-/* ── Buttons ── */
-.btn {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 0.6rem 1.2rem;
-  border: 1px solid var(--border-weld);
-  border-radius: var(--radius);
-  background: var(--bg-panel);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition);
-  white-space: nowrap;
-}
-
-.btn:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-glow); }
-.btn:active { transform: scale(0.97); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
-
-.btn-primary {
-  background: var(--amber);
-  color: var(--bg-hull);
-  border-color: var(--amber);
-}
-.btn-primary:hover { background: var(--amber-dim); border-color: var(--amber-dim); color: var(--bg-hull); }
-
-.btn-danger { border-color: var(--red-alert); color: var(--red-alert); }
-.btn-danger:hover { background: var(--red-glow); }
-
-/* ── Intake Panel ── */
-.panel-intake { grid-column: 2; grid-row: 1; }
-
-.form-group { margin-bottom: 0.8rem; }
-.form-label {
-  display: block;
-  font-size: 0.65rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-dim);
-  margin-bottom: 0.35rem;
-}
-
-.form-input {
-  width: 100%;
-  background: var(--bg-input);
-  border: 1px solid var(--border-weld);
-  border-radius: var(--radius);
-  padding: 0.55rem 0.75rem;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
   font-size: 0.78rem;
-  outline: none;
-  transition: border-color var(--transition);
-}
-
-.form-input:focus { border-color: var(--amber); }
-.form-input::placeholder { color: var(--text-dim); }
-
-.intake-result {
-  background: var(--bg-input);
-  border: 1px solid var(--border-weld);
-  border-radius: var(--radius);
-  padding: 0.7rem;
-  font-size: 0.75rem;
+  line-height: 1.7;
   color: var(--text-secondary);
-  min-height: 60px;
-  margin-top: 0.6rem;
-  display: none;
+  scroll-behavior: smooth;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.intake-result.visible { display: block; }
+.terminal::-webkit-scrollbar { width: 5px; }
+.terminal::-webkit-scrollbar-track { background: transparent; }
+.terminal::-webkit-scrollbar-thumb { background: var(--border-weld); border-radius: 3px; }
 
-/* ── Rebuild Panel ── */
-.panel-rebuild { grid-column: 2; grid-row: 2; }
+.terminal .line { display: block; }
+.terminal .line-log { color: var(--text-secondary); }
+.terminal .line-stage { color: var(--amber); font-weight: 700; }
+.terminal .line-error { color: var(--red-alert); }
+.terminal .line-success { color: var(--green-ok); }
+.terminal .line-info { color: var(--blue-data); }
 
-.rebuild-stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.5rem;
-  margin-bottom: 0.8rem;
-}
-
-.stat-box {
-  background: var(--bg-input);
-  border: 1px solid var(--border-weld);
-  border-radius: var(--radius);
-  padding: 0.55rem;
-  text-align: center;
-}
-
-.stat-value {
-  font-family: var(--font-display);
-  font-weight: 900;
-  font-size: 1.4rem;
-  color: var(--text-primary);
-  line-height: 1;
-}
-
-.stat-label {
-  font-size: 0.55rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.terminal-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
   color: var(--text-dim);
-  margin-top: 0.2rem;
-}
-
-.rebuild-actions { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; }
-
-.rebuild-status {
-  font-size: 0.75rem;
-  color: var(--text-dim);
-  padding: 0.4rem 0;
-}
-
-.intervention-section {
-  border-top: 1px solid var(--border-weld);
-  padding-top: 0.8rem;
-  margin-top: 0.6rem;
-  display: none;
-}
-
-.intervention-section.visible { display: block; }
-
-.intervention-section .form-group { margin-bottom: 0.5rem; }
-
-.intervention-actions { display: flex; gap: 0.4rem; margin-top: 0.6rem; }
-
-/* ── Progress bar ── */
-.progress-bar {
-  width: 100%;
-  height: 6px;
-  background: var(--bg-input);
-  border-radius: 3px;
-  overflow: hidden;
-  margin-bottom: 0.8rem;
-}
-
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--amber-dim), var(--amber));
-  border-radius: 3px;
-  width: 0%;
-  transition: width 0.5s ease;
+  font-style: italic;
+  font-size: 0.85rem;
 }
 
 /* ── Spinner ── */
@@ -398,11 +291,7 @@ header {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Flow Graph ── */
-.panel-flow {
-  grid-column: 1 / -1;
-  grid-row: 3;
-  margin-top: 0.5rem;
-}
+.panel-flow { margin-top: 0.5rem; }
 
 .flow-lanes {
   display: flex;
@@ -504,23 +393,11 @@ header {
   transition: border-left-color 0.35s ease;
 }
 
-.flow-connector.lit {
-  background: var(--amber-dim);
-}
+.flow-connector.lit { background: var(--amber-dim); }
+.flow-connector.lit::after { border-left-color: var(--amber-dim); }
+.flow-connector.done { background: var(--green-ok); }
+.flow-connector.done::after { border-left-color: var(--green-ok); }
 
-.flow-connector.lit::after {
-  border-left-color: var(--amber-dim);
-}
-
-.flow-connector.done {
-  background: var(--green-ok);
-}
-
-.flow-connector.done::after {
-  border-left-color: var(--green-ok);
-}
-
-/* ── Rebuild sub-loop bracket ── */
 .flow-loop {
   display: flex;
   align-items: center;
@@ -532,9 +409,7 @@ header {
   transition: border-color 0.35s ease;
 }
 
-.flow-loop.active-loop {
-  border-color: var(--amber-dim);
-}
+.flow-loop.active-loop { border-color: var(--amber-dim); }
 
 .flow-loop-label {
   position: absolute;
@@ -549,191 +424,116 @@ header {
   padding: 0 0.3rem;
 }
 
+/* ── Stats Bar ── */
+.stats-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.stat-box {
+  background: var(--bg-input);
+  border: 1px solid var(--border-weld);
+  border-radius: var(--radius);
+  padding: 0.55rem 1rem;
+  text-align: center;
+  flex: 1;
+}
+
+.stat-value {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 1.4rem;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.stat-label {
+  font-size: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-top: 0.2rem;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-input);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--amber-dim), var(--amber));
+  border-radius: 3px;
+  width: 0%;
+  transition: width 0.5s ease;
+}
+
 /* ── Responsive ── */
 @media (max-width: 900px) {
-  .bridge {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
-  }
-  .panel-instruct { grid-column: 1; grid-row: auto; min-height: 400px; }
-  .panel-intake { grid-column: 1; grid-row: auto; }
-  .panel-rebuild { grid-column: 1; grid-row: auto; }
-  .panel-flow { grid-column: 1; }
-  .rebuild-stats { grid-template-columns: repeat(2, 1fr); }
   .flow-lane { flex-wrap: wrap; }
   .flow-lane-label { width: 100%; text-align: left; padding-bottom: 0.3rem; }
+  .stats-bar { flex-wrap: wrap; }
+  .stat-box { min-width: 80px; }
 }
 </style>
 </head>
 <body>
 
-<!-- ═══ Header ═══ -->
+<!-- Header -->
 <header>
   <div class="logo">
-    <div class="logo-icon">⚓</div>
+    <div class="logo-icon">&#9875;</div>
     Shipyard
   </div>
-  <div class="health-badge checking" id="healthBadge">
-    <div class="health-dot"></div>
-    <span id="healthText">Checking...</span>
+  <div class="header-controls">
+    <div class="live-badge" id="liveBadge">
+      <div class="live-dot"></div>
+      <span>LIVE</span>
+    </div>
+    <div class="health-badge checking" id="healthBadge">
+      <div class="health-dot"></div>
+      <span id="healthText">Checking...</span>
+    </div>
   </div>
 </header>
 
-<!-- ═══ Bridge Grid ═══ -->
+<!-- Main Content -->
 <div class="bridge">
 
-  <!-- ── Instruct Panel ── -->
-  <div class="panel panel-instruct">
+  <!-- Terminal Panel -->
+  <div class="panel">
     <div class="panel-header">
-      Agent Terminal
-      <span class="tag tag-post">POST /instruct</span>
+      Pipeline Output
+      <span class="tag tag-live" id="modeTag">LIVE</span>
+      <div class="spacer"></div>
+      <div class="session-picker">
+        <select class="session-select" id="sessionSelect">
+          <option value="">-- select session --</option>
+        </select>
+      </div>
     </div>
-    <div class="panel-body" style="display:flex;flex-direction:column;">
-      <div class="instruct-output" id="instructOutput">
-        <div style="color:var(--text-dim);font-style:italic;">Awaiting instructions...</div>
-      </div>
-      <form class="instruct-form" id="instructForm" autocomplete="off">
-        <input
-          type="text"
-          class="instruct-input"
-          id="instructInput"
-          placeholder="Enter instruction for the agent..."
-          required
-        />
-        <button type="submit" class="btn btn-primary" id="instructBtn">Send</button>
-      </form>
-    </div>
-  </div>
-
-  <!-- ── Intake Panel ── -->
-  <div class="panel panel-intake">
-    <div class="panel-header">
-      Spec Intake
-      <span class="tag tag-post">POST /intake</span>
-    </div>
-    <div class="panel-body">
-      <div class="form-group">
-        <label class="form-label" for="specDir">Spec Directory</label>
-        <input type="text" class="form-input" id="specDir" placeholder="/path/to/spec/docs" />
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="targetDir">Target Output Directory</label>
-        <input type="text" class="form-input" id="targetDir" placeholder="./target/" value="./target/" />
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="intakeSession">Session ID (optional)</label>
-        <input type="text" class="form-input" id="intakeSession" placeholder="auto-generated if blank" />
-      </div>
-      <button class="btn btn-primary" id="intakeBtn" onclick="runIntake()">Run Intake</button>
-      <div class="intake-result" id="intakeResult"></div>
-    </div>
-  </div>
-
-  <!-- ── Rebuild Panel ── -->
-  <div class="panel panel-rebuild">
-    <div class="panel-header">
-      Rebuild Control
-      <span class="tag tag-live">LIVE</span>
-    </div>
-    <div class="panel-body">
-      <div class="form-group">
-        <label class="form-label" for="rebuildDir">Target Project Directory</label>
-        <input type="text" class="form-input" id="rebuildDir" placeholder="/path/to/project" />
-      </div>
-
-      <div class="rebuild-actions">
-        <button class="btn btn-primary" id="rebuildBtn" onclick="runRebuild()">Start Rebuild</button>
-        <button class="btn" onclick="toggleIntervention()">Intervene</button>
-      </div>
-
-      <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
-
-      <div class="rebuild-stats">
-        <div class="stat-box">
-          <div class="stat-value" id="statCompleted">—</div>
-          <div class="stat-label">Completed</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value" id="statFailed">—</div>
-          <div class="stat-label">Failed</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value" id="statInterventions">—</div>
-          <div class="stat-label">Interventions</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value" id="statTotal">—</div>
-          <div class="stat-label">Total</div>
-        </div>
-      </div>
-
-      <div class="rebuild-status" id="rebuildStatus">No active rebuild.</div>
-
-      <!-- Intervention Form -->
-      <div class="intervention-section" id="interventionSection">
-        <div class="form-group">
-          <label class="form-label">What Broke</label>
-          <input type="text" class="form-input" id="ivWhatBroke" placeholder="Describe the failure..." />
-        </div>
-        <div class="form-group">
-          <label class="form-label">What Developer Did</label>
-          <input type="text" class="form-input" id="ivWhatDev" placeholder="Manual steps taken..." />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Agent Limitation</label>
-          <input type="text" class="form-input" id="ivLimitation" placeholder="Why the agent couldn't handle it..." />
-        </div>
-        <div class="intervention-actions">
-          <button class="btn btn-primary" onclick="submitIntervention('fix')">Fix</button>
-          <button class="btn" onclick="submitIntervention('skip')">Skip</button>
-          <button class="btn btn-danger" onclick="submitIntervention('abort')">Abort</button>
-        </div>
+    <div class="panel-body" style="padding:0;">
+      <div class="terminal" id="terminal">
+        <div class="terminal-empty" id="terminalEmpty">No active pipeline. Select a past session to replay.</div>
       </div>
     </div>
   </div>
 
-  <!-- ── Pipeline Flow Graph ── -->
+  <!-- Flow Graph + Stats -->
   <div class="panel panel-flow">
     <div class="panel-header">
-      Pipeline Flow
-      <span class="tag tag-live">LIVE</span>
+      Rebuild Pipeline
+      <span class="tag tag-live">FLOW</span>
+      <div class="spacer"></div>
+      <span id="storyLabel" style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-dim);"></span>
     </div>
     <div class="panel-body">
       <div class="flow-lanes">
-
-        <!-- Instruct Flow -->
-        <div class="flow-lane">
-          <div class="flow-lane-label">Instruct</div>
-          <div class="flow-nodes">
-            <div class="flow-node idle" id="fi-input">User Input</div>
-            <div class="flow-connector" id="fc-i1"></div>
-            <div class="flow-node idle" id="fi-agent">Agent Node</div>
-            <div class="flow-connector" id="fc-i2"></div>
-            <div class="flow-node idle" id="fi-decide">Should Continue?</div>
-            <div class="flow-connector" id="fc-i3"></div>
-            <div class="flow-node idle" id="fi-tools">Tool Calls</div>
-            <div class="flow-connector" id="fc-i4"></div>
-            <div class="flow-node idle" id="fi-response">Response</div>
-          </div>
-        </div>
-
-        <!-- Intake Flow -->
-        <div class="flow-lane">
-          <div class="flow-lane-label">Intake</div>
-          <div class="flow-nodes">
-            <div class="flow-node idle" id="fn-read">Read Specs</div>
-            <div class="flow-connector" id="fc-n1"></div>
-            <div class="flow-node idle" id="fn-summarize">Summarize</div>
-            <div class="flow-connector" id="fc-n2"></div>
-            <div class="flow-node idle" id="fn-backlog">Gen Backlog</div>
-            <div class="flow-connector" id="fc-n3"></div>
-            <div class="flow-node idle" id="fn-write">Write Output</div>
-            <div class="flow-connector" id="fc-n4"></div>
-            <div class="flow-node idle" id="fn-done">Complete</div>
-          </div>
-        </div>
-
-        <!-- Rebuild Flow -->
         <div class="flow-lane">
           <div class="flow-lane-label">Rebuild</div>
           <div class="flow-nodes">
@@ -755,8 +555,27 @@ header {
             <div class="flow-node idle" id="fr-done">Complete</div>
           </div>
         </div>
-
       </div>
+
+      <div class="stats-bar">
+        <div class="stat-box">
+          <div class="stat-value" id="statCompleted">&mdash;</div>
+          <div class="stat-label">Completed</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="statFailed">&mdash;</div>
+          <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="statInterventions">&mdash;</div>
+          <div class="stat-label">Interventions</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="statTotal">&mdash;</div>
+          <div class="stat-label">Total</div>
+        </div>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
     </div>
   </div>
 
@@ -764,139 +583,344 @@ header {
 
 <script>
 const API = window.location.origin;
-let instructSessionId = null;
-let rebuildSessionId = null;
 
-// ── Flow Graph State Management ──
+// ── State ──
+let currentMode = 'idle';     // 'idle' | 'live' | 'replay'
+let liveSessionId = null;
+let liveEventSource = null;
+let pollInterval = null;
+let lastEventId = 0;
+
+// ── DOM refs ──
+const terminal = document.getElementById('terminal');
+const terminalEmpty = document.getElementById('terminalEmpty');
+const sessionSelect = document.getElementById('sessionSelect');
+const liveBadge = document.getElementById('liveBadge');
+const modeTag = document.getElementById('modeTag');
+const storyLabel = document.getElementById('storyLabel');
+
+// ── Helpers ──
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function classifyLine(text) {
+  const lower = text.toLowerCase();
+  if (lower.includes('error') || lower.includes('failed') || lower.includes('traceback')) return 'line-error';
+  if (lower.includes('completed') || lower.includes('passed') || lower.includes('success')) return 'line-success';
+  if (lower.includes('stage:') || lower.includes('>>>') || lower.includes('===')) return 'line-stage';
+  return 'line-log';
+}
+
+function appendLine(text, eventType) {
+  terminalEmpty.style.display = 'none';
+  const span = document.createElement('span');
+  span.className = 'line';
+  if (eventType === 'stage') {
+    span.className += ' line-stage';
+  } else if (eventType === 'error') {
+    span.className += ' line-error';
+  } else {
+    span.className += ' ' + classifyLine(text);
+  }
+  span.textContent = text + '\n';
+  terminal.appendChild(span);
+  terminal.scrollTop = terminal.scrollHeight;
+}
+
+function clearTerminal() {
+  terminal.innerHTML = '';
+  terminalEmpty.style.display = 'flex';
+  terminal.appendChild(terminalEmpty);
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  if (mode === 'live') {
+    liveBadge.classList.add('active');
+    modeTag.textContent = 'LIVE';
+    modeTag.className = 'tag tag-live';
+  } else if (mode === 'replay') {
+    liveBadge.classList.remove('active');
+    modeTag.textContent = 'REPLAY';
+    modeTag.className = 'tag tag-replay';
+  } else {
+    liveBadge.classList.remove('active');
+    modeTag.textContent = '';
+    modeTag.className = 'tag';
+  }
+}
+
+// ── Flow Graph ──
+const REBUILD_NODES = ['fr-load','fr-init','fr-tdd','fr-test','fr-review','fr-tag','fr-done'];
+const REBUILD_CONNS = ['fc-r1','fc-r2','fc-r3','fc-r4','fc-r5','fc-r6'];
+const STAGE_INDEX = {
+  loading_backlog:0, init_project:1, tdd_pipeline:2, testing:3, reviewing:4, git_tag:5, complete:6
+};
+
 function setFlowState(nodeId, state) {
   const el = document.getElementById(nodeId);
-  if (!el) return;
-  el.className = 'flow-node ' + state;
+  if (el) el.className = 'flow-node ' + state;
 }
 
 function setConnector(connId, state) {
   const el = document.getElementById(connId);
-  if (!el) return;
-  el.className = 'flow-connector' + (state ? ' ' + state : '');
+  if (el) el.className = 'flow-connector' + (state ? ' ' + state : '');
 }
 
-function resetFlow(prefix, nodeIds, connIds) {
-  nodeIds.forEach(id => setFlowState(id, 'idle'));
-  connIds.forEach(id => setConnector(id, ''));
-  const loop = document.getElementById('fr-loop');
-  if (loop) loop.classList.remove('active-loop');
+function resetFlow() {
+  REBUILD_NODES.forEach(id => setFlowState(id, 'idle'));
+  REBUILD_CONNS.forEach(id => setConnector(id, ''));
+  document.getElementById('fr-loop').classList.remove('active-loop');
 }
 
-function advanceFlow(nodeIds, connIds, activeIdx) {
-  nodeIds.forEach((id, i) => {
+function advanceFlow(activeIdx) {
+  REBUILD_NODES.forEach((id, i) => {
     if (i < activeIdx) setFlowState(id, 'completed');
     else if (i === activeIdx) setFlowState(id, 'active');
     else setFlowState(id, 'idle');
   });
-  connIds.forEach((id, i) => {
+  REBUILD_CONNS.forEach((id, i) => {
     if (i < activeIdx) setConnector(id, 'done');
     else if (i === activeIdx) setConnector(id, 'lit');
     else setConnector(id, '');
   });
-}
-
-function completeFlow(nodeIds, connIds) {
-  nodeIds.forEach(id => setFlowState(id, 'completed'));
-  connIds.forEach(id => setConnector(id, 'done'));
-}
-
-function failFlow(nodeIds, connIds, failIdx) {
-  nodeIds.forEach((id, i) => {
-    if (i < failIdx) setFlowState(id, 'completed');
-    else if (i === failIdx) setFlowState(id, 'failed');
-    else setFlowState(id, 'idle');
-  });
-  connIds.forEach((id, i) => {
-    if (i < failIdx) setConnector(id, 'done');
-    else setConnector(id, '');
-  });
-}
-
-// Flow node/connector ID arrays
-const INSTRUCT_NODES = ['fi-input', 'fi-agent', 'fi-decide', 'fi-tools', 'fi-response'];
-const INSTRUCT_CONNS = ['fc-i1', 'fc-i2', 'fc-i3', 'fc-i4'];
-
-const INTAKE_NODES = ['fn-read', 'fn-summarize', 'fn-backlog', 'fn-write', 'fn-done'];
-const INTAKE_CONNS = ['fc-n1', 'fc-n2', 'fc-n3', 'fc-n4'];
-
-const REBUILD_NODES = ['fr-load', 'fr-init', 'fr-tdd', 'fr-test', 'fr-review', 'fr-tag', 'fr-done'];
-const REBUILD_CONNS = ['fc-r1', 'fc-r2', 'fc-r3', 'fc-r4', 'fc-r5', 'fc-r6'];
-
-// ── Server-side stage → flow node index mapping ──
-const STAGE_MAP = {
-  instruct: {
-    user_input: 0, agent_node: 1, should_continue: 2, tool_calls: 3, response: 4,
-    nodes: INSTRUCT_NODES, conns: INSTRUCT_CONNS
-  },
-  intake: {
-    reading_specs: 0, summarizing: 1, generating_backlog: 2, writing_output: 3, complete: 4,
-    nodes: INTAKE_NODES, conns: INTAKE_CONNS
-  },
-  rebuild: {
-    loading_backlog: 0, init_project: 1, tdd_pipeline: 2, testing: 3, reviewing: 4, git_tag: 5, complete: 6,
-    nodes: REBUILD_NODES, conns: REBUILD_CONNS
+  if (activeIdx >= 2 && activeIdx <= 5) {
+    document.getElementById('fr-loop').classList.add('active-loop');
+  } else {
+    document.getElementById('fr-loop').classList.remove('active-loop');
   }
-};
+}
 
-// ── Poll server for real pipeline stage ──
-function startStagePoller(sessionId, pipelineType, onDone) {
-  const map = STAGE_MAP[pipelineType];
-  if (!map) return null;
+function completeFlow() {
+  REBUILD_NODES.forEach(id => setFlowState(id, 'completed'));
+  REBUILD_CONNS.forEach(id => setConnector(id, 'done'));
+  document.getElementById('fr-loop').classList.remove('active-loop');
+}
 
-  const interval = setInterval(async () => {
+function updateFlowFromEvent(text, eventType) {
+  if (eventType !== 'stage') return;
+  const stage = text.trim().toLowerCase().replace(/\s+/g, '_');
+  const idx = STAGE_INDEX[stage];
+  if (idx !== undefined) {
+    if (stage === 'complete') completeFlow();
+    else advanceFlow(idx);
+  }
+}
+
+function updateStats(metadata) {
+  if (!metadata) return;
+  if (metadata.completed !== undefined) document.getElementById('statCompleted').textContent = metadata.completed;
+  if (metadata.failed !== undefined) document.getElementById('statFailed').textContent = metadata.failed;
+  if (metadata.interventions !== undefined) document.getElementById('statInterventions').textContent = metadata.interventions;
+  if (metadata.total_stories !== undefined) document.getElementById('statTotal').textContent = metadata.total_stories;
+  if (metadata.total_stories > 0 && metadata.story_index !== undefined) {
+    const pct = (metadata.story_index / metadata.total_stories) * 100;
+    document.getElementById('rebuildProgress').style.width = pct + '%';
+  }
+  if (metadata.story && metadata.epic) {
+    storyLabel.innerHTML = escapeHtml(metadata.epic) + ' / ' + escapeHtml(metadata.story);
+  }
+}
+
+function resetStats() {
+  ['statCompleted','statFailed','statInterventions','statTotal'].forEach(id => {
+    document.getElementById(id).innerHTML = '&mdash;';
+  });
+  document.getElementById('rebuildProgress').style.width = '0%';
+  storyLabel.textContent = '';
+}
+
+// ── Live Mode (SSE) ──
+function startLive(sessionId) {
+  stopLive();
+  liveSessionId = sessionId;
+  clearTerminal();
+  resetFlow();
+  resetStats();
+  setMode('live');
+  appendLine('Connected to live session: ' + sessionId, 'stage');
+
+  liveEventSource = new EventSource(API + '/api/stream/' + sessionId);
+
+  liveEventSource.addEventListener('log', function(e) {
+    appendLine(e.data, 'log');
+  });
+
+  liveEventSource.addEventListener('stage', function(e) {
+    appendLine('>>> STAGE: ' + e.data, 'stage');
+    updateFlowFromEvent(e.data, 'stage');
+  });
+
+  liveEventSource.addEventListener('error_event', function(e) {
+    appendLine(e.data, 'error');
+  });
+
+  liveEventSource.addEventListener('done', function(e) {
+    appendLine('\n--- Session ended ---', 'stage');
+    completeFlow();
+    liveEventSource.close();
+    liveEventSource = null;
+    setMode('idle');
+    loadSessionList();
+  });
+
+  liveEventSource.onerror = function() {
+    // SSE connection lost — fall back to polling
+    if (liveEventSource) liveEventSource.close();
+    liveEventSource = null;
+    startPolling(sessionId);
+  };
+}
+
+function stopLive() {
+  if (liveEventSource) {
+    liveEventSource.close();
+    liveEventSource = null;
+  }
+  stopPolling();
+  liveSessionId = null;
+}
+
+// ── Polling fallback ──
+function startPolling(sessionId) {
+  stopPolling();
+  lastEventId = 0;
+  setMode('live');
+
+  pollInterval = setInterval(async () => {
     try {
-      const r = await fetch(`${API}/pipeline/${sessionId}/stage`, { signal: AbortSignal.timeout(3000) });
+      const r = await fetch(API + '/api/logs/' + sessionId + '?after_id=' + lastEventId);
       const d = await r.json();
-
-      if (d.status === 'unknown') return; // session not registered yet, keep polling
-
-      const idx = map[d.stage];
-      if (idx !== undefined && d.status === 'running') {
-        advanceFlow(map.nodes, map.conns, idx);
-        // Activate rebuild loop bracket when inside story loop
-        if (pipelineType === 'rebuild' && idx >= 2 && idx <= 5) {
-          document.getElementById('fr-loop').classList.add('active-loop');
+      for (const ev of d.events) {
+        if (ev.event_type === 'stage') {
+          appendLine('>>> STAGE: ' + ev.text, 'stage');
+          updateFlowFromEvent(ev.text, 'stage');
+        } else {
+          appendLine(ev.text, ev.event_type);
         }
-        // Update rebuild stats from story_progress if available
-        if (pipelineType === 'rebuild' && d.story_progress) {
-          const sp = d.story_progress;
-          if (sp.completed !== undefined) document.getElementById('statCompleted').textContent = sp.completed;
-          if (sp.failed !== undefined) document.getElementById('statFailed').textContent = sp.failed;
-          if (sp.total_stories !== undefined) document.getElementById('statTotal').textContent = sp.total_stories;
-          if (sp.total_stories > 0 && sp.story_index !== undefined) {
-            const pct = (sp.story_index / sp.total_stories) * 100;
-            document.getElementById('rebuildProgress').style.width = pct + '%';
-          }
-          if (sp.story && sp.epic) {
-            document.getElementById('rebuildStatus').innerHTML =
-              `<span class="spinner"></span> <strong>${escapeHtml(sp.epic)}</strong> / ${escapeHtml(sp.story)} (${sp.story_index || '?'}/${sp.total_stories || '?'})`;
-          }
-        }
-      } else if (d.status === 'completed') {
-        clearInterval(interval);
-        completeFlow(map.nodes, map.conns);
-        if (pipelineType === 'rebuild') document.getElementById('fr-loop').classList.remove('active-loop');
-        if (onDone) onDone(d);
-        setTimeout(() => resetFlow('', map.nodes, map.conns), 5000);
-      } else if (d.status === 'failed') {
-        clearInterval(interval);
-        const failIdx = idx !== undefined ? idx : 0;
-        failFlow(map.nodes, map.conns, failIdx);
-        if (pipelineType === 'rebuild') document.getElementById('fr-loop').classList.remove('active-loop');
-        if (onDone) onDone(d);
-        setTimeout(() => resetFlow('', map.nodes, map.conns), 5000);
+        if (ev.metadata) updateStats(ev.metadata);
       }
-    } catch {
-      // Network error during poll — ignore, retry on next tick
-    }
-  }, 15000);
+      if (d.latest_id > lastEventId) lastEventId = d.latest_id;
 
-  return interval;
+      // Check if session is still active
+      const active = await fetch(API + '/api/active');
+      const ad = await active.json();
+      if (!ad.active || ad.active.session_id !== sessionId) {
+        appendLine('\n--- Session ended ---', 'stage');
+        completeFlow();
+        stopPolling();
+        setMode('idle');
+        loadSessionList();
+      }
+    } catch (e) {
+      // Network error, retry on next tick
+    }
+  }, 2000);
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
+
+// ── Replay Mode ──
+async function loadReplay(sessionId) {
+  stopLive();
+  clearTerminal();
+  resetFlow();
+  resetStats();
+  setMode('replay');
+  appendLine('Loading session: ' + sessionId + '...', 'stage');
+
+  try {
+    const r = await fetch(API + '/api/logs/' + sessionId);
+    const d = await r.json();
+
+    clearTerminal();
+    if (d.events.length === 0) {
+      terminalEmpty.textContent = 'No log events found for this session.';
+      terminalEmpty.style.display = 'flex';
+      return;
+    }
+
+    for (const ev of d.events) {
+      if (ev.event_type === 'stage') {
+        appendLine('>>> STAGE: ' + ev.text, 'stage');
+        updateFlowFromEvent(ev.text, 'stage');
+      } else {
+        appendLine(ev.text, ev.event_type);
+      }
+      if (ev.metadata) updateStats(ev.metadata);
+    }
+    completeFlow();
+  } catch (e) {
+    appendLine('Failed to load session: ' + e.message, 'error');
+  }
+}
+
+// ── Session List ──
+async function loadSessionList() {
+  try {
+    const r = await fetch(API + '/api/sessions');
+    const sessions = await r.json();
+    const current = sessionSelect.value;
+
+    // Keep the first placeholder option
+    sessionSelect.innerHTML = '<option value="">-- select session --</option>';
+
+    for (const s of sessions) {
+      const opt = document.createElement('option');
+      opt.value = s.session_id;
+      const date = s.started_at ? new Date(s.started_at).toLocaleString() : 'unknown';
+      const status = s.status === 'running' ? ' [LIVE]' : '';
+      opt.textContent = date + ' (' + s.pipeline_type + ')' + status + ' — ' + s.event_count + ' events';
+      if (s.session_id === current) opt.selected = true;
+      sessionSelect.appendChild(opt);
+    }
+  } catch (e) {
+    // Silently fail — sessions list is non-critical
+  }
+}
+
+sessionSelect.addEventListener('change', function() {
+  const sessionId = this.value;
+  if (!sessionId) {
+    stopLive();
+    clearTerminal();
+    resetFlow();
+    resetStats();
+    setMode('idle');
+    return;
+  }
+  // Check if this is the active session
+  fetch(API + '/api/active').then(r => r.json()).then(d => {
+    if (d.active && d.active.session_id === sessionId) {
+      startLive(sessionId);
+    } else {
+      loadReplay(sessionId);
+    }
+  }).catch(() => {
+    loadReplay(sessionId);
+  });
+});
+
+// ── Auto-detect live session on load ──
+async function checkForLiveSession() {
+  try {
+    const r = await fetch(API + '/api/active');
+    const d = await r.json();
+    if (d.active) {
+      sessionSelect.value = d.active.session_id;
+      startLive(d.active.session_id);
+    }
+  } catch (e) {
+    // No active session or server not reachable
+  }
 }
 
 // ── Health Check ──
@@ -904,7 +928,7 @@ async function checkHealth() {
   const badge = document.getElementById('healthBadge');
   const text = document.getElementById('healthText');
   try {
-    const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(5000) });
+    const r = await fetch(API + '/health', { signal: AbortSignal.timeout(5000) });
     const d = await r.json();
     if (d.status === 'ok') {
       badge.className = 'health-badge ok';
@@ -919,253 +943,12 @@ async function checkHealth() {
   }
 }
 
+// ── Init ──
 checkHealth();
 setInterval(checkHealth, 30000);
-
-// ── Instruct ──
-const instructForm = document.getElementById('instructForm');
-const instructInput = document.getElementById('instructInput');
-const instructOutput = document.getElementById('instructOutput');
-const instructBtn = document.getElementById('instructBtn');
-let firstMessage = true;
-
-function appendMessage(role, body, meta) {
-  if (firstMessage) {
-    instructOutput.innerHTML = '';
-    firstMessage = false;
-  }
-  const div = document.createElement('div');
-  div.className = 'msg';
-  div.innerHTML = `<div class="msg-role ${role}">${role === 'human' ? '▸ You' : '◂ Agent'}</div><div class="msg-body">${escapeHtml(body)}</div>${meta ? `<div class="msg-meta">${escapeHtml(meta)}</div>` : ''}`;
-  instructOutput.appendChild(div);
-  instructOutput.scrollTop = instructOutput.scrollHeight;
-}
-
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-instructForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const message = instructInput.value.trim();
-  if (!message) return;
-
-  appendMessage('human', message);
-  instructInput.value = '';
-  instructBtn.disabled = true;
-  instructBtn.innerHTML = '<span class="spinner"></span>';
-
-  // Start with user_input shown as active immediately
-  advanceFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 0);
-
-  try {
-    const payload = { message };
-    if (instructSessionId) payload.session_id = instructSessionId;
-
-    // Fire the request — polling will update the flow graph from server state
-    const fetchPromise = fetch(`${API}/instruct`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    // Start polling for real server-side stage (session_id may be generated server-side)
-    // We poll after a short delay to let the server register the session
-    let poller = null;
-    const r = await fetchPromise;
-    const d = await r.json();
-
-    if (r.ok) {
-      instructSessionId = d.session_id;
-      appendMessage('agent', d.response, `session: ${d.session_id} · messages: ${d.messages_count}`);
-      // Server already completed — show completed flow
-      completeFlow(INSTRUCT_NODES, INSTRUCT_CONNS);
-      setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 4000);
-    } else {
-      appendMessage('agent', `Error ${r.status}: ${JSON.stringify(d)}`, null);
-      failFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 3);
-      setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 5000);
-    }
-    if (poller) clearInterval(poller);
-  } catch (err) {
-    appendMessage('agent', `Network error: ${err.message}`, null);
-    failFlow(INSTRUCT_NODES, INSTRUCT_CONNS, 1);
-    setTimeout(() => resetFlow('fi', INSTRUCT_NODES, INSTRUCT_CONNS), 5000);
-  } finally {
-    instructBtn.disabled = false;
-    instructBtn.textContent = 'Send';
-  }
-});
-
-// ── Intake ──
-async function runIntake() {
-  const btn = document.getElementById('intakeBtn');
-  const result = document.getElementById('intakeResult');
-  const specDir = document.getElementById('specDir').value.trim();
-  const targetDir = document.getElementById('targetDir').value.trim();
-  const sessionId = document.getElementById('intakeSession').value.trim();
-
-  if (!specDir) { alert('Spec directory is required.'); return; }
-
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Running...';
-  result.className = 'intake-result visible';
-  result.textContent = 'Pipeline running...';
-
-  // Show initial flow state
-  advanceFlow(INTAKE_NODES, INTAKE_CONNS, 0);
-
-  try {
-    const payload = { spec_dir: specDir, target_dir: targetDir || './target/' };
-    if (sessionId) payload.session_id = sessionId;
-
-    // Generate session ID client-side so we can poll
-    const clientSessionId = sessionId || crypto.randomUUID();
-    payload.session_id = clientSessionId;
-
-    // Start polling for real server stage updates
-    const poller = startStagePoller(clientSessionId, 'intake', null);
-
-    const r = await fetch(`${API}/intake`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (poller) clearInterval(poller);
-    const d = await r.json();
-
-    if (r.ok) {
-      result.innerHTML = `<strong style="color:var(--green-ok)">Status:</strong> ${escapeHtml(d.pipeline_status)}<br><strong>Session:</strong> ${escapeHtml(d.session_id)}<br><strong>Output:</strong> ${escapeHtml(d.output_dir)}${d.error ? `<br><strong style="color:var(--red-alert)">Error:</strong> ${escapeHtml(d.error)}` : ''}`;
-      if (d.pipeline_status === 'completed') {
-        completeFlow(INTAKE_NODES, INTAKE_CONNS);
-      } else {
-        failFlow(INTAKE_NODES, INTAKE_CONNS, 2);
-      }
-      setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
-    } else {
-      result.innerHTML = `<strong style="color:var(--red-alert)">Error ${r.status}:</strong> ${escapeHtml(JSON.stringify(d))}`;
-      failFlow(INTAKE_NODES, INTAKE_CONNS, 0);
-      setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
-    }
-  } catch (err) {
-    result.innerHTML = `<strong style="color:var(--red-alert)">Network error:</strong> ${escapeHtml(err.message)}`;
-    failFlow(INTAKE_NODES, INTAKE_CONNS, 0);
-    setTimeout(() => resetFlow('fn', INTAKE_NODES, INTAKE_CONNS), 5000);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Run Intake';
-  }
-}
-
-// ── Rebuild ──
-async function runRebuild() {
-  const btn = document.getElementById('rebuildBtn');
-  const status = document.getElementById('rebuildStatus');
-  const targetDir = document.getElementById('rebuildDir').value.trim();
-
-  if (!targetDir) { alert('Target project directory is required.'); return; }
-
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Rebuilding...';
-  status.innerHTML = '<span class="spinner"></span> Rebuild in progress...';
-
-  // Show initial flow state
-  advanceFlow(REBUILD_NODES, REBUILD_CONNS, 0);
-
-  try {
-    const payload = { target_dir: targetDir };
-    const clientSessionId = crypto.randomUUID();
-    payload.session_id = clientSessionId;
-
-    // Start polling — flow updates driven by server state
-    const poller = startStagePoller(clientSessionId, 'rebuild', null);
-
-    const r = await fetch(`${API}/rebuild`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (poller) clearInterval(poller);
-    const d = await r.json();
-
-    if (r.ok) {
-      rebuildSessionId = d.session_id;
-      document.getElementById('statCompleted').textContent = d.stories_completed;
-      document.getElementById('statFailed').textContent = d.stories_failed;
-      document.getElementById('statInterventions').textContent = d.interventions;
-      document.getElementById('statTotal').textContent = d.total_stories;
-
-      const pct = d.total_stories > 0 ? (d.stories_completed / d.total_stories) * 100 : 0;
-      document.getElementById('rebuildProgress').style.width = pct + '%';
-
-      status.innerHTML = `<strong style="color:var(--amber)">Status:</strong> ${escapeHtml(d.status)} · Session: ${escapeHtml(d.session_id)}`;
-
-      if (d.stories_failed > 0) {
-        failFlow(REBUILD_NODES, REBUILD_CONNS, 4);
-      } else {
-        completeFlow(REBUILD_NODES, REBUILD_CONNS);
-      }
-      document.getElementById('fr-loop').classList.remove('active-loop');
-      setTimeout(() => resetFlow('fr', REBUILD_NODES, REBUILD_CONNS), 6000);
-    } else {
-      status.innerHTML = `<strong style="color:var(--red-alert)">Error ${r.status}:</strong> ${escapeHtml(JSON.stringify(d))}`;
-      failFlow(REBUILD_NODES, REBUILD_CONNS, 0);
-      document.getElementById('fr-loop').classList.remove('active-loop');
-      setTimeout(() => resetFlow('fr', REBUILD_NODES, REBUILD_CONNS), 5000);
-    }
-  } catch (err) {
-    status.innerHTML = `<strong style="color:var(--red-alert)">Network error:</strong> ${escapeHtml(err.message)}`;
-    failFlow(REBUILD_NODES, REBUILD_CONNS, 0);
-    document.getElementById('fr-loop').classList.remove('active-loop');
-    setTimeout(() => resetFlow('fr', REBUILD_NODES, REBUILD_CONNS), 5000);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Start Rebuild';
-  }
-}
-
-// ── Intervention ──
-function toggleIntervention() {
-  const section = document.getElementById('interventionSection');
-  section.classList.toggle('visible');
-}
-
-async function submitIntervention(action) {
-  if (!rebuildSessionId) { alert('No active rebuild session. Start a rebuild first.'); return; }
-
-  const payload = {
-    session_id: rebuildSessionId,
-    what_broke: document.getElementById('ivWhatBroke').value.trim(),
-    what_developer_did: document.getElementById('ivWhatDev').value.trim(),
-    agent_limitation: document.getElementById('ivLimitation').value.trim(),
-    action: action,
-  };
-
-  const status = document.getElementById('rebuildStatus');
-
-  try {
-    const r = await fetch(`${API}/rebuild/intervene`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const d = await r.json();
-
-    if (r.ok) {
-      status.innerHTML = `<strong style="color:var(--amber)">Intervention logged:</strong> ${escapeHtml(d.action)} · Logged: ${d.logged}`;
-      document.getElementById('interventionSection').classList.remove('visible');
-      document.getElementById('ivWhatBroke').value = '';
-      document.getElementById('ivWhatDev').value = '';
-      document.getElementById('ivLimitation').value = '';
-    } else {
-      status.innerHTML = `<strong style="color:var(--red-alert)">Error ${r.status}:</strong> ${escapeHtml(JSON.stringify(d))}`;
-    }
-  } catch (err) {
-    status.innerHTML = `<strong style="color:var(--red-alert)">Network error:</strong> ${escapeHtml(err.message)}`;
-  }
-}
+loadSessionList();
+setInterval(loadSessionList, 15000);
+checkForLiveSession();
 </script>
 
 </body>

@@ -12,9 +12,11 @@ The actual graph logic lives in:
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
@@ -28,10 +30,55 @@ from src.pipeline_tracker import (
     fail_pipeline,
     start_pipeline,
 )
+from src.web_relay import get_relay, init_relay, stop_relay
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET_DIR = "./target/"
+
+
+# ---------------------------------------------------------------------------
+# Print interceptor — tees print() output to the web relay
+# ---------------------------------------------------------------------------
+
+
+class _RelayWriter(io.TextIOBase):
+    """Wraps stdout to tee every print() line to the web relay."""
+
+    def __init__(self, original: Any) -> None:
+        self._original = original
+
+    def write(self, text: str) -> int:
+        self._original.write(text)
+        relay = get_relay()
+        if relay and text.strip():
+            relay.push(text.rstrip("\n"))
+        return len(text)
+
+    def flush(self) -> None:
+        self._original.flush()
+
+    # Forward attributes so logging/subprocess still work
+    @property
+    def encoding(self) -> str:
+        return getattr(self._original, "encoding", "utf-8")
+
+    def fileno(self) -> int:
+        return self._original.fileno()
+
+    def isatty(self) -> bool:
+        return self._original.isatty()
+
+
+class _RelayLoggingHandler(logging.Handler):
+    """Sends logging records to the web relay."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        relay = get_relay()
+        if relay:
+            msg = self.format(record)
+            event_type = "error" if record.levelno >= logging.ERROR else "log"
+            relay.push(msg, event_type=event_type)
 
 
 def run_rebuild(
@@ -61,6 +108,35 @@ def run_rebuild(
     start_time = time.time()
     start_pipeline(session_id, "rebuild")
 
+    # Start web relay (if configured via env vars)
+    relay = init_relay(session_id, pipeline_type="rebuild")
+
+    # Tee stdout to relay so all print() output is captured
+    original_stdout = sys.stdout
+    relay_handler: _RelayLoggingHandler | None = None
+    if relay:
+        sys.stdout = _RelayWriter(original_stdout)  # type: ignore[assignment]
+        relay_handler = _RelayLoggingHandler()
+        fmt = logging.Formatter("%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
+        relay_handler.setFormatter(fmt)
+        logging.getLogger().addHandler(relay_handler)
+        relay.push_stage("loading_backlog")
+
+    try:
+        return _run_rebuild_core(session_id, target_dir, start_time)
+    finally:
+        # Always restore stdout and clean up relay
+        sys.stdout = original_stdout
+        if relay_handler:
+            logging.getLogger().removeHandler(relay_handler)
+
+
+def _run_rebuild_core(
+    session_id: str,
+    target_dir: str,
+    start_time: float,
+) -> dict[str, Any]:
+    """Core rebuild logic. Relay teardown handled by caller."""
     # Pre-flight check: does the backlog exist?
     advance_stage(session_id, "loading_backlog")
     try:
@@ -68,6 +144,7 @@ def run_rebuild(
     except FileNotFoundError as e:
         logger.error("Backlog not found: %s", e)
         fail_pipeline(session_id, str(e))
+        stop_relay("failed")
         return {
             "stories_completed": 0,
             "stories_failed": 0,
@@ -78,6 +155,7 @@ def run_rebuild(
         }
     if not backlog:
         complete_pipeline(session_id)
+        stop_relay("completed")
         return {
             "stories_completed": 0,
             "stories_failed": 0,
@@ -114,6 +192,7 @@ def run_rebuild(
     except subprocess.CalledProcessError as e:
         logger.error("Git initialization failed: %s", e)
         fail_pipeline(session_id, str(e))
+        stop_relay("failed")
         return {
             "stories_completed": 0,
             "stories_failed": 0,
@@ -125,6 +204,7 @@ def run_rebuild(
     except Exception as e:
         logger.exception("Rebuild graph failed: %s", e)
         fail_pipeline(session_id, str(e))
+        stop_relay("failed")
         return {
             "stories_completed": 0,
             "stories_failed": 0,
@@ -139,8 +219,10 @@ def run_rebuild(
 
     if stories_failed > 0:
         fail_pipeline(session_id, f"{stories_failed} stories failed")
+        stop_relay("failed")
     else:
         complete_pipeline(session_id)
+        stop_relay("completed")
 
     return {
         "stories_completed": result.get("stories_completed", 0),

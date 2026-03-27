@@ -2,24 +2,30 @@
 
 Provides HTTP API via FastAPI and an interactive CLI mode. Both modes
 share the same compiled LangGraph agent and SQLite checkpointing.
+The server also exposes monitoring endpoints for the public dashboard.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import re
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 from src.agent.graph import create_agent, create_trace_config
 from src.audit_log.audit import AuditLogger
@@ -30,6 +36,15 @@ from src.intake.intervention_log import (
 )
 from src.intake.pipeline import run_intake_pipeline
 from src.intake.rebuild import run_rebuild
+from src.log_relay import (
+    create_session,
+    end_session,
+    ensure_schema,
+    get_active_session,
+    get_session_logs,
+    list_sessions,
+    store_events,
+)
 from src.pipeline_tracker import (
     advance_stage,
     complete_pipeline,
@@ -51,6 +66,9 @@ os.makedirs("checkpoints", exist_ok=True)
 
 # Module-level compiled graph — shared by both server and CLI
 graph = create_agent()
+
+# Shared secret for authenticating event push requests
+_RELAY_KEY = os.environ.get("SHIPYARD_RELAY_KEY", "")
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -125,11 +143,63 @@ class InterventionResponse(BaseModel):
     logged: bool
 
 
+class EventPushRequest(BaseModel):
+    """Request body for pushing log events from the local pipeline."""
+
+    session_id: str
+    events: list[dict[str, Any]]
+
+
+class SessionStartRequest(BaseModel):
+    """Request body to register a new pipeline session."""
+
+    session_id: str
+    pipeline_type: str = "rebuild"
+
+
+class SessionEndRequest(BaseModel):
+    """Request body to mark a session as finished."""
+
+    session_id: str
+    status: str = "completed"
+
+
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Shipyard", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Initialize Postgres schema on startup if DATABASE_URL is set."""
+    if os.environ.get("DATABASE_URL"):
+        try:
+            ensure_schema()
+            logger.info("Postgres schema initialized")
+        except Exception as e:
+            logger.warning("Could not initialize Postgres schema: %s", e)
+    yield
+
+
+app = FastAPI(title="Shipyard", version="0.1.0", lifespan=_lifespan)
+
+# Allow the dashboard to make requests from any origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _verify_relay_key(authorization: str | None) -> None:
+    """Verify the Bearer token matches the configured relay key."""
+    if not _RELAY_KEY:
+        raise HTTPException(status_code=503, detail="Relay key not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    token = authorization.removeprefix("Bearer ").strip()
+    if token != _RELAY_KEY:
+        raise HTTPException(status_code=403, detail="Invalid relay key")
 
 # ---------------------------------------------------------------------------
 # Static files & dashboard
@@ -320,6 +390,112 @@ def rebuild_intervene(request: InterventionRequest) -> InterventionResponse:
         action=action,
         logged=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Monitoring API — public dashboard endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/sessions/start")
+async def api_session_start(
+    request: SessionStartRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
+    """Register a new pipeline session (called by local relay)."""
+    _verify_relay_key(authorization)
+    create_session(request.session_id, request.pipeline_type)
+    return {"status": "created", "session_id": request.session_id}
+
+
+@app.post("/api/sessions/end")
+async def api_session_end(
+    request: SessionEndRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
+    """Mark a session as completed or failed (called by local relay)."""
+    _verify_relay_key(authorization)
+    end_session(request.session_id, request.status)
+    return {"status": "ended", "session_id": request.session_id}
+
+
+@app.post("/api/events")
+async def api_push_events(
+    request: EventPushRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Receive log events from the local pipeline runner."""
+    _verify_relay_key(authorization)
+    count = store_events(request.session_id, request.events)
+    return {"stored": count}
+
+
+@app.get("/api/sessions")
+async def api_list_sessions() -> list[dict[str, Any]]:
+    """List recent pipeline sessions (public, read-only)."""
+    if not os.environ.get("DATABASE_URL"):
+        return []
+    return list_sessions()
+
+
+@app.get("/api/active")
+async def api_active_session() -> dict[str, Any]:
+    """Get the currently running session, if any (public, read-only)."""
+    if not os.environ.get("DATABASE_URL"):
+        return {"active": None}
+    session = get_active_session()
+    return {"active": session}
+
+
+@app.get("/api/logs/{session_id}")
+async def api_get_logs(session_id: str, after_id: int = 0) -> dict[str, Any]:
+    """Fetch log events for a session (public, read-only).
+
+    Args:
+        session_id: Session to query.
+        after_id: Only return events after this ID (for incremental polling).
+
+    Returns:
+        Dict with events list and the latest event ID.
+    """
+    if not os.environ.get("DATABASE_URL"):
+        return {"events": [], "latest_id": 0}
+    events = get_session_logs(session_id, after_id=after_id)
+    latest_id = events[-1]["id"] if events else after_id
+    return {"events": events, "latest_id": latest_id}
+
+
+@app.get("/api/stream/{session_id}")
+async def api_stream_logs(session_id: str) -> EventSourceResponse:
+    """SSE endpoint for live-streaming log events to the browser.
+
+    Args:
+        session_id: Session to stream.
+
+    Returns:
+        Server-Sent Events stream of log lines.
+    """
+
+    async def event_generator() -> Any:
+        last_id = 0
+        while True:
+            events = get_session_logs(session_id, after_id=last_id)
+            for ev in events:
+                last_id = ev["id"]
+                yield {
+                    "event": ev["event_type"],
+                    "data": ev["text"],
+                    "id": str(ev["id"]),
+                }
+            # Check if session has ended
+            active = get_active_session()
+            if not active or active["session_id"] != session_id:
+                # Send a final "done" event so the browser knows to stop
+                yield {"event": "done", "data": "session ended"}
+                break
+            await asyncio.sleep(2)
+
+    return EventSourceResponse(event_generator())
 
 
 def _extract_response(result: dict[str, Any]) -> str:

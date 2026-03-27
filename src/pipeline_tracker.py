@@ -98,6 +98,15 @@ def advance_stage(session_id: str, stage_name: str) -> None:
     entry = _stages.get(session_id)
     if entry:
         entry.current_stage = stage_name
+    # Push stage change to web relay if active
+    try:
+        from src.web_relay import get_relay
+
+        relay = get_relay()
+        if relay:
+            relay.push_stage(stage_name)
+    except ImportError:
+        pass
 
 
 def update_story_progress(session_id: str, **kwargs: Any) -> None:
@@ -110,6 +119,15 @@ def update_story_progress(session_id: str, **kwargs: Any) -> None:
     entry = _stages.get(session_id)
     if entry:
         entry.story_progress.update(kwargs)
+    # Push progress metadata to web relay if active
+    try:
+        from src.web_relay import get_relay
+
+        relay = get_relay()
+        if relay:
+            relay.push("story_progress", event_type="stage", metadata=kwargs)
+    except ImportError:
+        pass
 
 
 def complete_pipeline(session_id: str) -> None:
