@@ -33,9 +33,13 @@ COPY src/ src/
 # Workspace for the target project (mounted or copied at runtime)
 RUN mkdir -p /app/workspace
 
-# Git identity for commits made by agents inside the container
-RUN git config --global user.email "shipyard@pipeline.local" \
-    && git config --global user.name "Shipyard Pipeline"
+# Git identity for commits made by agents inside the container.
+# Defaults here; overridden at runtime by GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL
+# env vars passed from .env via docker-compose.
+ENV GIT_AUTHOR_NAME="Shipyard Pipeline"
+ENV GIT_AUTHOR_EMAIL="shipyard@pipeline.local"
+ENV GIT_COMMITTER_NAME="Shipyard Pipeline"
+ENV GIT_COMMITTER_EMAIL="shipyard@pipeline.local"
 
 # Prevent Claude CLI "config file not found" warnings
 RUN echo '{}' > /root/.claude.json

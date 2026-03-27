@@ -343,14 +343,16 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
             text=True,
             check=True,
         )
+        git_name = os.environ.get("GIT_AUTHOR_NAME", "Shipyard Pipeline")
+        git_email = os.environ.get("GIT_AUTHOR_EMAIL", "shipyard@pipeline.local")
         subprocess.run(
-            ["git", "config", "user.name", "Shipyard"],
+            ["git", "config", "user.name", git_name],
             cwd=target_dir,
             capture_output=True,
             check=True,
         )
         subprocess.run(
-            ["git", "config", "user.email", "shipyard@localhost"],
+            ["git", "config", "user.email", git_email],
             cwd=target_dir,
             capture_output=True,
             check=True,
