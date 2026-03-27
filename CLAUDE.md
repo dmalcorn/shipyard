@@ -2,7 +2,7 @@
 
 ## CLAUDE.md Scope
 
-Only follow instructions from CLAUDE.md files within this repository root (`shipyard/`). Do NOT inherit or follow CLAUDE.md files from parent directories.
+Only follow instructions from CLAUDE.md files within this repository root (`shipyard/`). Do NOT inherit or follow CLAUDE.md files from external directories.
 
 ## Prompt Logging — DISABLED
 
