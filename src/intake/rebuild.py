@@ -127,6 +127,8 @@ def run_rebuild(
         fmt = logging.Formatter("%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
         relay_handler.setFormatter(fmt)
         logging.getLogger().addHandler(relay_handler)
+        if resume:
+            relay.push("--- Pipeline resumed ---", event_type="stage")
         relay.push_stage("loading_backlog")
 
     try:
@@ -282,6 +284,9 @@ def _build_result(
 
     if pipeline_status == "paused":
         # Don't mark as failed/completed — it will be resumed
+        relay = get_relay()
+        if relay:
+            relay.push("--- Pipeline paused ---", event_type="stage")
         stop_relay("paused")
     elif stories_failed > 0:
         fail_pipeline(session_id, f"{stories_failed} stories failed")
