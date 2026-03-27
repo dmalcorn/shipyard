@@ -129,7 +129,6 @@ def run_rebuild(
         logging.getLogger().addHandler(relay_handler)
         if resume:
             relay.push("--- Pipeline resumed ---", event_type="stage")
-        relay.push_stage("loading_backlog")
 
     try:
         return _run_rebuild_core(session_id, target_dir, start_time, resume=resume)
