@@ -541,7 +541,7 @@ def _makefile_has_target(makefile_path: str, target: str) -> bool:
 
 
 def _detect_project_type(working_dir: str | None) -> str:
-    """Detect project type from marker files. Returns a type key."""
+    """Detect project type from marker files, falling back to architecture.md."""
     base = working_dir or "."
     markers = {
         "python": ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
@@ -553,6 +553,51 @@ def _detect_project_type(working_dir: str | None) -> str:
         for marker in files:
             if os.path.isfile(os.path.join(base, marker)):
                 return project_type
+
+    # Fallback: scan for architecture.md and infer type from its content.
+    # This handles empty/fresh directories where only planning artifacts exist.
+    return _detect_type_from_architecture_md(base)
+
+
+def _detect_type_from_architecture_md(base: str) -> str:
+    """Walk *base* looking for architecture.md; infer project type from content."""
+    arch_path = None
+    for root, _dirs, filenames in os.walk(base):
+        for fname in filenames:
+            if fname.lower() == "architecture.md":
+                arch_path = os.path.join(root, fname)
+                break
+        if arch_path:
+            break
+
+    if not arch_path:
+        return "unknown"
+
+    try:
+        with open(arch_path, encoding="utf-8") as fh:
+            content = fh.read().lower()
+    except OSError:
+        return "unknown"
+
+    # Order matters: check most-distinctive keywords first.
+    # Each entry is (type_key, list_of_indicator_patterns).
+    stack_signals: list[tuple[str, list[str]]] = [
+        ("rust", ["cargo", "tokio", "axum", "rocket", "serde"]),
+        ("go", ["go mod", "go module", "goroutine", "gin", "echo framework"]),
+        ("python", [
+            "fastapi", "django", "flask", "langgraph", "pyproject",
+            "pip install", "pytest", "python",
+        ]),
+        ("node", [
+            "package.json", "pnpm", "npm", "yarn", "express",
+            "react", "next.js", "vite", "typescript",
+        ]),
+    ]
+
+    for project_type, keywords in stack_signals:
+        if any(kw in content for kw in keywords):
+            return project_type
+
     return "unknown"
 
 
