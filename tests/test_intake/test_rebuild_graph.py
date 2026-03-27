@@ -50,23 +50,29 @@ class TestLoadBacklogNode:
     """load_backlog_node parses epics.md into grouped epics."""
 
     def test_loads_and_groups(self, tmp_path: Path) -> None:
-        (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
+        pa = tmp_path / "_bmad-output" / "planning-artifacts"
+        pa.mkdir(parents=True)
+        (pa / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
         state: RebuildState = {"target_dir": str(tmp_path)}
 
         result = load_backlog_node(state)
 
         assert len(result["epics"]) == 2
-        assert result["epics"][0]["name"] == "Auth"
+        assert result["epics"][0]["epic_num"] == "1"
+        assert result["epics"][0]["epic_name"] == "Auth"
         assert len(result["epics"][0]["stories"]) == 2
-        assert result["epics"][1]["name"] == "Dashboard"
+        assert result["epics"][1]["epic_num"] == "2"
+        assert result["epics"][1]["epic_name"] == "Dashboard"
         assert len(result["epics"][1]["stories"]) == 1
         assert result["total_stories"] == 3
         assert result["epic_index"] == 0
 
-    def test_missing_file_raises(self, tmp_path: Path) -> None:
+    def test_missing_file_returns_failed(self, tmp_path: Path) -> None:
+        """Returns failed status when planning-artifacts dir has no epics file."""
         state: RebuildState = {"target_dir": str(tmp_path)}
-        with pytest.raises(FileNotFoundError):
-            load_backlog_node(state)
+        result = load_backlog_node(state)
+        assert result["pipeline_status"] == "failed"
+        assert "epics" in result.get("error", "").lower()
 
 
 class TestSelectEpicNode:
@@ -74,7 +80,7 @@ class TestSelectEpicNode:
 
     def test_clears_status(self) -> None:
         state: RebuildState = {
-            "epics": [{"name": "Auth", "stories": []}],
+            "epics": [{"epic_num": "1", "epic_name": "Auth", "stories": []}],
             "epic_index": 0,
         }
         result = select_epic_node(state)
@@ -96,7 +102,7 @@ class TestRouteAfterEpic:
     def test_aborted(self) -> None:
         state: RebuildState = {
             "current_epic_status": "aborted",
-            "epics": [{"name": "A"}, {"name": "B"}],
+            "epics": [{"epic_num": "1"}, {"epic_num": "2"}],
             "epic_index": 0,
         }
         assert route_after_epic(state) == "aborted"
@@ -104,7 +110,7 @@ class TestRouteAfterEpic:
     def test_more_epics(self) -> None:
         state: RebuildState = {
             "current_epic_status": "completed",
-            "epics": [{"name": "A"}, {"name": "B"}],
+            "epics": [{"epic_num": "1"}, {"epic_num": "2"}],
             "epic_index": 0,
         }
         assert route_after_epic(state) == "more_epics"
@@ -112,7 +118,7 @@ class TestRouteAfterEpic:
     def test_all_done(self) -> None:
         state: RebuildState = {
             "current_epic_status": "completed",
-            "epics": [{"name": "A"}],
+            "epics": [{"epic_num": "1"}],
             "epic_index": 0,
         }
         assert route_after_epic(state) == "all_done"
@@ -143,7 +149,7 @@ class TestTagEpicNode:
 
         state: RebuildState = {
             "target_dir": target,
-            "epics": [{"name": "Authentication", "stories": []}],
+            "epics": [{"epic_num": "1", "epic_name": "Authentication", "stories": []}],
             "epic_index": 0,
         }
         tag_epic_node(state)
@@ -154,7 +160,7 @@ class TestTagEpicNode:
             capture_output=True,
             text=True,
         )
-        assert "epic-authentication-complete" in result.stdout
+        assert "epic-1-complete" in result.stdout
 
 
 class TestWriteRebuildStatus:
@@ -162,8 +168,8 @@ class TestWriteRebuildStatus:
 
     def test_writes_status(self, tmp_path: Path) -> None:
         results: list[dict[str, Any]] = [
-            {"epic": "Auth", "story": "Login", "status": "completed", "interventions": 0},
-            {"epic": "Auth", "story": "Register", "status": "failed", "interventions": 1},
+            {"epic": "1", "story": "1-1", "story_name": "Login", "status": "completed", "interventions": 0},
+            {"epic": "1", "story": "1-2", "story_name": "Register", "status": "failed", "interventions": 1},
         ]
         _write_rebuild_status(
             target_dir=str(tmp_path),
@@ -197,7 +203,7 @@ class TestWriteFinalNode:
         state: RebuildState = {
             "target_dir": str(tmp_path),
             "all_story_results": [
-                {"epic": "Auth", "story": "Login", "status": "completed"},
+                {"epic": "1", "story": "1-1", "status": "completed"},
             ],
             "total_stories": 1,
             "total_interventions": 0,

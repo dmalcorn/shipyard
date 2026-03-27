@@ -2,6 +2,10 @@
 
 Parses the generated epics.md file into a structured list of
 epics and stories that the rebuild orchestrator can iterate over.
+
+Identification scheme:
+  - Epics: numbered "Epic 1", "Epic 2", etc.
+  - Stories: dash-separated "1-1", "1-2", "2-1" (epic_num-story_num)
 """
 
 from __future__ import annotations
@@ -17,24 +21,25 @@ def load_backlog(target_dir: str) -> list[dict[str, str | list[str]]]:
     """Parse epics.md from the target directory into a structured backlog.
 
     Expected markdown format:
-        ## Epic N: Title
-        ### Story N.M: Title
+        ## Epic N: Title   or   ## Epic N — Title
+        ### Story N.M: Title   or   ### Story N.M — Title
         **As a** ..., **I want** ..., **so that** ...
         **Acceptance Criteria:**
-        - **Given** ... **When** ... **Then** ...
-        **Technical Notes:**
         - ...
 
     Args:
         target_dir: Path to directory containing epics.md.
 
     Returns:
-        List of dicts with keys: epic, story, description, acceptance_criteria.
+        List of dicts with keys: epic_num, epic_name, story_id, story_name,
+        description, acceptance_criteria.
 
     Raises:
         FileNotFoundError: If epics.md does not exist in target_dir.
     """
-    epics_path = Path(target_dir) / "epics.md"
+    epics_path = (
+        Path(target_dir) / "_bmad-output" / "planning-artifacts" / "epics.md"
+    )
     if not epics_path.exists():
         raise FileNotFoundError(f"Backlog file not found: {epics_path}")
 
@@ -50,64 +55,87 @@ def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
         content: Raw markdown string from epics.md.
 
     Returns:
-        List of dicts with keys: epic, story, description, acceptance_criteria.
+        List of dicts with keys: epic_num, epic_name, story_id, story_name,
+        description, acceptance_criteria.
     """
     backlog: list[dict[str, str | list[str]]] = []
-    current_epic = ""
-    current_story = ""
+    current_epic_num = ""
+    current_epic_name = ""
+    current_story_id = ""
+    current_story_name = ""
     current_description = ""
     current_criteria: list[str] = []
     in_criteria = False
+    story_counter = 0  # counts stories within current epic
 
     for line in content.split("\n"):
         stripped = line.strip()
 
-        # Match epic headers: ## Epic N: Title
-        epic_match = re.match(r"^##\s+Epic\s+\d+:\s*(.+)", stripped)
+        # Match epic headers: ## Epic N: Title  or  ## Epic N — Title
+        epic_match = re.match(r"^##\s+Epic\s+(\d+)(?::|[\s\u2014]+)\s*(.+)", stripped)
         if epic_match:
             # Save previous story if exists
-            if current_story:
+            if current_story_id:
                 backlog.append(
                     _make_entry(
-                        current_epic,
-                        current_story,
+                        current_epic_num,
+                        current_epic_name,
+                        current_story_id,
+                        current_story_name,
                         current_description,
                         current_criteria,
                     )
                 )
-            current_epic = epic_match.group(1).strip()
-            current_story = ""
+            current_epic_num = epic_match.group(1).strip()
+            current_epic_name = epic_match.group(2).strip()
+            current_story_id = ""
+            current_story_name = ""
             current_description = ""
             current_criteria = []
             in_criteria = False
+            story_counter = 0
             continue
 
-        # Match story headers: ### Story N.M: Title
-        story_match = re.match(r"^###\s+Story\s+[\d.]+:\s*(.+)", stripped)
+        # Match story headers: ### Story N.M: Title  or  ### Story N.M — Title
+        # Accepts both dots and dashes: 1.1, 1-1, 2.1, 2-1
+        story_match = re.match(
+            r"^###\s+Story\s+(\d+)[.\-](\d+)(?::|[\s\u2014]+)\s*(.+)", stripped
+        )
         if story_match:
             # Save previous story if exists
-            if current_story:
+            if current_story_id:
                 backlog.append(
                     _make_entry(
-                        current_epic,
-                        current_story,
+                        current_epic_num,
+                        current_epic_name,
+                        current_story_id,
+                        current_story_name,
                         current_description,
                         current_criteria,
                     )
                 )
-            story_title = story_match.group(1).strip()
-            if not current_epic:
-                logger.warning("Story '%s' has no parent epic — defaulting to empty", story_title)
-            current_story = story_title
+            epic_num_from_story = story_match.group(1)
+            story_num = story_match.group(2)
+            current_story_name = story_match.group(3).strip()
+            # Use the epic number from the story header (e.g., "1" from "1.2")
+            # but fall back to the current epic if not set
+            if not current_epic_num:
+                current_epic_num = epic_num_from_story
+            # Build dash-separated story ID: "1-2", "2-1"
+            current_story_id = f"{current_epic_num}-{story_num}"
+            story_counter += 1
             current_description = ""
             current_criteria = []
             in_criteria = False
             continue
 
-        # Match user story line
+        # Match user story lines (may span multiple lines)
         if stripped.startswith("**As a**"):
             current_description = stripped
             in_criteria = False
+            continue
+        if stripped.startswith(("**I want**", "**So that**")):
+            current_description += " " + stripped
             continue
 
         # Match acceptance criteria header
@@ -125,11 +153,13 @@ def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
             current_criteria.append(stripped[2:])  # Strip "- " prefix
 
     # Save last story
-    if current_story:
+    if current_story_id:
         backlog.append(
             _make_entry(
-                current_epic,
-                current_story,
+                current_epic_num,
+                current_epic_name,
+                current_story_id,
+                current_story_name,
                 current_description,
                 current_criteria,
             )
@@ -145,15 +175,19 @@ def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
 
 
 def _make_entry(
-    epic: str,
-    story: str,
+    epic_num: str,
+    epic_name: str,
+    story_id: str,
+    story_name: str,
     description: str,
     acceptance_criteria: list[str],
 ) -> dict[str, str | list[str]]:
     """Create a backlog entry dict."""
     return {
-        "epic": epic,
-        "story": story,
+        "epic_num": epic_num,
+        "epic_name": epic_name,
+        "story_id": story_id,
+        "story_name": story_name,
         "description": description,
         "acceptance_criteria": list(acceptance_criteria),
     }

@@ -17,7 +17,6 @@ from src.intake.epic_graph import (
     route_after_epic_architect,
     route_after_epic_final_ci,
     route_after_epic_post_fix_ci,
-    route_after_intervention,
     route_after_story_result,
     route_next_story,
     select_story_node,
@@ -67,7 +66,7 @@ class TestProcessStoryResultNode:
         assert result["stories_failed"] == 0
         assert result["story_results"][0]["status"] == "completed"
 
-    def test_failed_story(self) -> None:
+    def test_failed_story_aborts(self) -> None:
         state: EpicState = {
             "epic_name": "Auth",
             "stories": [{"story": "Login"}],
@@ -79,6 +78,8 @@ class TestProcessStoryResultNode:
         result = process_story_result_node(state)
         assert result["stories_completed"] == 1
         assert result["stories_failed"] == 1
+        assert result["epic_status"] == "aborted"
+        assert "aborting" in result["current_story_error"].lower()
 
 
 class TestAdvanceStoryNode:
@@ -101,29 +102,8 @@ class TestRouteAfterStoryResult:
     def test_completed(self) -> None:
         assert route_after_story_result({"current_story_status": "completed"}) == "next_story"
 
-    def test_failed(self) -> None:
-        assert route_after_story_result({"current_story_status": "failed"}) == "intervention"
-
-
-class TestRouteAfterIntervention:
-    """route_after_intervention routes based on intervention outcome."""
-
-    def test_aborted(self) -> None:
-        assert route_after_intervention({"epic_status": "aborted"}) == "aborted"
-
-    def test_retry(self) -> None:
-        state: EpicState = {
-            "epic_status": "running",
-            "current_story_retry_instruction": "fix the bug",
-        }
-        assert route_after_intervention(state) == "retry"
-
-    def test_skip(self) -> None:
-        state: EpicState = {
-            "epic_status": "running",
-            "current_story_retry_instruction": "",
-        }
-        assert route_after_intervention(state) == "next_story"
+    def test_failed_aborts(self) -> None:
+        assert route_after_story_result({"current_story_status": "failed"}) == "aborted"
 
 
 class TestRouteNextStory:
@@ -197,13 +177,14 @@ class TestEpicErrorNode:
 
     def test_sets_failed(self) -> None:
         state: EpicState = {
+            "epic_num": "1",
             "epic_name": "Auth",
             "epic_last_ci_output": "ruff failed",
             "epic_last_test_output": "2 tests failed",
         }
         result = epic_error_node(state)
         assert result["epic_status"] == "failed"
-        assert "Auth" in result["error"]
+        assert "Epic 1" in result["error"]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,42 @@
+# Dockerfile.rebuild — Shipyard pipeline runner
+# Runs the full rebuild pipeline in an isolated Linux environment
+# with all tools pre-installed. No preflight surprises.
+
+FROM python:3.13-slim
+
+# System tools: git, make, curl, jq, plus node/npm for frontend projects
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        make \
+        curl \
+        jq \
+        ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Claude CLI (installed globally via npm)
+RUN npm install -g @anthropic-ai/claude-code
+
+# Python dev tools (linting, type checking, testing)
+RUN pip install --no-cache-dir ruff mypy pytest
+
+# Playwright for browser-based acceptance tests (frontend projects)
+RUN npx playwright install --with-deps chromium
+
+# Shipyard factory code
+WORKDIR /app/shipyard
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY src/ src/
+
+# Workspace for the target project (mounted or copied at runtime)
+RUN mkdir -p /app/workspace
+
+# Git identity for commits made by agents inside the container
+RUN git config --global user.email "shipyard@pipeline.local" \
+    && git config --global user.name "Shipyard Pipeline"
+
+WORKDIR /app/shipyard
+
+ENTRYPOINT ["python", "-m", "src.main", "--rebuild", "/app/workspace"]

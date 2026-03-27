@@ -19,7 +19,7 @@ from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Send, interrupt
+from langgraph.types import Send
 
 from src.audit_log.audit import get_logger
 from src.multi_agent.orchestrator import (
@@ -65,6 +65,7 @@ class EpicState(TypedDict, total=False):
     # Identity
     session_id: str
     target_dir: str
+    epic_num: str
     epic_name: str
 
     # Story iteration
@@ -119,17 +120,19 @@ def select_story_node(state: EpicState) -> dict[str, Any]:
     """Build task description from the current story and prepare for orchestrator."""
     stories = state.get("stories", [])
     story_index = state.get("story_index", 0)
+    epic_num = state.get("epic_num", "")
     epic_name = state.get("epic_name", "")
 
     story_entry = stories[story_index]
-    story_name = story_entry.get("story", "")
+    story_id = story_entry.get("story_id", "")
+    story_name = story_entry.get("story_name", "")
     description = story_entry.get("description", "")
     criteria = story_entry.get("acceptance_criteria", [])
     criteria_text = "\n".join(f"- {c}" for c in criteria) if criteria else ""
 
     task_description = (
-        f"Story: {story_name}\n"
-        f"Epic: {epic_name}\n"
+        f"Story {story_id}: {story_name}\n"
+        f"Epic {epic_num}: {epic_name}\n"
         f"{description}\n\n"
         f"Acceptance Criteria:\n{criteria_text}"
     )
@@ -139,15 +142,14 @@ def select_story_node(state: EpicState) -> dict[str, Any]:
     if retry_instruction:
         task_description += f"\n\nINTERVENTION FIX INSTRUCTION:\n{retry_instruction}"
 
-    logger.info("Selected story %d/%d: %s (epic: %s)",
-                story_index + 1, len(stories), story_name, epic_name)
+    print(f"\n{'─'*60}")
+    print(f"STORY {story_id}: {story_name} (Epic {epic_num})")
+    print(f"{'─'*60}")
 
     return {
         "current_story_status": "",
         "current_story_error": "",
         "current_story_retry_instruction": "",
-        "_task_description": task_description,
-        "_story_name": story_name,
     }
 
 
@@ -155,19 +157,21 @@ def run_story_node(state: EpicState) -> dict[str, Any]:
     """Invoke the TDD orchestrator for the current story (wrapper around Level 3)."""
     session_id = state.get("session_id", "")
     target_dir = state.get("target_dir", "")
+    epic_num = state.get("epic_num", "")
     epic_name = state.get("epic_name", "")
     stories = state.get("stories", [])
     story_index = state.get("story_index", 0)
 
     story_entry = stories[story_index]
-    story_name = story_entry.get("story", "")
+    story_id = story_entry.get("story_id", "")
+    story_name = story_entry.get("story_name", "")
     description = story_entry.get("description", "")
     criteria = story_entry.get("acceptance_criteria", [])
     criteria_text = "\n".join(f"- {c}" for c in criteria) if criteria else ""
 
     task_description = (
-        f"Story: {story_name}\n"
-        f"Epic: {epic_name}\n"
+        f"Story {story_id}: {story_name}\n"
+        f"Epic {epic_num}: {epic_name}\n"
         f"{description}\n\n"
         f"Acceptance Criteria:\n{criteria_text}"
     )
@@ -177,7 +181,7 @@ def run_story_node(state: EpicState) -> dict[str, Any]:
     if retry_instruction:
         task_description += f"\n\nINTERVENTION FIX INSTRUCTION:\n{retry_instruction}"
 
-    task_id = f"{epic_name}-{story_name}".replace(" ", "-").lower()
+    task_id = story_id
     if retry_instruction:
         task_id += "-retry"
 
@@ -190,19 +194,16 @@ def run_story_node(state: EpicState) -> dict[str, Any]:
         "task_description": task_description,
         "session_id": session_id,
         "context_files": [],
-        "source_files": [],
-        "test_files": [],
         "files_modified": [],
-        "current_phase": "test",
+        "current_phase": "write_tests",
         "pipeline_status": "running",
-        "review_file_paths": [],
-        "fix_plan_path": "",
         "test_cycle_count": 0,
         "ci_cycle_count": 0,
-        "edit_retry_count": 0,
         "test_passed": False,
         "last_test_output": "",
         "last_ci_output": "",
+        "has_review_issues": False,
+        "review_file_path": "",
         "error_log": [],
         "error": "",
         "working_dir": abs_target_dir,
@@ -227,13 +228,14 @@ def run_story_node(state: EpicState) -> dict[str, Any]:
 
 def process_story_result_node(state: EpicState) -> dict[str, Any]:
     """Update counters and record the story result."""
-    epic_name = state.get("epic_name", "")
+    epic_num = state.get("epic_num", "")
     stories = state.get("stories", [])
     story_index = state.get("story_index", 0)
     status = state.get("current_story_status", "failed")
 
     story_entry = stories[story_index]
-    story_name = story_entry.get("story", "")
+    story_id = story_entry.get("story_id", "")
+    story_name = story_entry.get("story_name", "")
 
     stories_completed = state.get("stories_completed", 0)
     stories_failed = state.get("stories_failed", 0)
@@ -244,19 +246,28 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
         stories_failed += 1
 
     result_entry = {
-        "epic": epic_name,
-        "story": story_name,
+        "epic": epic_num,
+        "story": story_id,
+        "story_name": story_name,
         "status": status,
         "interventions": 0,
     }
 
-    logger.info("Story result: %s — %s", story_name, status)
+    print(f"\n    STORY RESULT: {story_id} ({story_name}) — {status}")
 
-    return {
+    updates: dict[str, Any] = {
         "story_results": [result_entry],
         "stories_completed": stories_completed,
         "stories_failed": stories_failed,
     }
+
+    if status != "completed":
+        updates["epic_status"] = "aborted"
+        updates["current_story_error"] = (
+            f"Story {story_id} ({story_name}) failed — aborting epic and pipeline."
+        )
+
+    return updates
 
 
 def handle_intervention_node(state: EpicState) -> dict[str, Any]:
@@ -265,19 +276,19 @@ def handle_intervention_node(state: EpicState) -> dict[str, Any]:
     The graph checkpoints its state here. When resumed, the human's
     response determines whether to retry, skip, or abort.
     """
-    epic_name = state.get("epic_name", "")
+    epic_num = state.get("epic_num", "")
     stories = state.get("stories", [])
     story_index = state.get("story_index", 0)
     error = state.get("current_story_error", "Unknown failure")
 
     story_entry = stories[story_index]
-    story_name = story_entry.get("story", "")
+    story_id = story_entry.get("story_id", "")
 
     # interrupt() pauses the graph and surfaces this data to the caller
     fix_instruction = interrupt({
         "type": "intervention_needed",
-        "epic": epic_name,
-        "story": story_name,
+        "epic": epic_num,
+        "story": story_id,
         "error": error,
     })
 
@@ -316,25 +327,15 @@ def advance_story_node(state: EpicState) -> dict[str, Any]:
 
 
 def route_after_story_result(state: EpicState) -> str:
-    """Route after processing a story result."""
+    """Route after processing a story result: success → next, failure → abort.
+
+    There is no retry or skip. A failed story likely has downstream
+    dependencies, so the entire epic (and pipeline) must stop.
+    """
     status = state.get("current_story_status", "failed")
     if status == "completed":
         return "next_story"
-    # Story failed — go to intervention
-    return "intervention"
-
-
-def route_after_intervention(state: EpicState) -> str:
-    """Route after intervention: retry, skip to next, or abort."""
-    if state.get("epic_status") == "aborted":
-        return "aborted"
-
-    retry = state.get("current_story_retry_instruction", "")
-    if retry:
-        return "retry"
-
-    # Skip — move to next story
-    return "next_story"
+    return "aborted"
 
 
 def route_next_story(state: EpicState) -> str:
@@ -381,7 +382,7 @@ def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
 def route_to_epic_reviewers(state: EpicState) -> list[Send]:
     """Fan-out to two parallel epic-level Review Agents via Send API."""
     session_id = state.get("session_id", "")
-    epic_name = state.get("epic_name", "")
+    epic_num = state.get("epic_num", "")
     epic_files = state.get("epic_files_modified", [])
     working_dir = state.get("target_dir", "")
 
@@ -389,10 +390,10 @@ def route_to_epic_reviewers(state: EpicState) -> list[Send]:
     unique_files = sorted(set(epic_files))
 
     if not unique_files:
-        logger.warning("No files modified in epic %s — skipping epic review", epic_name)
+        logger.warning("No files modified in Epic %s — skipping epic review", epic_num)
         return []
 
-    task_id = f"epic-review-{epic_name}".replace(" ", "-").lower()
+    task_id = f"epic-{epic_num}-review"
 
     shared = EpicReviewNodeInput(
         reviewer_id=0,
@@ -431,7 +432,9 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         f"Review ALL code changes across this entire epic. {reviewer_focus}\n\n"
         f"Files to review (all stories in this epic):\n"
         + "\n".join(f"- {f}" for f in files_to_review)
-        + f"\n\nWrite your findings to `{output_path}` using this exact format:\n\n"
+        + f"\n\nCRITICAL: Write your findings to EXACTLY this path: `{output_path}`\n"
+        f"Do NOT use any other path. The directory already exists.\n"
+        f"Use this exact format:\n\n"
         f"```\n"
         f"---\n"
         f"agent_role: reviewer\n"
@@ -479,12 +482,27 @@ def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     ]
     valid_paths: list[str] = []
 
+    # Check expected paths, then search for files agents may have written elsewhere
+    base = working_dir or "."
+    alt_dirs = ["reviews", "review", "epic-review"]
+
     for path in review_paths:
         if _validate_review_file(path):
             valid_paths.append(path)
             logger.info("Epic review file validated: %s", path)
         else:
-            logger.warning("Epic review file missing or invalid: %s", path)
+            # Search alternative dirs the agent might have used
+            filename = os.path.basename(path)
+            found = False
+            for alt in alt_dirs:
+                alt_path = os.path.join(base, alt, filename)
+                if _validate_review_file(alt_path):
+                    valid_paths.append(alt_path)
+                    logger.info("Epic review file found at alt path: %s", alt_path)
+                    found = True
+                    break
+            if not found:
+                logger.warning("Epic review file missing or invalid: %s", path)
 
     return {"epic_review_file_paths": valid_paths}
 
@@ -492,20 +510,24 @@ def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
 def epic_architect_node(state: EpicState) -> dict[str, Any]:
     """Spawn Architect Agent to evaluate epic-level reviews and produce fix plan."""
     session_id = state.get("session_id", "")
+    epic_num = state.get("epic_num", "")
     epic_name = state.get("epic_name", "")
     review_paths = state.get("epic_review_file_paths", [])
     epic_files = sorted(set(state.get("epic_files_modified", [])))
     working_dir = state.get("target_dir") or None
     timestamp = datetime.now(UTC).isoformat()
 
-    task_id = f"epic-architect-{epic_name}".replace(" ", "-").lower()
+    task_id = f"epic-{epic_num}-architect"
 
     fix_plan_path = EPIC_FIX_PLAN_PATH
     fix_plan_full = os.path.join(working_dir, fix_plan_path) if working_dir else fix_plan_path
 
     task_description = (
         f"Evaluate the epic-level review findings and produce a fix plan.\n\n"
-        f"This is an EPIC-LEVEL review covering all stories in '{epic_name}'.\n\n"
+        f"This is an EPIC-LEVEL review covering all stories in Epic {epic_num} ({epic_name}).\n\n"
+        f"CRITICAL FIRST STEP: Read the project coding rules before evaluating:\n"
+        f"- CLAUDE.md (project root)\n"
+        f"- _bmad-output/planning-artifacts/coding-standards.md\n\n"
         f"1. Read both review files: {review_paths}\n"
         f"2. Read the source files mentioned in findings\n"
         f"3. For each finding: decide fix or dismiss with justification\n"
@@ -535,7 +557,21 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
         f"### Dismissed 1: {{title from finding}}\n"
         f"- **Source Finding:** Review Agent {{n}}, Finding #{{m}}\n"
         f"- **Justification:** {{why dismissed}}\n"
-        f"```\n"
+        f"```\n\n"
+        f"6. RECURRING PATTERN DETECTION: After completing the fix plan, look across "
+        f"ALL findings for patterns that indicate agents are making the same mistakes "
+        f"repeatedly. Examples: wrong import style, inconsistent naming, missing error "
+        f"handling patterns, wrong test structure, ignoring project conventions.\n\n"
+        f"If you identify recurring patterns, append new rules to CLAUDE.md under a "
+        f"section called `## Agent Coding Rules` (create the section if it doesn't exist). "
+        f"Each rule should be:\n"
+        f"- One clear, actionable sentence\n"
+        f"- Specific enough that an agent can follow it without judgment\n"
+        f"- Referencing the pattern that triggered it (e.g., 'seen in 3/5 stories')\n\n"
+        f"Only add rules for patterns seen in 2+ stories. Do NOT duplicate rules already "
+        f"in CLAUDE.md or _bmad-output/planning-artifacts/coding-standards.md. "
+        f"These rules persist across future epics, "
+        f"so they must be general enough to apply going forward.\n"
     )
 
     context_files = review_paths + epic_files
@@ -579,14 +615,14 @@ def route_after_epic_architect(state: EpicState) -> str:
 def epic_fix_node(state: EpicState) -> dict[str, Any]:
     """Spawn Fix Dev Agent to execute epic-level fixes."""
     session_id = state.get("session_id", "")
-    epic_name = state.get("epic_name", "")
+    epic_num = state.get("epic_num", "")
     fix_plan_path = state.get("epic_fix_plan_path", EPIC_FIX_PLAN_PATH)
     epic_files = sorted(set(state.get("epic_files_modified", [])))
     epic_fix_cycle = state.get("epic_fix_cycle", 0)
     last_output = state.get("epic_last_ci_output", "")
     working_dir = state.get("target_dir") or None
 
-    task_id = f"epic-fix-{epic_name}".replace(" ", "-").lower()
+    task_id = f"epic-{epic_num}-fix"
 
     task_description = (
         f"Execute the approved fixes from the epic-level fix plan.\n\n"
@@ -698,17 +734,17 @@ def route_after_epic_final_ci(state: EpicState) -> str:
 
 def epic_error_node(state: EpicState) -> dict[str, Any]:
     """Mark epic as failed with error details."""
-    epic_name = state.get("epic_name", "")
+    epic_num = state.get("epic_num", "")
     last_ci = state.get("epic_last_ci_output", "")
     last_test = state.get("epic_last_test_output", "")
 
     error = (
-        f"Epic '{epic_name}' post-processing failed.\n"
+        f"Epic {epic_num} post-processing failed.\n"
         f"Last CI output: {last_ci[:2000]}\n"
         f"Last test output: {last_test[:2000]}"
     )
 
-    logger.error("Epic post-processing failed: %s", epic_name)
+    logger.error("Epic post-processing failed: Epic %s", epic_num)
 
     return {
         "epic_status": "failed",
@@ -758,7 +794,6 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("select_story", select_story_node)
     graph.add_node("run_story", run_story_node)
     graph.add_node("process_result", process_story_result_node)
-    graph.add_node("handle_intervention", handle_intervention_node)
     graph.add_node("advance_story", advance_story_node)
 
     # --- Epic post-processing nodes ---
@@ -781,17 +816,7 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_conditional_edges(
         "process_result",
         route_after_story_result,
-        {"next_story": "advance_story", "intervention": "handle_intervention"},
-    )
-
-    graph.add_conditional_edges(
-        "handle_intervention",
-        route_after_intervention,
-        {
-            "retry": "run_story",
-            "next_story": "advance_story",
-            "aborted": END,
-        },
+        {"next_story": "advance_story", "aborted": END},
     )
 
     # After advancing story index, check if more stories remain

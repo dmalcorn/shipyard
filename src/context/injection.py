@@ -62,7 +62,15 @@ def build_system_prompt(
     parts.append(get_prompt(role))
 
     # Always inject coding standards (Layer 1)
-    standards = _read_file_safe(CODING_STANDARDS_PATH)
+    # Look in target workspace first, then fall back to shipyard project root
+    standards = None
+    if working_dir:
+        workspace_standards = os.path.join(
+            working_dir, "_bmad-output", "planning-artifacts", "coding-standards.md"
+        )
+        standards = _read_file_safe(workspace_standards)
+    if not standards:
+        standards = _read_file_safe(CODING_STANDARDS_PATH)
     if standards:
         parts.append(f"## Coding Standards\n{standards}")
     else:

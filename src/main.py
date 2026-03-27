@@ -396,6 +396,13 @@ def _run_cli() -> None:
 
 def _run_rebuild_cli(target_dir: str) -> None:
     """Run the rebuild loop from CLI with interactive intervention."""
+    # Configure console logging so pipeline progress is visible
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     session_id = str(uuid.uuid4())
     log_path = os.path.join(target_dir, "intervention-log.md")
     intervention_logger = InterventionLogger(log_path=log_path)

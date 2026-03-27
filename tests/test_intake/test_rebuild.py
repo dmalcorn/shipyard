@@ -62,7 +62,9 @@ class TestRunRebuild:
         tmp_path: Path,
     ) -> None:
         """Returns correct stats from graph result."""
-        (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
+        pa = tmp_path / "_bmad-output" / "planning-artifacts"
+        pa.mkdir(parents=True, exist_ok=True)
+        (pa / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
 
         mock_compiled = MagicMock()
         mock_compiled.invoke.return_value = {
@@ -92,7 +94,9 @@ class TestRunRebuild:
         tmp_path: Path,
     ) -> None:
         """Counts failed stories correctly."""
-        (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
+        pa = tmp_path / "_bmad-output" / "planning-artifacts"
+        pa.mkdir(parents=True, exist_ok=True)
+        (pa / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
 
         mock_compiled = MagicMock()
         mock_compiled.invoke.return_value = {
@@ -120,7 +124,9 @@ class TestRunRebuild:
         tmp_path: Path,
     ) -> None:
         """Returns intervention count from graph."""
-        (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
+        pa = tmp_path / "_bmad-output" / "planning-artifacts"
+        pa.mkdir(parents=True, exist_ok=True)
+        (pa / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
 
         mock_compiled = MagicMock()
         mock_compiled.invoke.return_value = {
@@ -148,7 +154,9 @@ class TestRunRebuild:
         tmp_path: Path,
     ) -> None:
         """Returns error dict when graph raises."""
-        (tmp_path / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
+        pa = tmp_path / "_bmad-output" / "planning-artifacts"
+        pa.mkdir(parents=True, exist_ok=True)
+        (pa / "epics.md").write_text(SAMPLE_EPICS, encoding="utf-8")
 
         mock_compiled = MagicMock()
         mock_compiled.invoke.side_effect = RuntimeError("graph crashed")
@@ -251,7 +259,7 @@ class TestGitTagEpic:
         subprocess.run(["git", "add", "."], cwd=target, capture_output=True)
         subprocess.run(["git", "commit", "-m", "init"], cwd=target, capture_output=True)
 
-        _git_tag_epic(target, "Authentication")
+        _git_tag_epic(target, "1")
 
         result = subprocess.run(
             ["git", "tag", "-l"],
@@ -259,7 +267,7 @@ class TestGitTagEpic:
             capture_output=True,
             text=True,
         )
-        assert "epic-authentication-complete" in result.stdout
+        assert "epic-1-complete" in result.stdout
 
 
 class TestGroupByEpic:
@@ -268,15 +276,15 @@ class TestGroupByEpic:
     def test_groups_correctly(self) -> None:
         """Groups entries maintaining epic order."""
         backlog: list[dict[str, Any]] = [
-            {"epic": "Auth", "story": "Login"},
-            {"epic": "Auth", "story": "Register"},
-            {"epic": "Dashboard", "story": "View"},
+            {"epic_num": "1", "story_id": "1-1"},
+            {"epic_num": "1", "story_id": "1-2"},
+            {"epic_num": "2", "story_id": "2-1"},
         ]
         result = _group_by_epic(backlog)
         assert len(result) == 2
-        assert result[0][0] == "Auth"
+        assert result[0][0] == "1"
         assert len(result[0][1]) == 2
-        assert result[1][0] == "Dashboard"
+        assert result[1][0] == "2"
 
     def test_empty_backlog(self) -> None:
         """Returns empty list for empty backlog."""
@@ -285,13 +293,13 @@ class TestGroupByEpic:
     def test_non_contiguous_epics(self) -> None:
         """Groups non-contiguous entries for the same epic into one group."""
         backlog: list[dict[str, Any]] = [
-            {"epic": "Auth", "story": "Login"},
-            {"epic": "Dashboard", "story": "View"},
-            {"epic": "Auth", "story": "Register"},
+            {"epic_num": "1", "story_id": "1-1"},
+            {"epic_num": "2", "story_id": "2-1"},
+            {"epic_num": "1", "story_id": "1-2"},
         ]
         result = _group_by_epic(backlog)
         assert len(result) == 2
-        auth_group = [g for g in result if g[0] == "Auth"]
+        auth_group = [g for g in result if g[0] == "1"]
         assert len(auth_group) == 1
         assert len(auth_group[0][1]) == 2
 

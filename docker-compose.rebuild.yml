@@ -1,0 +1,17 @@
+services:
+  rebuild:
+    build:
+      context: .
+      dockerfile: Dockerfile.rebuild
+    volumes:
+      # Mount the target project into the container
+      - ../testdir:/app/workspace
+      # Mount Claude CLI config dir so spawned agents authenticate via OAuth.
+      # NOT read-only: CLI needs to refresh expired OAuth tokens during long runs.
+      # Use Windows-style path — Git Bash's /c/Users/... doesn't work with Docker.
+      - C:\Users\diane\.claude:/root/.claude
+    env_file:
+      - .env
+    working_dir: /app/shipyard
+    stdin_open: true
+    tty: true

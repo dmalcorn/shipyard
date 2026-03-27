@@ -51,12 +51,14 @@ class TestParseEpicsMarkdown:
     def test_first_story_has_correct_epic(self) -> None:
         """First story belongs to Epic 1."""
         result = parse_epics_markdown(SAMPLE_EPICS_MD)
-        assert result[0]["epic"] == "Authentication"
+        assert result[0]["epic_num"] == "1"
+        assert result[0]["epic_name"] == "Authentication"
 
-    def test_first_story_has_correct_name(self) -> None:
-        """First story is 'User Login'."""
+    def test_first_story_has_correct_id(self) -> None:
+        """First story has dash-separated ID."""
         result = parse_epics_markdown(SAMPLE_EPICS_MD)
-        assert result[0]["story"] == "User Login"
+        assert result[0]["story_id"] == "1-1"
+        assert result[0]["story_name"] == "User Login"
 
     def test_first_story_has_description(self) -> None:
         """First story has user story description."""
@@ -74,8 +76,9 @@ class TestParseEpicsMarkdown:
     def test_second_epic_story(self) -> None:
         """Third story belongs to Epic 2."""
         result = parse_epics_markdown(SAMPLE_EPICS_MD)
-        assert result[2]["epic"] == "Dashboard"
-        assert result[2]["story"] == "View Dashboard"
+        assert result[2]["epic_num"] == "2"
+        assert result[2]["story_id"] == "2-1"
+        assert result[2]["story_name"] == "View Dashboard"
 
     def test_empty_content_returns_empty_list(self) -> None:
         """Empty markdown returns empty list."""
@@ -85,16 +88,35 @@ class TestParseEpicsMarkdown:
         """Markdown with no story headers returns empty list."""
         assert parse_epics_markdown("# Just a heading\nSome text") == []
 
+    def test_em_dash_separators(self) -> None:
+        """Supports em-dash separators in headers."""
+        md = """\
+## Epic 1 \u2014 Auth
+
+### Story 1.1 \u2014 Login
+**As a** user, **I want** to log in, **so that** I can access my account.
+
+**Acceptance Criteria:**
+- Given valid creds When I login Then I am in
+"""
+        result = parse_epics_markdown(md)
+        assert len(result) == 1
+        assert result[0]["epic_num"] == "1"
+        assert result[0]["story_id"] == "1-1"
+        assert result[0]["story_name"] == "Login"
+
 
 class TestLoadBacklog:
     """load_backlog() reads and parses epics.md from a directory."""
 
     def test_loads_from_directory(self, tmp_path: Path) -> None:
         """Reads epics.md from target directory."""
-        (tmp_path / "epics.md").write_text(SAMPLE_EPICS_MD, encoding="utf-8")
+        pa = tmp_path / "_bmad-output" / "planning-artifacts"
+        pa.mkdir(parents=True)
+        (pa / "epics.md").write_text(SAMPLE_EPICS_MD, encoding="utf-8")
         result = load_backlog(str(tmp_path))
         assert len(result) == 3
-        assert result[0]["story"] == "User Login"
+        assert result[0]["story_id"] == "1-1"
 
     def test_raises_on_missing_file(self, tmp_path: Path) -> None:
         """Raises FileNotFoundError when epics.md doesn't exist."""

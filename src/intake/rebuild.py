@@ -159,13 +159,13 @@ def run_rebuild(
 def _group_by_epic(
     backlog: list[dict[str, Any]],
 ) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Group backlog entries by epic name, preserving order."""
+    """Group backlog entries by epic number, preserving order."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for entry in backlog:
-        epic = str(entry.get("epic", ""))
-        if epic not in groups:
-            groups[epic] = []
-        groups[epic].append(entry)
+        epic_num = str(entry.get("epic_num", ""))
+        if epic_num not in groups:
+            groups[epic_num] = []
+        groups[epic_num].append(entry)
     return list(groups.items())
 
 
@@ -221,7 +221,7 @@ def _init_target_project(target_dir: str) -> None:
 
 def _git_tag_epic(target_dir: str, epic_name: str) -> None:
     """Create a git tag marking epic completion."""
-    tag_name = f"epic-{epic_name.replace(' ', '-').lower()}-complete"
+    tag_name = f"epic-{epic_name}-complete"
     result = subprocess.run(
         ["git", "tag", tag_name],
         cwd=target_dir,
@@ -250,15 +250,18 @@ def _write_rebuild_status(
 
     current_epic = ""
     for result in story_results:
-        epic = result["epic"]
+        epic = result.get("epic", "")
         if epic != current_epic:
-            lines.append(f"\n## Epic: {epic}\n")
+            lines.append(f"\n## Epic {epic}\n")
             current_epic = epic
 
+        story_id = result.get("story", "?")
+        story_name = result.get("story_name", "")
         status = result["status"]
         interventions = result.get("interventions", 0)
         suffix = f" (intervention #{interventions})" if interventions > 0 else ""
-        lines.append(f"- Story: {result['story']} — {status}{suffix}")
+        label = f"{story_id}: {story_name}" if story_name else story_id
+        lines.append(f"- Story {label} — {status}{suffix}")
 
     lines.append("\n## Summary\n")
     lines.append(f"Stories completed: {completed}/{total_stories}")
@@ -335,19 +338,16 @@ def _run_story_pipeline(
         "task_description": task_description,
         "session_id": session_id,
         "context_files": [],
-        "source_files": [],
-        "test_files": [],
         "files_modified": [],
-        "current_phase": "test",
+        "current_phase": "write_tests",
         "pipeline_status": "running",
-        "review_file_paths": [],
-        "fix_plan_path": "",
         "test_cycle_count": 0,
         "ci_cycle_count": 0,
-        "edit_retry_count": 0,
         "test_passed": False,
         "last_test_output": "",
         "last_ci_output": "",
+        "has_review_issues": False,
+        "review_file_path": "",
         "error_log": [],
         "error": "",
         "working_dir": abs_target_dir,

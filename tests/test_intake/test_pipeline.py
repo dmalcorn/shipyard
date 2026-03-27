@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.intake.backlog import load_backlog
+from src.intake.backlog import parse_epics_markdown
 from src.intake.pipeline import (
     IntakeState,
     build_intake_graph,
@@ -207,10 +207,11 @@ class TestRunIntakePipeline:
         assert (output_dir / "epics.md").exists()
         assert mock_agent.call_count == 2
 
-        # FIX-28: Verify generated epics.md is parseable by load_backlog
-        backlog = load_backlog(str(output_dir))
+        # FIX-28: Verify generated epics.md is parseable
+        epics_text = (output_dir / "epics.md").read_text(encoding="utf-8")
+        backlog = parse_epics_markdown(epics_text)
         assert len(backlog) > 0
-        assert backlog[0]["epic"] == "Core CRUD"
+        assert backlog[0]["epic_name"] == "Core CRUD"
 
     def test_failure_propagation_node_level(self) -> None:
         """read_specs_node with invalid spec_dir sets pipeline_status to failed."""

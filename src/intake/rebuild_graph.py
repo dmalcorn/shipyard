@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import operator
 import os
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -71,25 +72,177 @@ class RebuildState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 
+def _tool_version(tool: str) -> str | None:
+    """Get a tool's version string, or None if not installed."""
+    path = shutil.which(tool)
+    if not path:
+        return None
+    try:
+        result = subprocess.run(
+            [tool, "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        version = (result.stdout or result.stderr).strip().splitlines()[0]
+        return version
+    except Exception:
+        return "(version unknown)"
+
+
+def preflight_check_node(state: RebuildState) -> dict[str, Any]:
+    """Verify required tools are installed before starting the pipeline."""
+    target_dir = state.get("target_dir", "")
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    print("\n--- Preflight Check ---")
+
+    # Always required: claude, git
+    for tool in ("claude", "git"):
+        version = _tool_version(tool)
+        if not version:
+            errors.append(f"'{tool}' not found on PATH")
+            print(f"  FAIL: {tool}")
+        else:
+            print(f"  OK:   {tool} — {version}")
+
+    # Always required: make (used by BMAD agent tool permissions)
+    version = _tool_version("make")
+    if not version:
+        errors.append("'make' not found on PATH (required by BMAD agent tools)")
+        print(f"  FAIL: make")
+    else:
+        print(f"  OK:   make — {version}")
+
+    # Detect project type from target dir and check runtime
+    package_json = os.path.join(target_dir, "package.json")
+    has_python_markers = any(
+        os.path.isfile(os.path.join(target_dir, f))
+        for f in ("setup.py", "pyproject.toml", "requirements.txt", "Pipfile")
+    )
+
+    if os.path.isfile(package_json):
+        # Node project
+        for tool in ("node", "npm"):
+            version = _tool_version(tool)
+            if not version:
+                errors.append(f"'{tool}' not found on PATH (required for Node project)")
+                print(f"  FAIL: {tool} (Node project detected)")
+            else:
+                print(f"  OK:   {tool} — {version}")
+    elif has_python_markers:
+        # Python project
+        for tool in ("python", "pytest"):
+            version = _tool_version(tool)
+            if not version:
+                errors.append(f"'{tool}' not found on PATH (required for Python project)")
+                print(f"  FAIL: {tool} (Python project detected)")
+            else:
+                print(f"  OK:   {tool} — {version}")
+    else:
+        # Unknown project type — check both, warn if neither available
+        has_node = shutil.which("node") and shutil.which("npm")
+        has_py = shutil.which("python") and shutil.which("pytest")
+        if not has_node and not has_py:
+            errors.append("No runtime found: need node/npm or python/pytest on PATH")
+            print(f"  FAIL: no node/npm or python/pytest found")
+        else:
+            if has_node:
+                print(f"  OK:   node/npm available")
+            if has_py:
+                print(f"  OK:   python/pytest available")
+
+    # Python dev tools — attempt auto-install if missing
+    py_dev_tools = ("ruff", "mypy", "pytest")
+    missing_py_tools = [t for t in py_dev_tools if not shutil.which(t)]
+
+    if missing_py_tools:
+        # Try auto-install from requirements-dev.txt
+        req_file = os.path.join(target_dir, "requirements-dev.txt")
+        if os.path.isfile(req_file):
+            print(f"  INFO: Missing {', '.join(missing_py_tools)} — installing from requirements-dev.txt...")
+            install_result = subprocess.run(
+                ["python", "-m", "pip", "install", "-r", req_file, "--quiet"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if install_result.returncode == 0:
+                print(f"  OK:   pip install succeeded")
+                missing_py_tools = [t for t in py_dev_tools if not shutil.which(t)]
+            else:
+                print(f"  WARN: pip install failed: {install_result.stderr[:200]}")
+        else:
+            # No requirements file — try to install tools directly
+            print(f"  INFO: Missing {', '.join(missing_py_tools)} — attempting pip install...")
+            subprocess.run(
+                ["python", "-m", "pip", "install", *missing_py_tools, "--quiet"],
+                capture_output=True, text=True, timeout=120,
+            )
+            missing_py_tools = [t for t in py_dev_tools if not shutil.which(t)]
+
+    for tool in py_dev_tools:
+        version = _tool_version(tool)
+        if not version:
+            warnings.append(f"'{tool}' not found — CI fix phase may be limited")
+            print(f"  WARN: {tool} not found (optional, used by CI fix)")
+        else:
+            print(f"  OK:   {tool} — {version}")
+
+    if errors:
+        msg = "Preflight failed:\n" + "\n".join(f"  - {e}" for e in errors)
+        print(f"\n*** ABORT: {msg}")
+        return {"pipeline_status": "failed", "error": msg}
+
+    if warnings:
+        for w in warnings:
+            print(f"  note: {w}")
+
+    print("--- Preflight OK ---\n")
+    return {}
+
+
 def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     """Parse epics.md and group stories by epic."""
     target_dir = state.get("target_dir", "")
 
+    # Verify epics file exists in planning-artifacts where BMAD agents expect it
+    planning_dir = os.path.join(target_dir, "_bmad-output", "planning-artifacts")
+    epics_candidates = [
+        f for f in os.listdir(planning_dir)
+        if "epic" in f.lower() and f.endswith(".md")
+    ] if os.path.isdir(planning_dir) else []
+
+    if not epics_candidates:
+        print(f"\n*** ABORT: No epics file found in {planning_dir}")
+        print(f"    BMAD agents require an epics file at:")
+        print(f"    {planning_dir}/epics.md")
+        print(f"    Place your epics file there and re-run.")
+        return {
+            "pipeline_status": "failed",
+            "error": f"No epics file in {planning_dir}. BMAD agents cannot operate without it.",
+        }
+
     backlog = load_backlog(target_dir)
 
-    # Group by epic, preserving order
-    groups: dict[str, list[dict[str, Any]]] = {}
+    # Group by epic number, preserving order
+    groups: dict[str, dict[str, Any]] = {}
     for entry in backlog:
-        epic = str(entry.get("epic", ""))
-        if epic not in groups:
-            groups[epic] = []
-        groups[epic].append(entry)
+        epic_num = str(entry.get("epic_num", ""))
+        if epic_num not in groups:
+            groups[epic_num] = {
+                "epic_num": epic_num,
+                "epic_name": str(entry.get("epic_name", "")),
+                "stories": [],
+            }
+        groups[epic_num]["stories"].append(entry)
 
-    epics = [{"name": name, "stories": stories} for name, stories in groups.items()]
+    epics = list(groups.values())
 
     total_stories = sum(len(e["stories"]) for e in epics)
 
-    logger.info("Loaded backlog: %d epics, %d stories", len(epics), total_stories)
+    print(f"\n{'='*60}")
+    print(f"REBUILD: Loaded {len(epics)} epics, {total_stories} stories")
+    for e in epics:
+        print(f"  Epic {e['epic_num']}: {e['epic_name']} ({len(e['stories'])} stories)")
+    print(f"{'='*60}")
 
     return {
         "epics": epics,
@@ -131,10 +284,31 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
             check=True,
         )
 
+        gitignore_path = os.path.join(target_dir, ".gitignore")
+        if not os.path.exists(gitignore_path):
+            with open(gitignore_path, "w", encoding="utf-8") as f:
+                f.write("node_modules/\n.env\n*.log\n")
+
         readme_path = os.path.join(target_dir, "README.md")
         if not os.path.exists(readme_path):
             with open(readme_path, "w", encoding="utf-8") as f:
                 f.write("# Target Project\n\nGenerated by Shipyard.\n")
+
+        claude_md_path = os.path.join(target_dir, "CLAUDE.md")
+        if not os.path.exists(claude_md_path):
+            with open(claude_md_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "# Project Rules\n\n"
+                    "## Working Directory\n\n"
+                    "All work must be done within this project directory. "
+                    "Do NOT read, search, or reference files outside of this directory. "
+                    "All source documents, planning artifacts, and BMAD outputs "
+                    "are located under `_bmad-output/` within this project.\n\n"
+                    "## Coding Standards\n\n"
+                    "Before writing or modifying code, read the coding standards at "
+                    "`_bmad-output/planning-artifacts/coding-standards.md`. "
+                    "All code must follow these conventions.\n"
+                )
 
         subprocess.run(
             ["git", "add", "."],
@@ -159,7 +333,9 @@ def select_epic_node(state: RebuildState) -> dict[str, Any]:
     epic_index = state.get("epic_index", 0)
     epic = epics[epic_index]
 
-    logger.info("Starting epic %d/%d: %s", epic_index + 1, len(epics), epic["name"])
+    print(f"\n{'='*60}")
+    print(f"EPIC {epic['epic_num']}: {epic.get('epic_name', '')} ({epic_index + 1}/{len(epics)})")
+    print(f"{'='*60}")
 
     return {
         "current_epic_status": "",
@@ -182,7 +358,8 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
     epic_input: EpicState = {
         "session_id": session_id,
         "target_dir": os.path.abspath(target_dir),
-        "epic_name": epic["name"],
+        "epic_num": epic["epic_num"],
+        "epic_name": epic["epic_name"],
         "stories": epic["stories"],
         "story_index": 0,
         "story_results": [],
@@ -241,9 +418,9 @@ def tag_epic_node(state: RebuildState) -> dict[str, Any]:
     target_dir = state.get("target_dir", "")
     epics = state.get("epics", [])
     epic_index = state.get("epic_index", 0)
-    epic_name = epics[epic_index]["name"]
+    epic_num = epics[epic_index]["epic_num"]
 
-    tag_name = f"epic-{epic_name.replace(' ', '-').lower()}-complete"
+    tag_name = f"epic-{epic_num}-complete"
     result = subprocess.run(
         ["git", "tag", tag_name],
         cwd=target_dir,
@@ -317,6 +494,13 @@ def write_final_node(state: RebuildState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def route_after_load_backlog(state: RebuildState) -> str:
+    """Route after load_backlog: abort if epics file missing."""
+    if state.get("pipeline_status") == "failed":
+        return "abort"
+    return "continue"
+
+
 def route_after_epic(state: RebuildState) -> str:
     """Route after epic completes: more epics, aborted, or done."""
     epic_status = state.get("current_epic_status", "")
@@ -356,13 +540,16 @@ def _write_rebuild_status(
     for result in story_results:
         epic = result.get("epic", "")
         if epic != current_epic:
-            lines.append(f"\n## Epic: {epic}\n")
+            lines.append(f"\n## Epic {epic}\n")
             current_epic = epic
 
+        story_id = result.get("story", "?")
+        story_name = result.get("story_name", "")
         status = result.get("status", "unknown")
         interventions = result.get("interventions", 0)
         suffix = f" (intervention #{interventions})" if interventions > 0 else ""
-        lines.append(f"- Story: {result.get('story', '?')} — {status}{suffix}")
+        label = f"{story_id}: {story_name}" if story_name else story_id
+        lines.append(f"- Story {label} — {status}{suffix}")
 
     lines.append("\n## Summary\n")
     lines.append(f"Stories completed: {completed}/{total_stories}")
@@ -387,7 +574,7 @@ def build_rebuild_graph() -> StateGraph:  # type: ignore[type-arg]
     """Build the rebuild graph (Level 1).
 
     Flow:
-    load_backlog → init_project → select_epic → run_epic →
+    preflight_check → load_backlog → init_project → select_epic → run_epic →
     tag_epic → write_status → route
         → (more_epics) → advance_epic → select_epic
         → (aborted) → write_final → END
@@ -399,6 +586,7 @@ def build_rebuild_graph() -> StateGraph:  # type: ignore[type-arg]
     graph = StateGraph(RebuildState)
 
     # Nodes
+    graph.add_node("preflight_check", preflight_check_node)
     graph.add_node("load_backlog", load_backlog_node)
     graph.add_node("init_project", init_project_node)
     graph.add_node("select_epic", select_epic_node)
@@ -409,8 +597,17 @@ def build_rebuild_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("write_final", write_final_node)
 
     # Edges
-    graph.add_edge(START, "load_backlog")
-    graph.add_edge("load_backlog", "init_project")
+    graph.add_edge(START, "preflight_check")
+    graph.add_conditional_edges(
+        "preflight_check",
+        route_after_load_backlog,  # reuse: checks pipeline_status == "failed"
+        {"continue": "load_backlog", "abort": "write_final"},
+    )
+    graph.add_conditional_edges(
+        "load_backlog",
+        route_after_load_backlog,
+        {"continue": "init_project", "abort": "write_final"},
+    )
     graph.add_edge("init_project", "select_epic")
     graph.add_edge("select_epic", "run_epic")
     graph.add_edge("run_epic", "tag_epic")
