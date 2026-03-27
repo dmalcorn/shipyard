@@ -13,11 +13,13 @@ The actual graph logic lives in:
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -86,6 +88,7 @@ def run_rebuild(
     session_id: str,
     on_intervention: Callable[[str], str | None] | None = None,
     intervention_logger: InterventionLogger | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Run the full rebuild loop over the target project's backlog.
 
@@ -100,10 +103,12 @@ def run_rebuild(
             Note: With the graph-based flow, interventions use LangGraph's
             interrupt() pattern. This callback is kept for CLI compatibility.
         intervention_logger: Optional InterventionLogger for auto-recovery tracking.
+        resume: If True, attempt to resume from the last checkpoint for
+            this session_id instead of starting from scratch.
 
     Returns:
         Dict with keys: stories_completed, stories_failed, interventions,
-        total_stories, elapsed_seconds.
+        total_stories, elapsed_seconds, pipeline_status.
     """
     start_time = time.time()
     start_pipeline(session_id, "rebuild")
@@ -123,7 +128,7 @@ def run_rebuild(
         relay.push_stage("loading_backlog")
 
     try:
-        return _run_rebuild_core(session_id, target_dir, start_time)
+        return _run_rebuild_core(session_id, target_dir, start_time, resume=resume)
     finally:
         # Always restore stdout and clean up relay
         sys.stdout = original_stdout
@@ -131,10 +136,27 @@ def run_rebuild(
             logging.getLogger().removeHandler(relay_handler)
 
 
+def _load_resume_state() -> dict[str, Any] | None:
+    """Load resume state from the session file, or None if not found."""
+    session_file = "checkpoints/session.json"
+    if not os.path.isfile(session_file):
+        return None
+    try:
+        with open(session_file, encoding="utf-8") as f:
+            data = json.load(f)
+        # Only valid if it has resume fields
+        if data.get("resume_epic_index", 0) > 0:
+            return data
+        return None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _run_rebuild_core(
     session_id: str,
     target_dir: str,
     start_time: float,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Core rebuild logic. Relay teardown handled by caller."""
     # Pre-flight check: does the backlog exist?
@@ -164,7 +186,7 @@ def _run_rebuild_core(
             "elapsed_seconds": 0.0,
         }
 
-    # Build and invoke the rebuild graph
+    # Build initial state — inject resume fields if resuming
     advance_stage(session_id, "init_project")
 
     initial_state: RebuildState = {
@@ -184,9 +206,38 @@ def _run_rebuild_core(
         "start_time": start_time,
     }
 
+    if resume:
+        resume_data = _load_resume_state()
+        if resume_data:
+            initial_state["resume_epic_index"] = resume_data.get(
+                "resume_epic_index", 0,
+            )
+            initial_state["resume_stories_completed"] = resume_data.get(
+                "resume_stories_completed", 0,
+            )
+            initial_state["resume_stories_failed"] = resume_data.get(
+                "resume_stories_failed", 0,
+            )
+            initial_state["resume_total_interventions"] = resume_data.get(
+                "resume_total_interventions", 0,
+            )
+            initial_state["resume_story_results"] = resume_data.get(
+                "resume_story_results", [],
+            )
+            logger.info(
+                "Resume state loaded: starting at epic index %d, %d stories already done",
+                initial_state["resume_epic_index"],
+                initial_state["resume_stories_completed"],
+            )
+        else:
+            logger.info("No resume state found — starting from the beginning.")
+
     try:
+        # Use a fresh thread_id each invocation so LangGraph doesn't
+        # try to replay from a completed graph's checkpoint.
         compiled = build_rebuild()
-        config: dict[str, Any] = {"configurable": {"thread_id": session_id}}
+        thread_id = str(uuid.uuid4())
+        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
         result = compiled.invoke(initial_state, config=config)  # type: ignore[call-overload]
         result = dict(result)
     except subprocess.CalledProcessError as e:
@@ -214,10 +265,23 @@ def _run_rebuild_core(
             "error": str(e),
         }
 
+    return _build_result(result, session_id, start_time)
+
+
+def _build_result(
+    result: dict[str, Any],
+    session_id: str,
+    start_time: float,
+) -> dict[str, Any]:
+    """Build the return dict from graph result, updating pipeline tracker."""
     elapsed = time.time() - start_time
     stories_failed = result.get("stories_failed", 0)
+    pipeline_status = result.get("pipeline_status", "unknown")
 
-    if stories_failed > 0:
+    if pipeline_status == "paused":
+        # Don't mark as failed/completed — it will be resumed
+        stop_relay("paused")
+    elif stories_failed > 0:
         fail_pipeline(session_id, f"{stories_failed} stories failed")
         stop_relay("failed")
     else:
@@ -230,6 +294,7 @@ def _run_rebuild_core(
         "interventions": result.get("total_interventions", 0),
         "total_stories": result.get("total_stories", 0),
         "elapsed_seconds": elapsed,
+        "pipeline_status": pipeline_status,
     }
 
 

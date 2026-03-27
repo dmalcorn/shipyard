@@ -22,6 +22,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from src.audit_log.audit import get_logger
+from src.intake.pause import is_pause_requested
 from src.multi_agent.bmad_invoke import (
     TIMEOUT_LONG,
     TIMEOUT_MEDIUM,
@@ -332,6 +333,19 @@ def advance_story_node(state: EpicState) -> dict[str, Any]:
     }
 
 
+def epic_paused_node(state: EpicState) -> dict[str, Any]:
+    """Terminal node when a graceful pause is requested mid-epic."""
+    epic_num = state.get("epic_num", "?")
+    story_index = state.get("story_index", 0)
+    completed = state.get("stories_completed", 0)
+    total = len(state.get("stories", []))
+    logger.info(
+        "Epic %s paused after story %d/%d (completed: %d)",
+        epic_num, story_index, total, completed,
+    )
+    return {"epic_status": "paused"}
+
+
 # ---------------------------------------------------------------------------
 # Story Loop Routing
 # ---------------------------------------------------------------------------
@@ -350,11 +364,18 @@ def route_after_story_result(state: EpicState) -> str:
 
 
 def route_next_story(state: EpicState) -> str:
-    """Route to next story or epic post-processing.
+    """Route to next story, epic post-processing, or pause.
 
     Called after advance_story_node has already incremented story_index,
     so story_index is the index of the *next* story to run.
+
+    If a graceful pause has been requested (via Ctrl+C signal handler),
+    returns "paused" instead of continuing to the next story.
     """
+    if is_pause_requested():
+        logger.info("Pause requested — stopping after completed story")
+        return "paused"
+
     stories = state.get("stories", [])
     story_index = state.get("story_index", 0)
 
@@ -962,6 +983,7 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("run_story", run_story_node)
     graph.add_node("process_result", process_story_result_node)
     graph.add_node("advance_story", advance_story_node)
+    graph.add_node("epic_paused", epic_paused_node)
 
     # --- Epic post-processing nodes ---
     graph.add_node("prepare_epic_reviews", prepare_epic_reviews_node)
@@ -990,8 +1012,13 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_conditional_edges(
         "advance_story",
         route_next_story,
-        {"more_stories": "select_story", "epic_done": "prepare_epic_reviews"},
+        {
+            "more_stories": "select_story",
+            "epic_done": "prepare_epic_reviews",
+            "paused": "epic_paused",
+        },
     )
+    graph.add_edge("epic_paused", END)
 
     # --- Epic post-processing edges ---
     # Fan-out to 2 parallel reviewers (BMAD + Claude)

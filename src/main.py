@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
+import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -570,8 +572,31 @@ def _run_cli() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_rebuild_cli(target_dir: str) -> None:
+SESSION_FILE = "checkpoints/session.json"
+
+
+def _save_session(session_id: str, target_dir: str) -> None:
+    """Persist session_id to disk so --resume can find it."""
+    os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
+    with open(SESSION_FILE, "w", encoding="utf-8") as f:
+        json.dump({"session_id": session_id, "target_dir": target_dir}, f)
+
+
+def _load_session() -> dict[str, str] | None:
+    """Load the most recent session from disk, or None if not found."""
+    if not os.path.isfile(SESSION_FILE):
+        return None
+    try:
+        with open(SESSION_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
     """Run the rebuild loop from CLI with interactive intervention."""
+    from src.intake.pause import request_pause, reset_pause
+
     # Configure console logging so pipeline progress is visible
     logging.basicConfig(
         level=logging.INFO,
@@ -579,42 +604,88 @@ def _run_rebuild_cli(target_dir: str) -> None:
         datefmt="%H:%M:%S",
     )
 
-    session_id = str(uuid.uuid4())
+    # Reset pause flag from any previous run in this process
+    reset_pause()
+
+    # Session management: resume existing or start fresh
+    if resume:
+        saved = _load_session()
+        if saved and saved.get("session_id"):
+            session_id = saved["session_id"]
+            print(f"Resuming session: {session_id}")
+            # Don't overwrite session file — it contains resume state
+        else:
+            print("No previous session found — starting fresh.")
+            resume = False
+            session_id = str(uuid.uuid4())
+            _save_session(session_id, target_dir)
+    else:
+        session_id = str(uuid.uuid4())
+        _save_session(session_id, target_dir)
+
     log_path = os.path.join(target_dir, "intervention-log.md")
     intervention_logger = InterventionLogger(log_path=log_path)
 
     print(f"Shipyard Rebuild (session: {session_id})")
     print(f"Target dir: {target_dir}")
     print(f"Intervention log: {log_path}")
+    print("Press Ctrl+C once to pause after the current story finishes.")
 
-    def cli_intervention(failure_report: str) -> str | None:
-        """Prompt user for structured intervention on pipeline failure."""
-        action, fix_instruction = cli_intervention_prompt(
-            logger=intervention_logger,
-            epic="",
-            story="",
-            phase="pipeline",
-            failure_report=failure_report,
-            retry_counts="",
+    # --- Graceful pause signal handler ---
+    _ctrl_c_count = 0
+
+    def _handle_sigint(signum: int, frame: Any) -> None:
+        nonlocal _ctrl_c_count
+        _ctrl_c_count += 1
+        if _ctrl_c_count == 1:
+            print("\n*** Pause requested — will stop after the current story finishes.")
+            print("    Press Ctrl+C again to force-quit immediately.")
+            request_pause()
+        else:
+            print("\n*** Force-quitting.")
+            raise SystemExit(1)
+
+    original_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, _handle_sigint)
+
+    try:
+        def cli_intervention(failure_report: str) -> str | None:
+            """Prompt user for structured intervention on pipeline failure."""
+            action, fix_instruction = cli_intervention_prompt(
+                logger=intervention_logger,
+                epic="",
+                story="",
+                phase="pipeline",
+                failure_report=failure_report,
+                retry_counts="",
+            )
+            if action == "abort":
+                return None
+            if action == "skip":
+                return "skip"
+            return fix_instruction if fix_instruction else "retry"
+
+        result = run_rebuild(
+            target_dir=target_dir,
+            session_id=session_id,
+            on_intervention=cli_intervention,
+            intervention_logger=intervention_logger,
+            resume=resume,
         )
-        if action == "abort":
-            return None
-        if action == "skip":
-            return "skip"
-        return fix_instruction if fix_instruction else "retry"
 
-    result = run_rebuild(
-        target_dir=target_dir,
-        session_id=session_id,
-        on_intervention=cli_intervention,
-        intervention_logger=intervention_logger,
-    )
-
-    print("\nRebuild complete.")
-    print(f"  Stories: {result['stories_completed']}/{result['total_stories']} completed")
-    print(f"  Failed: {result['stories_failed']}")
-    print(f"  Interventions: {result['interventions']}")
-    print(f"  Time: {result['elapsed_seconds'] / 60:.1f} minutes")
+        status = result.get("pipeline_status", "unknown")
+        if status == "paused":
+            print("\nRebuild paused.")
+            print(f"  Stories so far: {result['stories_completed']}/{result['total_stories']}")
+            print(f"  To resume: python -m src.main --rebuild {target_dir} --resume")
+        else:
+            print("\nRebuild complete.")
+            print(f"  Stories: {result['stories_completed']}/{result['total_stories']} completed")
+            print(f"  Failed: {result['stories_failed']}")
+            print(f"  Interventions: {result['interventions']}")
+            print(f"  Time: {result['elapsed_seconds'] / 60:.1f} minutes")
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
 
 
 def _run_intake(spec_dir: str, target_dir: str) -> None:
@@ -655,6 +726,11 @@ def main() -> None:
         help="Run autonomous rebuild on a target project",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a previously paused rebuild from its last checkpoint",
+    )
+    parser.add_argument(
         "--target-dir",
         default="./target/",
         help="Target output directory (default: ./target/)",
@@ -665,7 +741,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.rebuild:
-        _run_rebuild_cli(args.rebuild)
+        _run_rebuild_cli(args.rebuild, resume=args.resume)
     elif args.intake:
         _run_intake(args.intake, args.target_dir)
     elif args.cli:

@@ -12,6 +12,7 @@ completed epic after a crash.
 
 from __future__ import annotations
 
+import json
 import logging
 import operator
 import os
@@ -27,6 +28,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from src.intake.backlog import load_backlog
 from src.intake.epic_graph import EpicState, build_epic_runner
+from src.intake.pause import is_pause_requested
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +64,16 @@ class RebuildState(TypedDict, total=False):
     current_epic_error: str
 
     # Control
-    pipeline_status: str  # running|completed|failed|aborted
+    pipeline_status: str  # running|completed|failed|aborted|paused
     error: str
     start_time: float
+
+    # Resume support — when set, load_backlog preserves these values
+    resume_epic_index: int
+    resume_stories_completed: int
+    resume_stories_failed: int
+    resume_total_interventions: int
+    resume_story_results: list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +246,31 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     epics = list(groups.values())
 
     total_stories = sum(len(e["stories"]) for e in epics)
+
+    # Check for resume fields — if present, restore progress counters
+    resume_epic_index = state.get("resume_epic_index", 0)
+    is_resume = resume_epic_index > 0
+
+    if is_resume:
+        print(f"\n{'='*60}")
+        print(f"RESUME: Loaded {len(epics)} epics, {total_stories} stories")
+        print(f"  Resuming from epic index {resume_epic_index} "
+              f"({state.get('resume_stories_completed', 0)} stories already done)")
+        for e in epics:
+            print(f"  Epic {e['epic_num']}: {e['epic_name']} ({len(e['stories'])} stories)")
+        print(f"{'='*60}")
+
+        return {
+            "epics": epics,
+            "epic_index": resume_epic_index,
+            "total_stories": total_stories,
+            "all_story_results": state.get("resume_story_results", []),
+            "stories_completed": state.get("resume_stories_completed", 0),
+            "stories_failed": state.get("resume_stories_failed", 0),
+            "total_interventions": state.get("resume_total_interventions", 0),
+            "pipeline_status": "running",
+            "start_time": time.time(),
+        }
 
     print(f"\n{'='*60}")
     print(f"REBUILD: Loaded {len(epics)} epics, {total_stories} stories")
@@ -457,6 +491,61 @@ def advance_epic_node(state: RebuildState) -> dict[str, Any]:
     return {"epic_index": state.get("epic_index", 0) + 1}
 
 
+def write_paused_node(state: RebuildState) -> dict[str, Any]:
+    """Write rebuild-status.md and save resume state for clean resume."""
+    target_dir = state.get("target_dir", "")
+    story_results = state.get("all_story_results", [])
+    total_stories = state.get("total_stories", 0)
+    total_interventions = state.get("total_interventions", 0)
+    start_time = state.get("start_time", time.time())
+    elapsed = time.time() - start_time
+
+    _write_rebuild_status(
+        target_dir=target_dir,
+        story_results=story_results,
+        total_stories=total_stories,
+        total_interventions=total_interventions,
+        elapsed_seconds=elapsed,
+    )
+
+    epics = state.get("epics", [])
+    epic_index = state.get("epic_index", 0)
+    epic_status = state.get("current_epic_status", "")
+
+    # If pause happened mid-epic, the current epic is incomplete.
+    # On resume, we re-run the current epic from scratch (the completed
+    # stories within it are idempotent via git — already committed).
+    # If pause happened between epics, advance past the completed one.
+    if epic_status == "paused":
+        resume_epic_index = epic_index  # Re-run current epic
+    else:
+        resume_epic_index = epic_index + 1  # Current epic finished; start next
+
+    # Save resume state to session file
+    resume_state = {
+        "session_id": state.get("session_id", ""),
+        "target_dir": target_dir,
+        "resume_epic_index": resume_epic_index,
+        "resume_stories_completed": state.get("stories_completed", 0),
+        "resume_stories_failed": state.get("stories_failed", 0),
+        "resume_total_interventions": total_interventions,
+        "resume_story_results": story_results,
+    }
+    session_file = "checkpoints/session.json"
+    os.makedirs(os.path.dirname(session_file), exist_ok=True)
+    with open(session_file, "w", encoding="utf-8") as f:
+        json.dump(resume_state, f, indent=2)
+
+    logger.info(
+        "Pipeline paused at epic %d/%d. Resume with --resume to continue.",
+        epic_index + 1, len(epics),
+    )
+    print(f"\n*** PAUSED at epic {epic_index + 1}/{len(epics)}.")
+    print("    Resume with: python -m src.main --rebuild <target_dir> --resume")
+
+    return {"pipeline_status": "paused"}
+
+
 def write_final_node(state: RebuildState) -> dict[str, Any]:
     """Write final rebuild-status.md with timing and set terminal status."""
     target_dir = state.get("target_dir", "")
@@ -502,11 +591,14 @@ def route_after_load_backlog(state: RebuildState) -> str:
 
 
 def route_after_epic(state: RebuildState) -> str:
-    """Route after epic completes: more epics, aborted, or done."""
+    """Route after epic completes: more epics, aborted, paused, or done."""
     epic_status = state.get("current_epic_status", "")
 
     if epic_status == "aborted":
         return "aborted"
+
+    if epic_status == "paused" or is_pause_requested():
+        return "paused"
 
     epics = state.get("epics", [])
     epic_index = state.get("epic_index", 0)
@@ -594,6 +686,7 @@ def build_rebuild_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("tag_epic", tag_epic_node)
     graph.add_node("write_status", write_status_node)
     graph.add_node("advance_epic", advance_epic_node)
+    graph.add_node("write_paused", write_paused_node)
     graph.add_node("write_final", write_final_node)
 
     # Edges
@@ -619,9 +712,11 @@ def build_rebuild_graph() -> StateGraph:  # type: ignore[type-arg]
         {
             "more_epics": "advance_epic",
             "aborted": "write_final",
+            "paused": "write_paused",
             "all_done": "write_final",
         },
     )
+    graph.add_edge("write_paused", END)
 
     graph.add_edge("advance_epic", "select_epic")
     graph.add_edge("write_final", END)
