@@ -24,6 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.intake.backlog import load_backlog
+from src.intake.cost_tracker import get_invocation_count, get_total_cost, reset as reset_cost
 from src.intake.intervention_log import InterventionLogger
 from src.intake.rebuild_graph import RebuildState, build_rebuild
 from src.pipeline_tracker import (
@@ -111,6 +112,7 @@ def run_rebuild(
         total_stories, elapsed_seconds, pipeline_status.
     """
     start_time = time.time()
+    reset_cost()
     start_pipeline(session_id, "rebuild")
 
     # Start web relay (if configured via env vars)
@@ -295,6 +297,8 @@ def _build_result(
         "total_stories": result.get("total_stories", 0),
         "elapsed_seconds": elapsed,
         "pipeline_status": pipeline_status,
+        "total_cost_usd": get_total_cost(),
+        "llm_invocations": get_invocation_count(),
     }
 
 

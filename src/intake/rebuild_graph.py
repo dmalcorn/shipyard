@@ -27,6 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from src.intake.backlog import load_backlog
+from src.intake.cost_tracker import get_invocation_count, get_total_cost
 from src.intake.epic_graph import EpicState, build_epic_runner
 from src.intake.pause import is_pause_requested
 
@@ -651,6 +652,11 @@ def _write_rebuild_status(
     if is_final and elapsed_seconds is not None:
         minutes = elapsed_seconds / 60
         lines.append(f"Total time: {minutes:.1f} minutes")
+
+    cost = get_total_cost()
+    invocations = get_invocation_count()
+    if cost > 0:
+        lines.append(f"Cost: ${cost:.2f} ({invocations} LLM calls)")
 
     status_path = os.path.join(target_dir, "rebuild-status.md")
     with open(status_path, "w", encoding="utf-8") as f:

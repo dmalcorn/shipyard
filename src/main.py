@@ -674,9 +674,13 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
         )
 
         status = result.get("pipeline_status", "unknown")
+        cost = result.get("total_cost_usd", 0.0)
+        invocations = result.get("llm_invocations", 0)
+
         if status == "paused":
             print("\nRebuild paused.")
             print(f"  Stories so far: {result['stories_completed']}/{result['total_stories']}")
+            print(f"  Cost so far: ${cost:.2f} ({invocations} LLM calls)")
             print(f"  To resume: python -m src.main --rebuild {target_dir} --resume")
         else:
             print("\nRebuild complete.")
@@ -684,6 +688,7 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
             print(f"  Failed: {result['stories_failed']}")
             print(f"  Interventions: {result['interventions']}")
             print(f"  Time: {result['elapsed_seconds'] / 60:.1f} minutes")
+            print(f"  Cost: ${cost:.2f} ({invocations} LLM calls)")
     finally:
         signal.signal(signal.SIGINT, original_handler)
 

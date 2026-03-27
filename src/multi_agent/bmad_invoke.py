@@ -17,6 +17,8 @@ import threading
 import time
 from typing import Any
 
+from src.intake.cost_tracker import add_cost
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -67,6 +69,8 @@ def _print_stream_event(
         cost = event.get("total_cost_usd", 0)
         turns = event.get("num_turns", 0)
         status = subtype  # "success" or "error"
+        if cost:
+            add_cost(cost)
         print(f"      {tag} RESULT: {status} ({turns} turns, ${cost:.4f})")
         if result_text:
             # Show first 300 chars of result
