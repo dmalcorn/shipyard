@@ -350,11 +350,15 @@ def route_after_story_result(state: EpicState) -> str:
 
 
 def route_next_story(state: EpicState) -> str:
-    """Route to next story or epic post-processing."""
+    """Route to next story or epic post-processing.
+
+    Called after advance_story_node has already incremented story_index,
+    so story_index is the index of the *next* story to run.
+    """
     stories = state.get("stories", [])
     story_index = state.get("story_index", 0)
 
-    if story_index + 1 < len(stories):
+    if story_index < len(stories):
         return "more_stories"
     return "epic_done"
 

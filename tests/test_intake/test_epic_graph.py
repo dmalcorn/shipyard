@@ -110,16 +110,18 @@ class TestRouteNextStory:
     """route_next_story checks if more stories remain."""
 
     def test_more_stories(self) -> None:
+        # After advance_story_node: story_index is 1, 2 stories remain
         state: EpicState = {
             "stories": [{"story": "A"}, {"story": "B"}],
-            "story_index": 0,
+            "story_index": 1,
         }
         assert route_next_story(state) == "more_stories"
 
     def test_epic_done(self) -> None:
+        # After advance_story_node: story_index is 1, only 1 story total
         state: EpicState = {
             "stories": [{"story": "A"}],
-            "story_index": 0,
+            "story_index": 1,
         }
         assert route_next_story(state) == "epic_done"
 
