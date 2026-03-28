@@ -353,18 +353,23 @@ def _push_to_remotes(target_dir: str) -> None:
 
     Failures are logged as warnings, never fatal.
     """
-    # git doesn't allow --all and --tags together; push separately.
-    for flag in ("--all", "--tags"):
-        result = subprocess.run(
-            ["git", "push", "origin", flag],
-            cwd=target_dir,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            logger.warning("git push %s to origin failed: %s", flag, result.stderr.strip())
-        else:
-            logger.info("Pushed %s to origin", flag)
+    # Detect current branch, then push branch + tags in one command.
+    branch_result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=target_dir, capture_output=True, text=True,
+    )
+    branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "main"
+
+    result = subprocess.run(
+        ["git", "push", "origin", branch, "--tags"],
+        cwd=target_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.warning("git push to origin failed: %s", result.stderr.strip())
+    else:
+        logger.info("Pushed %s + tags to origin", branch)
 
 
 def init_project_node(state: RebuildState) -> dict[str, Any]:
