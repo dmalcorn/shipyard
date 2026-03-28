@@ -588,7 +588,7 @@ def write_paused_node(state: RebuildState) -> dict[str, Any]:
         "resume_total_interventions": total_interventions,
         "resume_story_results": story_results,
     }
-    session_file = "checkpoints/session.json"
+    session_file = os.path.join(target_dir, "checkpoints/session.json")
     os.makedirs(os.path.dirname(session_file), exist_ok=True)
     with open(session_file, "w", encoding="utf-8") as f:
         json.dump(resume_state, f, indent=2)

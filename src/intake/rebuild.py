@@ -139,9 +139,9 @@ def run_rebuild(
             logging.getLogger().removeHandler(relay_handler)
 
 
-def _load_resume_state() -> dict[str, Any] | None:
+def _load_resume_state(target_dir: str) -> dict[str, Any] | None:
     """Load resume state from the session file, or None if not found."""
-    session_file = "checkpoints/session.json"
+    session_file = os.path.join(target_dir, "checkpoints/session.json")
     if not os.path.isfile(session_file):
         return None
     try:
@@ -210,7 +210,7 @@ def _run_rebuild_core(
     }
 
     if resume:
-        resume_data = _load_resume_state()
+        resume_data = _load_resume_state(target_dir)
         if resume_data:
             initial_state["resume_epic_index"] = resume_data.get(
                 "resume_epic_index", 0,
@@ -238,7 +238,8 @@ def _run_rebuild_core(
     try:
         # Use a fresh thread_id each invocation so LangGraph doesn't
         # try to replay from a completed graph's checkpoint.
-        compiled = build_rebuild()
+        checkpoints_db = os.path.join(target_dir, "checkpoints/rebuild.db")
+        compiled = build_rebuild(checkpoints_db=checkpoints_db)
         thread_id = str(uuid.uuid4())
         config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
         result = compiled.invoke(initial_state, config=config)  # type: ignore[call-overload]

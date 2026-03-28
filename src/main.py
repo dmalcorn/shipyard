@@ -572,22 +572,29 @@ def _run_cli() -> None:
 # ---------------------------------------------------------------------------
 
 
-SESSION_FILE = "checkpoints/session.json"
+SESSION_FILENAME = "checkpoints/session.json"
+
+
+def _session_path(target_dir: str) -> str:
+    """Return the absolute path to the session file inside the target dir."""
+    return os.path.join(target_dir, SESSION_FILENAME)
 
 
 def _save_session(session_id: str, target_dir: str) -> None:
     """Persist session_id to disk so --resume can find it."""
-    os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-    with open(SESSION_FILE, "w", encoding="utf-8") as f:
+    path = _session_path(target_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump({"session_id": session_id, "target_dir": target_dir}, f)
 
 
-def _load_session() -> dict[str, str] | None:
+def _load_session(target_dir: str) -> dict[str, str] | None:
     """Load the most recent session from disk, or None if not found."""
-    if not os.path.isfile(SESSION_FILE):
+    path = _session_path(target_dir)
+    if not os.path.isfile(path):
         return None
     try:
-        with open(SESSION_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
@@ -609,7 +616,7 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
 
     # Session management: resume existing or start fresh
     if resume:
-        saved = _load_session()
+        saved = _load_session(target_dir)
         if saved and saved.get("session_id"):
             session_id = saved["session_id"]
             print(f"Resuming session: {session_id}")
