@@ -83,14 +83,19 @@ class RebuildState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 
+_VERSION_SUBCOMMAND_TOOLS = {"go"}
+
+
 def _tool_version(tool: str) -> str | None:
     """Get a tool's version string, or None if not installed."""
     path = shutil.which(tool)
     if not path:
         return None
     try:
+        # Most tools use --version, but some (e.g. go) use a subcommand
+        flag = "version" if tool in _VERSION_SUBCOMMAND_TOOLS else "--version"
         result = subprocess.run(
-            [tool, "--version"],
+            [tool, flag],
             capture_output=True, text=True, timeout=10,
         )
         version = (result.stdout or result.stderr).strip().splitlines()[0]

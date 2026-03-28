@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Go toolchain for Go projects
 RUN curl -fsSL https://go.dev/dl/go1.24.1.linux-amd64.tar.gz | tar -C /usr/local -xz
-ENV PATH="/usr/local/go/bin:${PATH}"
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 # Claude CLI (installed globally via npm)
 RUN npm install -g @anthropic-ai/claude-code
@@ -26,7 +27,7 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN pip install --no-cache-dir ruff mypy pytest
 
 # Playwright for browser-based acceptance tests (frontend projects)
-RUN npx playwright install --with-deps chromium
+RUN npm install -g playwright && npx playwright install --with-deps chromium
 
 # Shipyard factory code
 WORKDIR /app/shipyard
