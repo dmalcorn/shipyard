@@ -627,6 +627,24 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
             session_id = str(uuid.uuid4())
             _save_session(session_id, target_dir)
     else:
+        # Check if a checkpoint with progress exists — warn before overwriting
+        session_file = os.path.join(target_dir, "checkpoints/session.json")
+        if os.path.isfile(session_file):
+            try:
+                with open(session_file, encoding="utf-8") as f:
+                    existing = json.load(f)
+                has_progress = (
+                    existing.get("resume_epic_index", 0) > 0
+                    or existing.get("resume_story_index", 0) > 0
+                )
+                if has_progress:
+                    backup = session_file + ".bak"
+                    import shutil
+                    shutil.copy2(session_file, backup)
+                    print(f"WARNING: Existing checkpoint with progress backed up to {backup}")
+                    print("         Use --resume to continue from where you left off.")
+            except (json.JSONDecodeError, OSError):
+                pass
         session_id = str(uuid.uuid4())
         _save_session(session_id, target_dir)
 
