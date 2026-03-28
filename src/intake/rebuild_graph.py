@@ -380,10 +380,9 @@ def _push_to_remotes(target_dir: str) -> None:
         env=push_env,
     )
     if result.returncode != 0:
-        logger.warning("git push to origin failed: %s",
-                        _redact_url(result.stderr.strip()))
+        logger.warning("git push to origin failed (exit %d)", result.returncode)
     else:
-        logger.info("Pushed %s + tags to origin", branch)
+        logger.info("Pushed to origin")
 
 
 def init_project_node(state: RebuildState) -> dict[str, Any]:
@@ -493,8 +492,7 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
             ["git", "remote", "set-url", "--add", "--push", "origin", push_urls[0]],
             cwd=target_dir, capture_output=True, check=True,
         )
-        logger.info("Configured origin with push URLs: %s",
-                     [_redact_url(u) for u in push_urls])
+        logger.info("Configured origin with %d push URL(s)", len(push_urls))
 
     # Push initial scaffold
     _push_to_remotes(target_dir)
