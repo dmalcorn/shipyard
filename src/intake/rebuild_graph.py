@@ -334,6 +334,38 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     }
 
 
+def _push_to_remotes(target_dir: str) -> None:
+    """Push current branch and tags to all configured git remotes.
+
+    Reads GIT_REMOTE_ORIGIN and GIT_REMOTE_MIRROR from env.
+    Failures are logged as warnings, never fatal.
+    """
+    remotes = {
+        "origin": os.environ.get("GIT_REMOTE_ORIGIN", ""),
+        "mirror": os.environ.get("GIT_REMOTE_MIRROR", ""),
+    }
+    # Detect current branch name
+    branch_result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=target_dir, capture_output=True, text=True,
+    )
+    branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "main"
+
+    for name, url in remotes.items():
+        if not url:
+            continue
+        result = subprocess.run(
+            ["git", "push", name, branch, "--tags"],
+            cwd=target_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.warning("git push to %s failed: %s", name, result.stderr.strip())
+        else:
+            logger.info("Pushed to %s (%s)", name, url)
+
+
 def init_project_node(state: RebuildState) -> dict[str, Any]:
     """Initialize the target project directory with git repo and scaffold."""
     target_dir = state.get("target_dir", "")
@@ -414,6 +446,28 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
             text=True,
             check=True,
         )
+
+    # Configure git remotes (idempotent — safe on resume)
+    remotes = {
+        "origin": os.environ.get("GIT_REMOTE_ORIGIN", ""),
+        "mirror": os.environ.get("GIT_REMOTE_MIRROR", ""),
+    }
+    for name, url in remotes.items():
+        if not url:
+            continue
+        # set-url works whether the remote exists or not (add first, then set)
+        subprocess.run(
+            ["git", "remote", "remove", name],
+            cwd=target_dir, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "remote", "add", name, url],
+            cwd=target_dir, capture_output=True, check=True,
+        )
+        logger.info("Configured git remote '%s' -> %s", name, url)
+
+    # Push initial scaffold
+    _push_to_remotes(target_dir)
 
     return {}
 
@@ -522,6 +576,8 @@ def tag_epic_node(state: RebuildState) -> dict[str, Any]:
         logger.warning("Git tag '%s' failed: %s", tag_name, result.stderr.strip())
     else:
         logger.info("Tagged epic completion: %s", tag_name)
+
+    _push_to_remotes(target_dir)
 
     return {}
 
