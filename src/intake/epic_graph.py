@@ -291,8 +291,8 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
 
     # Rolling story-level checkpoint: if a hard kill happens before the
     # next story finishes, resume will skip already-completed stories.
-    if status == "completed":
-        target_dir = state.get("target_dir", "")
+    target_dir = state.get("target_dir", "")
+    if status == "completed" and target_dir:
         epic_idx = state.get("rebuild_epic_index", 0)
         prior_completed = state.get("rebuild_prior_completed", 0)
         prior_failed = state.get("rebuild_prior_failed", 0)
