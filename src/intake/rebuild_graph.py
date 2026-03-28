@@ -360,11 +360,15 @@ def _push_to_remotes(target_dir: str) -> None:
     )
     branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "main"
 
+    # GIT_TERMINAL_PROMPT=0 prevents git from hanging when credentials
+    # are missing (e.g. inside Docker with plain HTTPS URLs).
+    push_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     result = subprocess.run(
         ["git", "push", "origin", branch, "--tags"],
         cwd=target_dir,
         capture_output=True,
         text=True,
+        env=push_env,
     )
     if result.returncode != 0:
         logger.warning("git push to origin failed: %s", result.stderr.strip())
