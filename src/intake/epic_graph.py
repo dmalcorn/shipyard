@@ -11,6 +11,7 @@ when a story pipeline fails.
 
 from __future__ import annotations
 
+import json
 import logging
 import operator
 import os
@@ -113,6 +114,13 @@ class EpicState(TypedDict, total=False):
     # Control
     epic_status: str  # running|completed|failed|aborted
     error: str
+
+    # Rebuild-level context (passed down from Level 1 for checkpointing)
+    rebuild_epic_index: int
+    rebuild_prior_completed: int
+    rebuild_prior_failed: int
+    rebuild_prior_interventions: int
+    rebuild_prior_results: list[dict[str, Any]]
 
 
 class EpicReviewNodeInput(TypedDict):
@@ -280,6 +288,33 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
         updates["current_story_error"] = (
             f"Story {story_id} ({story_name}) failed — aborting epic and pipeline."
         )
+
+    # Rolling story-level checkpoint: if a hard kill happens before the
+    # next story finishes, resume will skip already-completed stories.
+    if status == "completed":
+        target_dir = state.get("target_dir", "")
+        epic_idx = state.get("rebuild_epic_index", 0)
+        prior_completed = state.get("rebuild_prior_completed", 0)
+        prior_failed = state.get("rebuild_prior_failed", 0)
+        prior_interventions = state.get("rebuild_prior_interventions", 0)
+        prior_results = state.get("rebuild_prior_results", [])
+
+        all_results = prior_results + state.get("story_results", []) + [result_entry]
+
+        resume_state = {
+            "session_id": state.get("session_id", ""),
+            "target_dir": target_dir,
+            "resume_epic_index": epic_idx,
+            "resume_story_index": story_index + 1,
+            "resume_stories_completed": prior_completed + stories_completed,
+            "resume_stories_failed": prior_failed + stories_failed,
+            "resume_total_interventions": prior_interventions + state.get("total_interventions", 0),
+            "resume_story_results": all_results,
+        }
+        session_file = os.path.join(target_dir, "checkpoints/session.json")
+        os.makedirs(os.path.dirname(session_file), exist_ok=True)
+        with open(session_file, "w", encoding="utf-8") as f:
+            json.dump(resume_state, f, indent=2)
 
     return updates
 

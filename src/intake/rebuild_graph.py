@@ -72,6 +72,7 @@ class RebuildState(TypedDict, total=False):
 
     # Resume support — when set, load_backlog preserves these values
     resume_epic_index: int
+    resume_story_index: int
     resume_stories_completed: int
     resume_stories_failed: int
     resume_total_interventions: int
@@ -185,7 +186,11 @@ def preflight_check_node(state: RebuildState) -> dict[str, Any]:
 
     Skipped on resume — preflight was already validated on the original run.
     """
-    if state.get("resume_epic_index", 0) > 0:
+    is_resume = (
+        state.get("resume_epic_index", 0) > 0
+        or state.get("resume_story_index", 0) > 0
+    )
+    if is_resume:
         print("\n--- Preflight Check (skipped — resuming) ---\n")
         return {}
 
@@ -299,12 +304,13 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
 
     # Check for resume fields — if present, restore progress counters
     resume_epic_index = state.get("resume_epic_index", 0)
-    is_resume = resume_epic_index > 0
+    resume_story_index = state.get("resume_story_index", 0)
+    is_resume = resume_epic_index > 0 or resume_story_index > 0
 
     if is_resume:
         print(f"\n{'='*60}")
         print(f"RESUME: Loaded {len(epics)} epics, {total_stories} stories")
-        print(f"  Resuming from epic index {resume_epic_index} "
+        print(f"  Resuming from epic {resume_epic_index + 1}, story {resume_story_index + 1} "
               f"({state.get('resume_stories_completed', 0)} stories already done)")
         for e in epics:
             print(f"  Epic {e['epic_num']}: {e['epic_name']} ({len(e['stories'])} stories)")
@@ -318,6 +324,7 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
             "stories_completed": state.get("resume_stories_completed", 0),
             "stories_failed": state.get("resume_stories_failed", 0),
             "total_interventions": state.get("resume_total_interventions", 0),
+            "resume_story_index": resume_story_index,
             "pipeline_status": "running",
             "start_time": time.time(),
         }
@@ -501,13 +508,19 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
     epic_index = state.get("epic_index", 0)
     epic = epics[epic_index]
 
+    # Determine starting story index — non-zero when resuming mid-epic
+    resume_story_index = state.get("resume_story_index", 0)
+    # Only apply resume_story_index to the first epic after resume;
+    # subsequent epics always start from story 0.
+    start_story = resume_story_index if resume_story_index > 0 else 0
+
     epic_input: EpicState = {
         "session_id": session_id,
         "target_dir": os.path.abspath(target_dir),
         "epic_num": epic["epic_num"],
         "epic_name": epic["epic_name"],
         "stories": epic["stories"],
-        "story_index": 0,
+        "story_index": start_story,
         "story_results": [],
         "stories_completed": 0,
         "stories_failed": 0,
@@ -525,6 +538,12 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
         "epic_last_ci_output": "",
         "epic_status": "running",
         "error": "",
+        # Rebuild-level context for story-level checkpointing
+        "rebuild_epic_index": epic_index,
+        "rebuild_prior_completed": state.get("stories_completed", 0),
+        "rebuild_prior_failed": state.get("stories_failed", 0),
+        "rebuild_prior_interventions": state.get("total_interventions", 0),
+        "rebuild_prior_results": state.get("all_story_results", []),
     }
 
     compiled_epic = build_epic_runner()
@@ -556,6 +575,8 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
         "stories_completed": state.get("stories_completed", 0) + epic_completed,
         "stories_failed": state.get("stories_failed", 0) + epic_failed,
         "total_interventions": state.get("total_interventions", 0) + epic_interventions,
+        # Clear resume_story_index so subsequent epics start from story 0
+        "resume_story_index": 0,
     }
 
 
@@ -609,6 +630,7 @@ def write_status_node(state: RebuildState) -> dict[str, Any]:
         "session_id": state.get("session_id", ""),
         "target_dir": target_dir,
         "resume_epic_index": epic_index + 1,  # next epic to run
+        "resume_story_index": 0,  # next epic starts from story 0
         "resume_stories_completed": state.get("stories_completed", 0),
         "resume_stories_failed": state.get("stories_failed", 0),
         "resume_total_interventions": total_interventions,
@@ -646,31 +668,10 @@ def write_paused_node(state: RebuildState) -> dict[str, Any]:
 
     epics = state.get("epics", [])
     epic_index = state.get("epic_index", 0)
-    epic_status = state.get("current_epic_status", "")
 
-    # If pause happened mid-epic, the current epic is incomplete.
-    # On resume, we re-run the current epic from scratch (the completed
-    # stories within it are idempotent via git — already committed).
-    # If pause happened between epics, advance past the completed one.
-    if epic_status == "paused":
-        resume_epic_index = epic_index  # Re-run current epic
-    else:
-        resume_epic_index = epic_index + 1  # Current epic finished; start next
-
-    # Save resume state to session file
-    resume_state = {
-        "session_id": state.get("session_id", ""),
-        "target_dir": target_dir,
-        "resume_epic_index": resume_epic_index,
-        "resume_stories_completed": state.get("stories_completed", 0),
-        "resume_stories_failed": state.get("stories_failed", 0),
-        "resume_total_interventions": total_interventions,
-        "resume_story_results": story_results,
-    }
-    session_file = os.path.join(target_dir, "checkpoints/session.json")
-    os.makedirs(os.path.dirname(session_file), exist_ok=True)
-    with open(session_file, "w", encoding="utf-8") as f:
-        json.dump(resume_state, f, indent=2)
+    # Note: session.json is NOT written here — the rolling checkpoints
+    # in process_story_result_node (per-story) and write_status_node
+    # (per-epic) keep it up-to-date with finer granularity.
 
     logger.info(
         "Pipeline paused at epic %d/%d. Resume with --resume to continue.",

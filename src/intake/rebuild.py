@@ -147,8 +147,10 @@ def _load_resume_state(target_dir: str) -> dict[str, Any] | None:
     try:
         with open(session_file, encoding="utf-8") as f:
             data = json.load(f)
-        # Only valid if it has resume fields
-        if data.get("resume_epic_index", 0) > 0:
+        # Valid if it has any resume progress (epic or story level)
+        has_epic_progress = data.get("resume_epic_index", 0) > 0
+        has_story_progress = data.get("resume_story_index", 0) > 0
+        if has_epic_progress or has_story_progress:
             return data
         return None
     except (json.JSONDecodeError, OSError):
@@ -215,6 +217,9 @@ def _run_rebuild_core(
             initial_state["resume_epic_index"] = resume_data.get(
                 "resume_epic_index", 0,
             )
+            initial_state["resume_story_index"] = resume_data.get(
+                "resume_story_index", 0,
+            )
             initial_state["resume_stories_completed"] = resume_data.get(
                 "resume_stories_completed", 0,
             )
@@ -228,8 +233,9 @@ def _run_rebuild_core(
                 "resume_story_results", [],
             )
             logger.info(
-                "Resume state loaded: starting at epic index %d, %d stories already done",
+                "Resume state loaded: starting at epic %d, story %d, %d stories already done",
                 initial_state["resume_epic_index"],
+                initial_state["resume_story_index"],
                 initial_state["resume_stories_completed"],
             )
         else:
