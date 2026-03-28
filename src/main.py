@@ -652,8 +652,14 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
             print("\n*** Force-quitting.")
             raise SystemExit(1)
 
-    original_handler = signal.getsignal(signal.SIGINT)
+    original_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, _handle_sigint)
+
+    # In Docker, Ctrl+C sends SIGTERM to PID 1, not SIGINT.
+    original_sigterm = None
+    if hasattr(signal, "SIGTERM"):
+        original_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _handle_sigint)
 
     try:
         def cli_intervention(failure_report: str) -> str | None:
@@ -697,7 +703,9 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
             print(f"  Time: {result['elapsed_seconds'] / 60:.1f} minutes")
             print(f"  Cost: ${cost:.2f} ({invocations} LLM calls)")
     finally:
-        signal.signal(signal.SIGINT, original_handler)
+        signal.signal(signal.SIGINT, original_sigint)
+        if original_sigterm is not None:
+            signal.signal(signal.SIGTERM, original_sigterm)
 
 
 def _run_intake(spec_dir: str, target_dir: str) -> None:

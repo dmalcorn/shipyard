@@ -182,7 +182,13 @@ def preflight_check_node(state: RebuildState) -> dict[str, Any]:
     Uses _detect_project_type() to determine the target project's stack,
     then checks for the appropriate runtime and dev tools. Python projects
     get an auto-install attempt for missing dev tools.
+
+    Skipped on resume — preflight was already validated on the original run.
     """
+    if state.get("resume_epic_index", 0) > 0:
+        print("\n--- Preflight Check (skipped — resuming) ---\n")
+        return {}
+
     target_dir = state.get("target_dir", "")
     errors: list[str] = []
     warnings: list[str] = []
@@ -195,10 +201,11 @@ def preflight_check_node(state: RebuildState) -> dict[str, Any]:
         label="always required", errors=errors, warnings=warnings,
     )
 
-    # Always required: make (used by BMAD agent tool permissions)
+    # Optional: make (in BMAD agent tool allowlist but only invoked if
+    # the target project has a Makefile)
     _check_tools(
-        ["make"], required=True,
-        label="required by BMAD agent tools", errors=errors, warnings=warnings,
+        ["make"], required=False,
+        label="BMAD agent tools (optional)", errors=errors, warnings=warnings,
     )
 
     # Detect project type and check appropriate tools
@@ -577,7 +584,11 @@ def tag_epic_node(state: RebuildState) -> dict[str, Any]:
 
 
 def write_status_node(state: RebuildState) -> dict[str, Any]:
-    """Write rebuild-status.md after the current epic."""
+    """Write rebuild-status.md and a rolling checkpoint after each epic.
+
+    The rolling checkpoint ensures that even a hard kill (SIGKILL, Docker
+    stop, power loss) loses at most the current epic — not all progress.
+    """
     target_dir = state.get("target_dir", "")
     story_results = state.get("all_story_results", [])
     total_stories = state.get("total_stories", 0)
@@ -589,6 +600,24 @@ def write_status_node(state: RebuildState) -> dict[str, Any]:
         total_stories=total_stories,
         total_interventions=total_interventions,
     )
+
+    # Rolling checkpoint: save resume state so a hard kill doesn't lose
+    # all progress.  On resume the completed epic won't re-run because
+    # resume_epic_index points to the *next* epic.
+    epic_index = state.get("epic_index", 0)
+    resume_state = {
+        "session_id": state.get("session_id", ""),
+        "target_dir": target_dir,
+        "resume_epic_index": epic_index + 1,  # next epic to run
+        "resume_stories_completed": state.get("stories_completed", 0),
+        "resume_stories_failed": state.get("stories_failed", 0),
+        "resume_total_interventions": total_interventions,
+        "resume_story_results": story_results,
+    }
+    session_file = os.path.join(target_dir, "checkpoints/session.json")
+    os.makedirs(os.path.dirname(session_file), exist_ok=True)
+    with open(session_file, "w", encoding="utf-8") as f:
+        json.dump(resume_state, f, indent=2)
 
     return {}
 
