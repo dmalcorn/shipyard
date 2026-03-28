@@ -348,6 +348,15 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     }
 
 
+def _redact_url(url: str) -> str:
+    """Redact credentials from a git URL for safe logging.
+
+    Turns https://token@github.com/... into https://***@github.com/...
+    """
+    import re
+    return re.sub(r"(https?://)([^@]+)@", r"\1***@", url)
+
+
 def _push_to_remotes(target_dir: str) -> None:
     """Push to origin (which may have multiple push URLs) with tags.
 
@@ -371,7 +380,8 @@ def _push_to_remotes(target_dir: str) -> None:
         env=push_env,
     )
     if result.returncode != 0:
-        logger.warning("git push to origin failed: %s", result.stderr.strip())
+        logger.warning("git push to origin failed: %s",
+                        _redact_url(result.stderr.strip()))
     else:
         logger.info("Pushed %s + tags to origin", branch)
 
@@ -483,7 +493,8 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
             ["git", "remote", "set-url", "--add", "--push", "origin", push_urls[0]],
             cwd=target_dir, capture_output=True, check=True,
         )
-        logger.info("Configured origin with push URLs: %s", push_urls)
+        logger.info("Configured origin with push URLs: %s",
+                     [_redact_url(u) for u in push_urls])
 
     # Push initial scaffold
     _push_to_remotes(target_dir)
