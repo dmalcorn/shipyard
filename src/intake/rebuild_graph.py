@@ -340,7 +340,7 @@ def _push_to_remotes(target_dir: str) -> None:
     Failures are logged as warnings, never fatal.
     """
     result = subprocess.run(
-        ["git", "push", "origin", "--tags"],
+        ["git", "push", "origin", "--all", "--tags"],
         cwd=target_dir,
         capture_output=True,
         text=True,
