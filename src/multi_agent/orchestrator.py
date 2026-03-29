@@ -33,6 +33,7 @@ from langgraph.graph.state import CompiledStateGraph
 from src.audit_log.audit import get_logger
 from src.multi_agent.bmad_invoke import (
     TOOLS_CI_FIX,
+    TOOLS_CI_GENERATE,
     TOOLS_CODE_REVIEW,
     TOOLS_DEV,
     TOOLS_SM,
@@ -728,8 +729,148 @@ echo "=== All checks passed ==="
 }
 
 
-def _scaffold_ci_script(working_dir: str | None) -> str:
-    """Generate a default scripts/ci.sh for the target project.
+def generate_ci_script(working_dir: str | None) -> str:
+    """Generate scripts/ci.sh by invoking bmad-architect on the approved tech stack.
+
+    Reads _bmad-output/approved-tech-stack.md from the target project directory
+    and asks the architect agent to produce a comprehensive CI script covering
+    every stack, subdirectory, and test framework listed in the document.
+
+    Falls back to the static template scaffolding if the tech stack file is
+    missing or the architect invocation fails.
+
+    Args:
+        working_dir: Target project root (None = cwd).
+
+    Returns:
+        Absolute path to the generated scripts/ci.sh.
+
+    Raises:
+        FileNotFoundError: If _bmad-output/approved-tech-stack.md does not exist.
+    """
+    base = working_dir or "."
+    tech_stack_path = os.path.join(base, "_bmad-output", "approved-tech-stack.md")
+
+    if not os.path.isfile(tech_stack_path):
+        msg = (
+            f"Cannot generate CI script: {tech_stack_path} not found. "
+            f"Create _bmad-output/approved-tech-stack.md in the target project "
+            f"before running the pipeline. This file should list every technology, "
+            f"test framework, and build tool the project uses."
+        )
+        logger.error(msg)
+        print(f"\n    [ci] ERROR: {msg}")
+        raise FileNotFoundError(msg)
+
+    # Read the tech stack so we can include it in the architect prompt
+    with open(tech_stack_path, encoding="utf-8") as f:
+        tech_stack_content = f.read()
+
+    # Scan for subdirectories with their own package manifests to give the
+    # architect awareness of the project layout
+    layout_hints: list[str] = []
+    for entry in sorted(os.listdir(base)):
+        entry_path = os.path.join(base, entry)
+        if not os.path.isdir(entry_path) or entry.startswith((".", "_", "node_modules")):
+            continue
+        markers = ["go.mod", "package.json", "pyproject.toml", "Cargo.toml",
+                    "requirements.txt", "setup.py"]
+        for marker in markers:
+            if os.path.isfile(os.path.join(entry_path, marker)):
+                layout_hints.append(f"  {entry}/{marker}")
+    # Also check root-level markers
+    for marker in ["go.mod", "package.json", "pyproject.toml", "Cargo.toml",
+                    "requirements.txt"]:
+        if os.path.isfile(os.path.join(base, marker)):
+            layout_hints.append(f"  ./{marker} (root)")
+
+    layout_section = "\n".join(layout_hints) if layout_hints else "  (no markers found)"
+
+    architect_prompt = (
+        "Analyze the approved tech stack document below and generate a comprehensive "
+        "bash CI script that will be saved as scripts/ci.sh.\n\n"
+        "GUARDRAILS — strictly follow these rules:\n"
+        "- ONLY include checks for technologies explicitly listed in the approved "
+        "tech stack document. Do NOT add tools, linters, or checks that are not in "
+        "the document.\n"
+        "- Use the project layout hints below to determine which subdirectory each "
+        "stack lives in (e.g. Go code in api/, Node code in web/).\n"
+        "- If a technology is listed but no matching directory exists yet (empty project), "
+        "wrap that section in an existence check (e.g. if [ -d api ]; then ...).\n"
+        "- The script MUST use 'set -euo pipefail' and fail fast on any error.\n"
+        "- The script MUST support these flags: --story FILTER, --quick, --test-only.\n"
+        "- For --test-only mode, skip lint/typecheck/build and only run tests.\n"
+        "- For --quick mode, run tests with fail-fast (-x or equivalent).\n"
+        "- Include these phases in order: install deps → lint → typecheck → test → build.\n"
+        "- Skip install if dependencies are already present (node_modules exists, etc.).\n"
+        "- For tests that need infrastructure (Playwright, testcontainers), add a skip "
+        "message rather than failing.\n"
+        "- End with 'echo \"=== All checks passed ===\"' on success.\n"
+        "- Output ONLY the script content in a single fenced code block. No explanation.\n\n"
+        f"PROJECT LAYOUT:\n{layout_section}\n\n"
+        f"APPROVED TECH STACK:\n```\n{tech_stack_content}\n```"
+    )
+
+    print(f"\n    [ci] Invoking bmad-architect to generate CI script from approved tech stack...")
+    result = invoke_bmad_agent(
+        bmad_agent="bmad-architect",
+        command=architect_prompt,
+        tools=TOOLS_CI_GENERATE,
+        working_dir=working_dir,
+        timeout=TIMEOUT_MEDIUM,
+    )
+
+    if not result.get("success"):
+        logger.warning(
+            "Architect CI generation failed (exit=%s), falling back to static template",
+            result.get("exit_code"),
+        )
+        print("    [ci] WARN: Architect failed, falling back to static template")
+        return _scaffold_ci_script_static(working_dir)
+
+    # Extract the script from the architect's output — look for a fenced code block
+    output = result.get("output", "")
+    script_content = _extract_script_from_output(output)
+
+    if not script_content:
+        logger.warning("Could not extract script from architect output, falling back")
+        print("    [ci] WARN: Could not parse architect output, falling back to static template")
+        return _scaffold_ci_script_static(working_dir)
+
+    # Write the script
+    scripts_dir = os.path.join(base, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    ci_path = os.path.join(scripts_dir, "ci.sh")
+    with open(ci_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(script_content)
+    os.chmod(ci_path, 0o755)
+
+    logger.info("Generated CI script at %s via bmad-architect", ci_path)
+    print(f"    [ci] Generated scripts/ci.sh via bmad-architect")
+    return ci_path
+
+
+def _extract_script_from_output(output: str) -> str | None:
+    """Extract a bash script from fenced code blocks in LLM output."""
+    # Try ```bash ... ``` first, then generic ``` ... ```
+    patterns = [
+        r"```(?:bash|sh)\s*\n(.*?)```",
+        r"```\s*\n(.*?)```",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, output, re.DOTALL)
+        if match:
+            script = match.group(1).strip()
+            if script.startswith("#!/"):
+                return script + "\n"
+    return None
+
+
+def _scaffold_ci_script_static(working_dir: str | None) -> str:
+    """Fallback: generate a default scripts/ci.sh from static templates.
+
+    Used when the architect-based generation is unavailable (no tech stack
+    file or architect failure).
 
     Returns the absolute path to the created script.
     """
@@ -746,7 +887,7 @@ def _scaffold_ci_script(working_dir: str | None) -> str:
     os.chmod(ci_path, 0o755)
 
     logger.info("Scaffolded CI script at %s (type=%s)", ci_path, project_type)
-    print(f"    [ci] Scaffolded scripts/ci.sh for {project_type} project")
+    print(f"    [ci] Scaffolded scripts/ci.sh for {project_type} project (static fallback)")
     return ci_path
 
 
@@ -771,6 +912,7 @@ def resolve_ci_command(
         Command as a list of strings suitable for subprocess.
     """
     base = working_dir or "."
+    story_label = f" (story={story_id})" if story_id else " (full suite)"
 
     # --- 1. scripts/ci.sh ---
     ci_script = os.path.join(base, "scripts", "ci.sh")
@@ -778,18 +920,32 @@ def resolve_ci_command(
         cmd = ["bash", "scripts/ci.sh"]
         if story_id:
             cmd += ["--story", story_id]
+        logger.info("CI resolution: found %s, using it%s", ci_script, story_label)
+        print(f"    [ci] Found {ci_script} — using it{story_label}")
         return cmd
 
     # --- 2. Makefile targets ---
     makefile = os.path.join(base, "Makefile")
     if os.path.isfile(makefile):
         if story_id and _makefile_has_target(makefile, "ci-story"):
+            logger.info("CI resolution: found %s ci-story target%s", makefile, story_label)
+            print(f"    [ci] Found {makefile} ci-story target — using make{story_label}")
             return ["make", "ci-story", f"STORY={story_id}"]
         if _makefile_has_target(makefile, "ci"):
+            logger.info("CI resolution: found %s ci target%s", makefile, story_label)
+            print(f"    [ci] Found {makefile} ci target — using make{story_label}")
             return ["make", "ci"]
 
-    # --- 3. Scaffold a default CI script ---
-    _scaffold_ci_script(working_dir)
+    # --- 3. Scaffold a default CI script (static fallback) ---
+    logger.warning(
+        "CI resolution: searched for %s and %s — neither found, scaffolding static fallback",
+        ci_script, makefile,
+    )
+    print(
+        f"    [ci] WARN: Searched for {ci_script} and {makefile} — "
+        f"neither found, scaffolding static fallback{story_label}"
+    )
+    _scaffold_ci_script_static(working_dir)
     cmd = ["bash", "scripts/ci.sh"]
     if story_id:
         cmd += ["--story", story_id]

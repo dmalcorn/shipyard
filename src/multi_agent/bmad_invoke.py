@@ -60,6 +60,7 @@ TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},Bash(git *),Skill"
 TOOLS_CODE_REVIEW = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
 TOOLS_CI_FIX = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
 TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite"
+TOOLS_CI_GENERATE = f"{_BASE_TOOLS},Skill"
 
 
 def _print_stream_event(

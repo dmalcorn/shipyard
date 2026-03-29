@@ -30,7 +30,7 @@ from src.intake.backlog import load_backlog
 from src.intake.cost_tracker import get_invocation_count, get_total_cost
 from src.intake.epic_graph import EpicState, build_epic_runner
 from src.intake.pause import is_pause_requested
-from src.multi_agent.orchestrator import _detect_project_type
+from src.multi_agent.orchestrator import _detect_project_type, generate_ci_script
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +465,31 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
             text=True,
             check=True,
         )
+
+    # Generate CI script from approved tech stack (architect-powered)
+    try:
+        generate_ci_script(target_dir)
+        # Commit the generated CI script
+        subprocess.run(
+            ["git", "add", "scripts/ci.sh"],
+            cwd=target_dir, capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "chore: generate CI script from approved tech stack"],
+            cwd=target_dir, capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        # approved-tech-stack.md missing — generate_ci_script already logged the error
+        return {
+            "pipeline_status": "failed",
+            "error_message": (
+                "Missing _bmad-output/approved-tech-stack.md in target project. "
+                "Create this file before running the pipeline."
+            ),
+        }
+    except Exception as e:
+        logger.warning("CI script generation failed, continuing without it: %s", e)
+        print(f"    [init] WARN: CI script generation failed: {e}")
 
     # Configure origin with multiple push URLs (idempotent — safe on resume)
     push_urls = [
