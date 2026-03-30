@@ -1,10 +1,13 @@
 # Shipyard User's Guide
 
-Multi-agent coding assistant powered by LangGraph and Claude. Shipyard orchestrates specialized AI agents — Dev, Test, Reviewer, Architect — to analyze, review, and modify codebases through a structured TDD pipeline.
+A software factory powered by LangGraph that autonomously implements software projects from planning artifacts. Shipyard orchestrates specialized AI agents — Dev, Test Architect, Reviewer, Architect — through a structured TDD pipeline to produce working, tested, committed code — epic by epic, story by story.
+
+**Factory run:** 40/40 stories, 9/9 epics, 28h 35m, $495.36, zero failed invocations.
 
 ## Prerequisites
 
 - Python 3.13+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (for BMAD agent invocations in the rebuild pipeline)
 - [Anthropic API key](https://console.anthropic.com/)
 - [LangSmith API key](https://smith.langchain.com/) for tracing
 - Docker (optional, for containerized deployment)
@@ -38,6 +41,8 @@ Edit `.env` and fill in your API keys:
 | `LANGCHAIN_PROJECT` | If tracing | Project name for trace grouping (default: `shipyard`) |
 | `SHIPYARD_RELAY_URL` | No | Public dashboard relay endpoint (e.g. Railway URL) |
 | `SHIPYARD_RELAY_KEY` | If relay | Shared secret for authenticating relay pushes |
+| `GIT_AUTHOR_NAME` | No | Git identity for pipeline commits (default: `Shipyard Pipeline`) |
+| `GIT_AUTHOR_EMAIL` | No | Git email for pipeline commits (default: `shipyard@pipeline.local`) |
 
 ## Running Shipyard
 
@@ -118,28 +123,56 @@ Required environment variables (set in Railway dashboard):
 | `DATABASE_URL` | Postgres connection string for log relay storage |
 | `SHIPYARD_RELAY_KEY` | Shared secret for relay authentication |
 
-## Web Dashboard
+## Web Dashboard (Command Bridge)
 
-Visiting the root URL (`/`) serves an interactive **Command Bridge** dashboard with four panels:
+**Live at:** [shipyard-production-29ae.up.railway.app](https://shipyard-production-29ae.up.railway.app/) — publicly accessible, no login required.
 
-- **Health Status** — header badge polls `GET /health` every 30 seconds (green = nominal, red = offline)
-- **Agent Terminal** — send instructions via `POST /instruct`, view responses with session persistence
-- **Spec Intake** — trigger the intake pipeline via `POST /intake` with configurable paths
-- **Rebuild Control** — start rebuilds via `POST /rebuild`, view story progress stats, submit interventions
+The Command Bridge is a real-time monitoring dashboard where anyone can watch Shipyard's software factory builds as they happen, or replay any previous run. It is served from the root URL (`/`) of the deployed Shipyard server.
 
-### Pipeline Flow Graph
+### Dashboard Components
 
-The bottom of the dashboard displays a live **Pipeline Flow** visualization showing all three pipelines:
+**Header bar:**
+- **Shipyard logo** — amber/industrial theme
+- **Health badge** — polls `GET /health` every 30 seconds, green dot = online, red dot = offline
+- **LIVE indicator** — pulsing amber badge appears automatically when a pipeline is actively running
 
-- **Instruct**: User Input → Agent Node → Should Continue? → Tool Calls → Response
-- **Intake**: Read Specs → Summarize → Gen Backlog → Write Output → Complete
-- **Rebuild**: Load Backlog → Init Project → [TDD → Test → Review → Git Tag] → Complete
+**Pipeline Output panel:**
+- Full-screen terminal viewer streaming real-time log output from the running pipeline
+- **Session dropdown** — select any previous run from the dropdown to replay its complete log output
+- **Mode tag** — shows LIVE during active builds or REPLAY when viewing past sessions
+- When idle: "No active pipeline. Select a past session to replay."
 
-Flow nodes are driven by **real server-side state** — the dashboard polls `GET /pipeline/{session_id}/stage` every 15 seconds while a pipeline is running. Nodes light up amber (active), green (completed), or red (failed). The rebuild lane includes a dashed "per story" bracket showing which story is currently being processed.
+**Rebuild Pipeline Flow Graph:**
+- Visual node graph showing pipeline stages: **Load Backlog → Init Project → [per story: TDD Pipeline → Test → Review → Git Tag] → Complete**
+- Each node lights up as the pipeline progresses: idle (dim) → active (amber) → completed (green) → failed (red)
+- **Story label** shows which story is currently being processed (e.g., "Story 2-1")
 
-### Public Monitoring Dashboard
+**Stats bar:**
+- Four counters: **Completed**, **Failed**, **Interventions**, **Total** stories
+- **Progress bar** fills as stories complete
 
-When `DATABASE_URL` and `SHIPYARD_RELAY_URL` are configured, the pipeline streams real-time log output to the Railway-hosted dashboard via Postgres. The monitoring API endpoints (`/api/sessions`, `/api/logs/{session_id}`, `/api/stream/{session_id}`) are public read-only. Log events are pushed from the local pipeline runner using the authenticated `/api/events` endpoint.
+### Data Flow
+
+During a rebuild, `web_relay.py` pushes log events from the local Docker pipeline to Railway's `log_relay.py`, which stores them in Postgres. The dashboard connects via SSE (`/api/stream/{session_id}`) for real-time streaming. For past runs, all stored events are fetched and replayed into the terminal viewer. The dashboard auto-detects active sessions and switches to live mode automatically.
+
+### Configuration
+
+The monitoring relay requires two environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `SHIPYARD_RELAY_URL` | Public dashboard URL (e.g., your Railway deployment) |
+| `SHIPYARD_RELAY_KEY` | Shared secret for authenticated event push to `/api/events` |
+
+The monitoring API endpoints are:
+- `GET /api/sessions` — list all sessions (public)
+- `GET /api/logs/{session_id}` — fetch stored events for a session (public)
+- `GET /api/stream/{session_id}` — SSE real-time event stream (public)
+- `POST /api/events` — push events from pipeline (requires `Authorization: Bearer <SHIPYARD_RELAY_KEY>`)
+
+### Design
+
+Industrial/naval theme — dark hull background (`#0a0c10`), amber accents, JetBrains Mono for terminal output, Outfit for headings, steel-plate panel borders with subtle grid lines. Source: `src/static/index.html`.
 
 ## API Reference
 
@@ -306,14 +339,19 @@ The rebuild loop:
 
 1. Loads the backlog from `epics.md`
 2. Initializes the target project (git repo, scaffold)
-3. Processes each story through the TDD pipeline
-4. Tracks progress in `rebuild-status.md`
-5. Prompts for human intervention on failures (CLI mode)
-6. Produces `intervention-log.md` documenting every manual fix
+3. Generates a CI script from `_bmad-output/approved-tech-stack.md` via bmad-architect
+4. Processes each story through the TDD pipeline
+5. After each epic: runs dual parallel code reviews, triages findings, applies fixes
+6. Tags and pushes to remote after each completed epic
+7. Tracks progress in `rebuild-status.md`
+8. Prompts for human intervention on failures (CLI mode)
+9. Produces `intervention-log.md` documenting every manual fix
 
 #### Pause and Resume
 
-Press **Ctrl+C once** during a rebuild to request a graceful pause. The pipeline finishes the current story, saves checkpoint state to `checkpoints/session.json`, and exits with a "paused" status. Press Ctrl+C twice to force-quit immediately.
+Press **Ctrl+C once** during a rebuild to request a graceful pause. The pipeline finishes the current story, saves checkpoint state to `checkpoints/session.json`, and exits with a "paused" status. Press Ctrl+C twice to force-quit immediately. The pipeline also handles SIGTERM (e.g., `docker stop`) for graceful shutdown in containers.
+
+**Rolling story-level checkpoints:** The pipeline writes a rolling checkpoint after each completed story, not just at pause time. If the process is killed mid-epic, resume skips stories that already completed within that epic — you don't have to re-run the entire epic from scratch.
 
 Resume from where you left off:
 
@@ -387,7 +425,7 @@ python -m src.main --rebuild /path/to/target --resume
 
 The pipeline reloads the backlog, skips to the specified epic index, and continues from there.
 
-**Important:** Resume skips entire **epics**, not individual stories. If Epic 3 failed on story 3.4, resuming at epic index 2 re-runs all of Epic 3 from story 3.1. Already-committed stories are re-attempted by the agents (the TDD pipeline does not check for prior git commits), but they generally succeed quickly since the code and tests already exist.
+**Note:** With rolling story-level checkpoints, the pipeline now tracks completed stories within an epic. If you resume after a kill, stories that already completed within the current epic are skipped automatically. You only need to manually edit `checkpoints/session.json` for abort scenarios where no checkpoint was written at all.
 
 **Alternative: Start fresh**
 
@@ -407,6 +445,22 @@ The rebuild pipeline tracks cumulative LLM costs and invocation counts. At the e
 ```
 Cost: $12.34 (87 LLM calls)
 ```
+
+#### CI Script Generation
+
+During `init_project`, the pipeline generates a comprehensive CI script (`scripts/ci.sh`) from the target project's `_bmad-output/approved-tech-stack.md`. The bmad-architect agent analyzes the tech stack document and project layout to produce a script covering all stacks and subdirectories. Features:
+
+- **Multi-stack support** — handles projects with multiple technology stacks (e.g., Go backend + Node frontend in separate subdirectories)
+- **Story-scoped test filtering** — `--story <id>` flag runs only tests relevant to the current story, with graceful fallback to the full suite
+- **`--quick` mode** — fail-fast for rapid CI feedback during development loops
+- **`--test-only` mode** — skip linting and run only the test suite
+- **Static template fallback** — if the architect invocation fails, a basic template is used instead
+
+GitHub Actions is disabled on both the Shipyard and target repos — all CI runs locally via `scripts/ci.sh`.
+
+#### Git Push to Remotes
+
+The pipeline pushes to the configured git remote(s) after each completed epic and after the initial project scaffold. Multiple push URLs can be configured on the `origin` remote. Push failures are logged as warnings but never block the pipeline — the build continues even if the remote is temporarily unreachable. `GIT_TERMINAL_PROMPT=0` is set to prevent Docker hangs on auth prompts.
 
 #### Target Directory Rules
 
@@ -439,21 +493,25 @@ Session state is checkpointed to SQLite after every step, so conversations survi
 
 Shipyard uses specialized agents with different permissions and model tiers:
 
-| Role | Model | Capabilities |
-|------|-------|-------------|
-| **Dev** | Sonnet | Full read/write/edit access, bash execution |
-| **Test** | Sonnet | Read all files, write only to `tests/`, bash execution |
-| **Reviewer** | Sonnet | Read-only source code, write findings to `reviews/` |
-| **Architect** | Opus | Reads reviews, writes fix plans to `reviews/` and `fix-plan.md` |
-| **Fix Dev** | Sonnet | Fresh agent that executes architect-approved fixes |
+| Role | BMAD Skill | Tool Scope |
+|------|-----------|------------|
+| **Story Creator** | `bmad-create-story` | Read, Edit, Write, Glob, Grep, Skill |
+| **Test Architect** | `bmad-testarch-atdd` | Read, Edit, Write, Glob, Grep, Bash (npm, pytest) |
+| **Dev** | `bmad-dev-story` | Full dev tools + Bash (python, pip, git) |
+| **Code Reviewer** | `bmad-dev` | Read, Glob, Grep, Bash (npm, pytest) |
+| **CI Fixer** | `bmad-dev` | Dev tools + Bash (ruff, mypy, lint) |
+| **Architect** | Claude CLI (Opus) | Read, Write, Edit, Glob, Grep |
+| **Epic Reviewer** | `bmad-code-review` / Claude CLI | Read-only |
+
+All agents are invoked as Claude CLI subprocesses via `bmad_invoke.py` with scoped tool permissions. 8 permission levels are defined: SM, TEA, TEA_FIX, DEV, CODE_REVIEW, CI_FIX, CI_GENERATE, REVIEW_READONLY.
 
 ### Rebuild Graph Architecture
 
 The rebuild pipeline uses a three-level LangGraph hierarchy:
 
-- **Level 1 — Rebuild Graph** (`rebuild_graph.py`): Outer loop that iterates through epics, handles pause/resume checkpointing
-- **Level 2 — Epic Graph** (`epic_graph.py`): Iterates through stories within an epic, runs epic post-processing
-- **Level 3 — Orchestrator** (`orchestrator.py`): Per-story TDD pipeline (test → implement → CI → review → fix)
+- **Level 1 — Rebuild Graph** (`rebuild_graph.py`): Outer loop that iterates through epics, handles pause/resume checkpointing, generates CI script from approved tech stack, pushes to remotes after each epic
+- **Level 2 — Epic Graph** (`epic_graph.py`): Iterates through stories within an epic, writes rolling story-level checkpoints, runs epic post-processing (dual parallel code review, triage, fixes)
+- **Level 3 — Orchestrator** (`orchestrator.py`): Per-story TDD pipeline (create story → write tests → implement → run tests → code review → run CI → fix CI → git commit)
 
 ### TDD Pipeline
 
@@ -461,20 +519,18 @@ For multi-agent story execution, Shipyard follows a structured pipeline:
 
 ```mermaid
 flowchart TD
-    A[Test Agent] -->|Write failing tests| B[Dev Agent]
-    B -->|Implement code| C{Tests Pass?}
-    C -->|No| B
-    C -->|Yes| D{CI Pass?}
-    D -->|No| B
-    D -->|Yes| E[Git Snapshot]
-    E --> F[Review Agents x2]
-    F --> G[Architect Agent]
-    G -->|Fix plan| H[Fix Dev Agent]
-    H --> I{Tests + CI Pass?}
-    I -->|Yes| J[System Tests]
-    J --> K[Git Push]
-    I -->|No| H
+    A[Create Story] --> B[Write Tests]
+    B --> C[Implement]
+    C --> D{Tests Pass?}
+    D -->|No, retry up to 5x| C
+    D -->|Yes| E[Code Review]
+    E --> F{CI Pass?}
+    F -->|No, retry up to 4x| G[Fix CI]
+    G --> F
+    F -->|Yes| H[Git Commit]
 ```
+
+After all stories in an epic complete, the epic post-processing phase runs dual parallel code reviews (BMAD adversarial + Claude CLI integration review), triages findings into Category A (obvious fixes) and Category B (design decisions requiring architect review), applies fixes with CI validation, then tags and pushes the epic.
 
 ### Available Tools
 
@@ -544,7 +600,10 @@ When `SHIPYARD_RELAY_URL` and `SHIPYARD_RELAY_KEY` are set, the rebuild pipeline
 
 ```bash
 pytest tests/ -v
+# 428 tests, 100% pass rate
 ```
+
+GitHub Actions is disabled — all CI runs locally.
 
 ### Lint and Type Check
 
@@ -575,27 +634,34 @@ shipyard/
 │   ├── web_relay.py         # Web relay client for pushing events
 │   ├── agent/               # LangGraph graph, state, prompts
 │   ├── tools/               # File ops, search, execution tools
+│   │   ├── bash.py          # Shell command execution with safety checks
+│   │   ├── search.py        # Regex content search + glob file search
 │   │   ├── scoped.py        # Working-directory-scoped tools for rebuilds
 │   │   └── restricted.py    # Role-based write restrictions
-│   ├── context/             # Context injection system
+│   ├── context/             # Context injection system (injection.py)
 │   ├── audit_log/           # Structured audit logger
 │   ├── multi_agent/         # Sub-agent spawning + orchestration
 │   │   ├── orchestrator.py  # Per-story TDD pipeline (Level 3)
 │   │   ├── spawn.py         # Agent spawning via Claude CLI
-│   │   ├── bmad_invoke.py   # BMAD agent invocations
+│   │   ├── bmad_invoke.py   # BMAD agent invocations via Claude CLI
 │   │   └── roles.py         # Agent role definitions + tool permissions
 │   ├── intake/              # Spec intake + autonomous rebuild
 │   │   ├── rebuild.py       # Rebuild entry point + relay wiring
 │   │   ├── rebuild_graph.py # Level 1: epic loop graph
 │   │   ├── epic_graph.py    # Level 2: story loop graph
 │   │   ├── pipeline.py      # Intake pipeline
+│   │   ├── spec_reader.py   # Spec file reader (markdown, text)
 │   │   ├── backlog.py       # Backlog parser (epics.md)
 │   │   ├── cost_tracker.py  # LLM cost accumulator
-│   │   ├── pause.py         # Graceful pause/resume flag
+│   │   ├── pause.py         # Graceful pause/resume (Ctrl+C + SIGTERM)
 │   │   └── intervention_log.py  # Human intervention tracking
 │   └── static/              # Web dashboard (index.html)
 ├── tests/                   # Test suite (mirrors src/ structure)
 ├── scripts/                 # CI, testing, and git helper scripts
+│   ├── local_ci.sh          # Runs ruff + mypy + pytest
+│   ├── ci.sh                # Generated per-project CI (target repos)
+│   ├── run_tests.sh         # Test runner helper
+│   └── git_snapshot.sh      # Git snapshot utility
 ├── coding-standards.md      # Conventions enforced by all agents
 ├── .env.example             # Environment variable template
 ├── Dockerfile               # Server container image

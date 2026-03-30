@@ -1,8 +1,8 @@
 # CODEAGENT.md — Shipyard
 
-**Submission Tier:** MVP
+**Submission Tier:** Final
 
-## Agent Architecture (MVP)
+## Agent Architecture (Final)
 
 ### Overview
 
@@ -98,7 +98,7 @@ Three-layer system to manage token cost while ensuring agents have the context t
 
 ---
 
-## File Editing Strategy (MVP)
+## File Editing Strategy (Final)
 
 ### Mechanism: Anchor-Based Exact String Replacement
 
@@ -297,65 +297,260 @@ graph TD
 
 ---
 
-## Trace Links (MVP)
+## Trace Links (Final)
 
-- **Trace 1 (normal run):** [https://smith.langchain.com/public/ab78cd3f-9ac0-4056-b37c-6752b3be396c/r](https://smith.langchain.com/public/ab78cd3f-9ac0-4056-b37c-6752b3be396c/r)
-  Normal execution path — agent reads a file, performs an edit, and completes successfully without errors.
+- **Trace 1 (1st part):** [https://smith.langchain.com/public/7f27a16b-6e3e-4d0e-b332-0f30b2996463/r](https://smith.langchain.com/public/7f27a16b-6e3e-4d0e-b332-0f30b2996463/r)
 
-- **Trace 2 (error recovery path):** [https://smith.langchain.com/public/08c40afb-8571-487f-91e0-78b9189d9b9f/r](https://smith.langchain.com/public/08c40afb-8571-487f-91e0-78b9189d9b9f/r)
-  Error recovery path — agent encounters an edit failure (stale or incorrect anchor), re-reads the file, and retries with corrected context.
+- **Trace 2 (2nd part):** [https://smith.langchain.com/public/c1d7e1ac-9852-4c26-a1f9-29c1e19bb767/r](https://smith.langchain.com/public/c1d7e1ac-9852-4c26-a1f9-29c1e19bb767/r)
+
+---
+
+## Public Monitoring Dashboard (Command Bridge)
+
+**Live at:** [shipyard-production-29ae.up.railway.app](https://shipyard-production-29ae.up.railway.app/) — publicly accessible, no login required.
+
+The Command Bridge provides real-time observability into the software factory. Anyone can watch live builds as they happen or replay any previous run from a session dropdown.
+
+### Dashboard Components
+
+- **Health Badge** — polls `GET /health` every 30 seconds. Green dot = online, red dot = offline.
+- **LIVE Indicator** — pulsing amber badge appears automatically when a pipeline is actively running.
+- **Pipeline Output Terminal** — full-screen log viewer streaming real-time output. Shows LIVE tag during active builds, REPLAY tag when viewing past sessions. Session dropdown selects previous runs.
+- **Rebuild Pipeline Flow Graph** — visual node graph: Load Backlog → Init Project → [per story: TDD Pipeline → Test → Review → Git Tag] → Complete. Nodes light up idle/active/completed/failed as the pipeline progresses. Story label shows which story is being processed.
+- **Stats Bar** — Completed, Failed, Interventions, Total counters with a progress bar.
+
+### Data Flow
+
+During a rebuild, the local Docker pipeline streams log events via `web_relay.py` to the Railway-hosted `log_relay.py`, which stores them in Postgres. The dashboard connects via SSE (`/api/stream/{session_id}`) for real-time delivery. For past runs, stored events are fetched and replayed into the terminal. The dashboard auto-detects active sessions.
+
+### Implementation
+
+| Component | Source |
+|---|---|
+| Dashboard UI | `src/static/index.html` — single-file HTML/CSS/JS, industrial/naval theme |
+| Log relay (server) | `src/log_relay.py` — Postgres storage, SSE streaming, session management |
+| Web relay (client) | `src/web_relay.py` — intercepts print/logging output, batches events to Railway |
+| Monitoring API | `/api/sessions`, `/api/logs/{session_id}`, `/api/stream/{session_id}` (public read-only) |
 
 ---
 
 ## Architecture Decisions (Final Submission)
 
-_To be completed for Final Submission. Source: [architecture.md](_bmad-output/planning-artifacts/architecture.md)_
+These are the key architecture decisions made when building Shipyard (the factory/agent system), what alternatives were considered, and why each call was made. Full details in [architecture.md](_bmad-output/planning-artifacts/architecture.md).
 
-Key decisions documented there:
-1. Custom `StateGraph` from day one (no `create_react_agent` refactoring)
-2. Hybrid multi-agent: Subgraphs + `Send` API
-3. Extended `AgentState` schema with `task_id`, `retry_count`, `current_phase`
-4. Dual retry limits: global 50-turn cap + per-operation counters
-5. Shared working directory with role-based write restrictions
-6. Markdown audit logs (human-readable, deliverable-ready)
+### 1. Custom `StateGraph` from Day One
+
+**Alternatives considered:** (a) Start with LangGraph's `create_react_agent` prebuilt for MVP, then refactor to custom `StateGraph` for multi-agent. (b) Build custom `StateGraph` immediately.
+
+**Decision:** Custom `StateGraph` from the start. A 2-node StateGraph (agent + tools) is nearly identical code to `create_react_agent`, but avoids a mid-week refactoring when multi-agent coordination is added. The same graph grows organically from single-agent MVP to the full 16-node pipeline by adding nodes and edges — no architectural break between MVP and final submission.
+
+### 2. Hybrid Multi-Agent: Subgraphs + `Send` API
+
+**Alternatives considered:** (a) Pure sequential subgraphs. (b) Pure `Send` API fan-out for all agents. (c) Hybrid — subgraphs for sequential stages, `Send` for parallel review.
+
+**Decision:** Hybrid. The pipeline is inherently sequential (Test → Dev → CI → Review → Architect → Fix Dev → CI → Push) except for one step: the parallel review phase where two independent reviewers analyze the same code. Subgraphs model the sequential flow naturally; the `Send` API models the fan-out/fan-in review step. Forcing everything into one pattern would either serialize naturally parallel work or add unnecessary complexity to naturally sequential work.
+
+### 3. Extended `AgentState` Schema
+
+**Alternatives considered:** (a) Use bare `MessagesState` and parse message history for routing decisions. (b) Extend `MessagesState` with explicit fields for `task_id`, `retry_count`, `current_phase`, `agent_role`, and `files_modified`.
+
+**Decision:** Extended state. Explicit fields enable conditional routing in the graph (e.g., `retry_count >= 50` → error handler) without parsing message history. They also make LangSmith traces self-documenting — every trace carries metadata about which agent, which phase, and which task, enabling filtering and debugging without reading message contents.
+
+### 4. Dual Retry Limits
+
+**Alternatives considered:** (a) Single global turn cap. (b) Per-operation limits only. (c) Both.
+
+**Decision:** Both. A global 50-turn cap prevents runaway cost, but it alone won't catch a 40-turn edit loop that stays under the cap — the agent burns budget without making progress. Per-operation limits (3 edit retries, 5 test cycles, 3 CI failures) catch specific doom loops early and escalate to the error handler before the global cap is consumed. The two layers are complementary, not redundant.
+
+### 5. Shared Working Directory with Role-Based Write Restrictions
+
+**Alternatives considered:** (a) Isolated directories per agent (copy files between agents). (b) Shared directory with no restrictions. (c) Shared directory with role-based tool subsetting.
+
+**Decision:** Shared directory with restrictions. Isolated directories add copy/sync complexity for zero benefit in a sequential pipeline. Unrestricted access risks the "fix it while reviewing" anti-pattern — a reviewer editing source code instead of documenting findings. Role-based tool subsetting (review agents get read-only source access, write access only to `reviews/`) enforces discipline without directory management overhead.
+
+### 6. Markdown Audit Logs
+
+**Alternatives considered:** (a) Structured JSON logs. (b) LangSmith-only (no local logs). (c) Human-readable markdown logs.
+
+**Decision:** Markdown. LangSmith already provides machine-parseable structured data — duplicating that locally in JSON adds no value. Markdown logs are human-readable, directly feed the deliverables (AI Development Log, CODEAGENT.md), and can be reviewed without tooling. The tree-style format (`├─ [Agent] → [Action] → [Result]`) makes session flow visible at a glance.
 
 ---
 
 ## Ship Rebuild Log (Final Submission)
 
-_To be completed during Ship app rebuild._
+This log documents what happened when Shipyard (the factory) was used to rebuild Ship — a government-grade project management platform — from scratch. The rebuild simultaneously migrated the backend from Node.js to Go, overhauled the database schema, and redesigned the UX.
+
+### Run Summary
+
+| Metric | Value |
+|---|---|
+| Total stories completed | 40 of 40 |
+| Total epics | 9 |
+| Pipeline wall-clock time | 28 hours 35 minutes |
+| Total elapsed time (incl. downtime) | ~31.5 hours |
+| Total API cost | $495.36 |
+| Total agent invocations | 225 |
+| Failed agent invocations | 0 |
+| Total log events recorded | 34,827 |
+
+### Run 1: Epics 1–2 (12 stories, 6h 48m)
+
+The pipeline ran 12 stories across the first two epics without any code failures, agent errors, or stuck states. The run terminated when the prepaid credit card funding the Anthropic API was exhausted mid-pipeline.
+
+### Downtime (~3 hours)
+
+Rather than simply restarting from the last completed story, approximately 2 hours were spent attempting to improve the factory's pause-and-resume feature — modifying code, testing changes, and iterating on the implementation. This was a conscious choice to improve the factory tooling rather than work around the problem, but it consumed time without producing a reliable pause/resume mechanism.
+
+**Resolution:** The pragmatic fix was to manually edit the pipeline's status file to indicate where to resume, then restart. This took minutes and worked immediately.
+
+### Run 2: Epics 3–9 (28 stories, 21h 46m)
+
+The pipeline resumed at story 2-7 and ran the remaining 28 stories to completion with **zero human involvement**. No agent failures, no stuck states, no code errors requiring manual correction. The pipeline managed its own quality gates autonomously for nearly 22 hours straight.
+
+### Intervention Log
+
+| # | Type | Cause | Resolution | What It Reveals |
+|---|---|---|---|---|
+| 1 | Pause/restart | Prepaid credit card exhausted | Manually edited status file to set resume point, restarted pipeline | Pause/resume feature was not production-ready. The pipeline itself never failed — this was an external billing issue. |
+
+**Total interventions: 1.** The intervention was not caused by the agent producing incorrect code, failing CI, or getting stuck on a task. It was caused by running out of funds on a prepaid card. If the financial setup had been correct from the start, the run would have completed end-to-end with zero interventions.
+
+### Post-Run Observations
+
+**What the factory handled well:**
+- CRUD operations across all 10 entity types
+- Database schema creation with constraints, triggers, and 18 migrations
+- Multi-layer Go architecture (handler → service → repository)
+- Frontend feature modules with hooks, API layers, and components
+- Self-correction via the implement → test → review → fix loop
+
+**What needs improvement:**
+- **Visual fidelity:** The factory produces functional UI but does not achieve pixel-level consistency with design mockups. A dedicated styling pass appears needed as a post-pipeline step.
+- **Pause/resume robustness:** The pipeline's ability to stop and restart mid-run needs hardening — it was faster to manually edit a status file than to debug the feature under pressure.
+- **CI coverage:** The CI scripts used during the run did not catch the full range of issues (linting, full type checking). Stories passed a bar that was set too low.
+- **No migration verification:** The pipeline never stood up a PostgreSQL instance to verify that migrations execute without errors. A migration verification step needs to be added.
+
+**What did not go wrong:** The factory never produced code that failed to compile, never required a story to be abandoned or manually rewritten, never hallucinated imports or APIs, and maintained architectural consistency across all 40 stories despite having no memory between story executions.
 
 ---
 
 ## Comparative Analysis (Final Submission)
 
-_To be completed after Ship app rebuild. All seven sections required:_
+This section compares the agent-built ShipRebuild against the original Ship application. The full analysis with detailed evidence is in [comparative-analysis.md](gauntlet_docs/comparative-analysis.md).
 
-1. Executive Summary
-2. Architectural Comparison
-3. Performance Benchmarks
-4. Shortcomings
-5. Advances
-6. Trade-off Analysis
-7. If You Built It Again
+### 1. Executive Summary
+
+Shipyard rebuilt Ship — a government-grade project management platform — from scratch, simultaneously migrating the backend from Node.js to Go 1.25.5, overhauling the database from a single-table polymorphic model to a hybrid schema with typed property tables, and redesigning the UX from a unified document page to feature-first modules. The factory completed all 40 stories across 9 epics in 28 hours 35 minutes at an API cost of $495.36, with zero failed agent invocations and one external intervention (prepaid card exhaustion).
+
+### 2. Architectural Comparison
+
+The agent-built version differs from the original in five fundamental ways:
+
+- **Language migration (Node.js → Go 1.25.5):** Aligns with White House ONCD and CISA/NSA memory-safe language guidance. Single-binary deployment eliminates the deep Node.js dependency tree. A human developer would not have attempted this migration on a one-week timeline.
+- **Schema redesign ("everything is a document" → hybrid):** The original stored all 10 entity types in one table with unvalidated JSONB properties. The rebuild keeps a shared `documents` table for genuinely shared concerns but moves type-specific data to 10 dedicated property tables with real columns, constraints, and triggers. Queries drop from 4–5 JOINs to 1.
+- **Collaboration model (Yjs CRDT → deferred block-locking):** Removed the Node.js WebSocket sidecar requirement. Government PM workflows are predominantly asynchronous — character-level real-time editing is a rare edge case, not a core workflow.
+- **UX philosophy (unified document page → feature-first modules):** Replaced a single polymorphic page rendering all 10 types with 11 self-contained feature modules, each owning its own components, hooks, and API layer. Added Command Palette (Cmd+K), "My Work" home view, and contextual sidebar.
+- **Deployment (AWS multi-service → single binary on Railway):** From three independent services managed with Terraform to one container serving both API and static assets.
+
+### 3. Performance Benchmarks
+
+| Metric | Original Ship | ShipRebuild |
+|---|---|---|
+| Backend language | TypeScript (Node.js/Express) | Go 1.25.5 (stdlib net/http) |
+| Backend LOC | ~7,000 | ~49,500 |
+| Frontend LOC | ~8,000 (React 18) | ~14,700 (React 19) |
+| Total source files | 353 | 292 |
+| Database migrations | 38 | 18 |
+| Type safety violations | 875 (`: any`, `as any`) | 0 (Go is statically typed) |
+
+The Go backend is larger in raw LOC due to Go's verbosity (explicit error handling, struct definitions, co-located tests). The database tells a cleaner story: 18 migrations vs. 38, because the architecture was designed up front rather than evolving organically.
+
+**Factory velocity:** 40 stories in 28h 35m pipeline time. Median story duration: 37m 33s. Average cost per story: $12.08. Later epics cost more as codebase grew (Epic 8 averaged $16.34/story vs. Epic 1 at $6.93/story).
+
+### 4. Shortcomings
+
+- **One external intervention:** Prepaid credit card exhaustion required a manual restart. The pause/resume feature was not production-ready.
+- **Visual fidelity gap:** The UI is functional but does not match the detailed UX design specs. Layout and interactions are present; styling and polish are not.
+- **CI was too lenient:** The CI scripts used during the rebuild did not include comprehensive linting or full type checking. The "all stories passing CI" metric overstates actual code quality.
+- **No migration verification:** Database migrations were never applied to an actual PostgreSQL instance during the build. Syntax or ordering issues would not have been caught.
+- **Runtime benchmarks not yet captured:** API response times, frontend bundle size, page load times, and accessibility audits on ShipRebuild have not been measured.
+
+### 5. Advances
+
+- **Every line was faster:** No individual story where a human would have been faster. Conservative estimate for equivalent manual work: 6–12 months with a team.
+- **Zero-memory consistency:** 40 stories maintained architectural consistency (handler/service/repository layering, consistent API formats) without any agent remembering a previous story. Well-structured planning artifacts proved more reliable than agent memory.
+- **Self-correcting pipeline:** 225 invocations, 0 failures. The fix-up agent was called 53 times — this is the pipeline working as designed, not failing.
+- **Predictable cadence:** Median story: 37m 33s, average: 41m 49s. Consistent enough to plan around: N stories ≈ N × 42 minutes, N × $12.
+- **Infrastructure reliability:** Zero freezes across 31.5 hours on Railway, compared to repeated freezes on local Docker Desktop. The factory needs production-grade infrastructure.
+
+### 6. Trade-off Analysis
+
+- **Go over Node.js:** Right call. Government policy alignment, single-binary deployment, simpler security surface. Trade-off: Go is more verbose (~49K LOC vs. ~7K), but this may be a net positive for auditability.
+- **Hybrid schema over single-table:** Right call. The original codebase was already 70% type-specific — the schema was pretending to be unified while the code had diverged. The hybrid model makes the database honest.
+- **Dropping Yjs/CRDT:** Right call for v1. Simplifies deployment and matches actual usage patterns. Most visible user-facing trade-off — if users expect Google Docs-style editing, v1 will feel like a step backward.
+- **Feature-first frontend:** Right call. Each entity type gets its own visual identity instead of being forced through an identical polymorphic interface.
+- **Railway over local Docker:** Unequivocally right. Zero freezes vs. repeated freezes. Production infrastructure is not optional for the factory.
+
+### 7. If You Built It Again
+
+- **The agent architecture would not change.** Skills as the unit of agent capability, document-grounded context injection, and structured workflows produced a zero-failure rate across 225 invocations.
+- **The planning phase would not change.** The quality of planning artifacts directly determines factory output quality. Well-structured stories with BDD acceptance criteria produce working code; vague stories produce vague code.
+- **Add continuous deployment and verification.** The pipeline stops at CI. Adding a deployment step and smoke tests against the live service would close the loop to production validation.
+- **Batch stories for throughput.** Processing one story at a time through the full loop is reliable but slow. Agents can handle 3–5 stories per invocation for implementation, or 10 for review passes.
+- **Don't reinvent the wheel.** The most important lesson: agent skills — structured prompts with document sources, personas, and workflows — are available in open-source libraries. Use them as foundations and customize, rather than building from scratch.
 
 ---
 
 ## Cost Analysis (Final Submission)
 
-_To be completed. Track actual spend during development._
+### Development Costs (Building Shipyard)
 
-### Development and Testing Costs
-- Claude API costs (input/output token breakdown):
-- Number of agent invocations:
-- Total development spend:
+Shipyard was developed using Claude Code (Opus 4.6), not by running Shipyard's own agent loop. The agent's LangSmith traces contain only tool invocations from unit/integration tests — zero actual Claude model calls through the Shipyard API.
 
-### Production Cost Projections
-
-| Scale | Monthly Cost |
+| Item | Amount |
 |---|---|
-| 100 Users | $ /month |
-| 1,000 Users | $ /month |
-| 10,000 Users | $ /month |
+| Claude API — input tokens (via Claude Code) | ~7.5M tokens (~$112.50) |
+| Claude API — output tokens (via Claude Code) | ~2.0M tokens (~$150.00) |
+| Shipyard agent API calls during development | 0 ($0.00) |
+| Total estimated development spend | **~$262.50** |
+| Estimated interactions | ~500 over 5 days |
+| Codebase produced | 35 source files, 29 test files, 12,815 lines |
+| Cost per line of code | ~$0.020 |
 
-_Assumptions: TBD based on actual usage data._
+### Rebuild Costs (Running Shipyard Against Ship)
+
+| Item | Amount |
+|---|---|
+| Total API cost for 40-story rebuild | **$495.36** |
+| Average cost per story | $12.08 |
+| Implementation agents (dev-story + dev) | $294.01 (59.4%) |
+| Test generation (testarch-atdd) | $92.07 (18.6%) |
+| Story spec creation | $48.18 (9.7%) |
+| Code review & architecture review | $37.53 (7.6%) |
+| Fix agents (category A fixes) | $23.55 (4.8%) |
+| Total agent invocations | 225 |
+| Total agent turns | 10,793 |
+
+### Combined Total Development Spend
+
+| Category | Amount |
+|---|---|
+| Building Shipyard (Claude Code) | ~$262.50 |
+| Running the Ship rebuild (API) | $495.36 |
+| **Total project spend** | **~$757.86** |
+
+### Production Cost Projections (Instruct Mode)
+
+Assumptions: 10 instructions/user/day, 22 working days/month, $1.88/instruction (weighted Sonnet + Opus routing), 14 LLM invocations per instruction (weighted average across Dev, Test, Reviewer, Fix Dev, Architect roles).
+
+| Scale | Monthly Cost | Cost/User/Month |
+|---|---|---|
+| 100 Users | $41,426 /month | $414.26 |
+| 1,000 Users | $414,260 /month | $414.26 |
+| 10,000 Users | $4,142,600 /month | $414.26 |
+
+**With optimizations (prompt caching + Haiku routing for read ops):** Costs reduce by ~65%, bringing the 100-user tier to ~$14,500/month (~$145/user/month).
+
+**Break-even:** At the optimized rate, the agent costs 2–3% of equivalent developer time. Even unoptimized, it costs 4–6% — economically viable if task completion quality meets production standards.
+
+Full cost analysis with model routing details, token breakdowns, and optimization recommendations: [cost-analysis.md](gauntlet_docs/cost-analysis.md).
