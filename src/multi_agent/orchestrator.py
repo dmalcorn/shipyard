@@ -707,15 +707,47 @@ echo "=== All checks passed ==="
 # Auto-generated CI script (Go project) — customise as needed.
 set -euo pipefail
 
-echo "=== lint ==="
-if command -v golangci-lint &>/dev/null; then
-    golangci-lint run ./...
-else
-    go vet ./...
+STORY_FILTER=""
+QUICK_MODE=false
+TEST_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --story)  STORY_FILTER="$2"; shift 2 ;;
+        --quick)  QUICK_MODE=true; shift ;;
+        --test)   TEST_ONLY=true; shift ;;
+        *)        shift ;;
+    esac
+done
+
+# --- Lint ---
+if ! $TEST_ONLY; then
+    echo "=== lint ==="
+    if command -v golangci-lint &>/dev/null; then
+        golangci-lint run ./...
+    else
+        go vet ./...
+    fi
 fi
 
+# --- Tests ---
 echo "=== tests ==="
-go test ./...
+if [ -n "$STORY_FILTER" ]; then
+    PATTERN=$(echo "$STORY_FILTER" | tr '-' '_')
+    # Attempt story-scoped tests; fall back to full suite if no matches
+    MATCHED=$(go test ./... -list "Story${PATTERN}|Test.*${PATTERN}" 2>/dev/null | grep -c "^Test" || true)
+    if [ "$MATCHED" -gt 0 ]; then
+        echo "  Running $MATCHED story-scoped test(s)..."
+        go test ./... -run "Story${PATTERN}|Test.*${PATTERN}" -v
+    else
+        echo "  No tests matched story filter '${STORY_FILTER}', running full suite..."
+        go test ./...
+    fi
+elif $QUICK_MODE; then
+    go test ./... -failfast
+else
+    go test ./...
+fi
 
 echo "=== All checks passed ==="
 """,
@@ -799,6 +831,15 @@ def generate_ci_script(working_dir: str | None) -> str:
         "wrap that section in an existence check (e.g. if [ -d api ]; then ...).\n"
         "- The script MUST use 'set -euo pipefail' and fail fast on any error.\n"
         "- The script MUST support these flags: --story FILTER, --quick, --test-only.\n"
+        "- STORY SCOPING: When --story is provided (e.g. --story 2-1), attempt to run "
+        "only that story's tests. Use the best available mechanism for each stack:\n"
+        "  * Python/pytest: -k 'story_2_1' (convert hyphens to underscores)\n"
+        "  * Go: -run 'Story2_1|Test.*2_1' regex filter\n"
+        "  * Node/Vitest: --grep or file glob matching the story ID\n"
+        "  If story-scoped filtering fails or matches zero tests, ALWAYS fall back to "
+        "running the full test suite — never exit with an error just because no tests "
+        "matched the story filter. Lint, typecheck, and build always run on the full "
+        "codebase regardless of --story.\n"
         "- For --test-only mode, skip lint/typecheck/build and only run tests.\n"
         "- For --quick mode, run tests with fail-fast (-x or equivalent).\n"
         "- Include these phases in order: install deps → lint → typecheck → test → build.\n"
