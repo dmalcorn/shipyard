@@ -534,12 +534,12 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
     )
 
     if reviewer_type == "bmad":
-        # BMAD 3-layer adversarial review via bmad-code-review skill
+        # BMAD 3-layer adversarial review via dev agent's CR capability
         output_filename = REVIEW_BMAD_FILENAME
         result = invoke_bmad_agent(
-            bmad_agent="bmad-code-review",
+            bmad_agent="bmad-agent-dev",
             command=(
-                f"Review ALL code changes across this entire epic.\n\n"
+                f"CR — Review ALL code changes across this entire epic.\n\n"
                 f"Files to review:\n{files_list}\n\n{review_format}"
             ),
             tools=TOOLS_REVIEW_READONLY,

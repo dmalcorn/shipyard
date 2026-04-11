@@ -63,7 +63,6 @@ _BASH_BUILD = ",".join([
 
 _BASE_TOOLS = "Read,Edit,Write,Glob,Grep,Task,TodoWrite"
 
-TOOLS_SM = f"{_BASE_TOOLS},Skill"
 TOOLS_TEA = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
 TOOLS_TEA_FIX = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
 TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},Bash(git *),Skill"
@@ -169,7 +168,7 @@ def _build_bmad_prompt(
 
     Args:
         agent_command: The BMAD command to execute (e.g. "DS for story 2-1").
-        bmad_agent: The BMAD agent slash command (e.g. "bmad-dev").
+        bmad_agent: The BMAD agent slash command (e.g. "bmad-agent-dev").
         extra_context: Optional additional context appended to the prompt.
     """
     prompt = (
@@ -215,7 +214,7 @@ def invoke_bmad_agent(
     prompt. Returns the CLI output and detected file modifications.
 
     Args:
-        bmad_agent: BMAD agent slash command (e.g. "bmad-dev").
+        bmad_agent: BMAD agent slash command (e.g. "bmad-agent-dev").
         command: BMAD command to execute (e.g. "DS for story 2-1").
         tools: Comma-separated tool permission string.
         working_dir: Working directory for the Claude CLI process.
@@ -606,7 +605,7 @@ def invoke_ci_with_fix(
             )
 
             fix_result = invoke_bmad_agent(
-                bmad_agent="bmad-dev",
+                bmad_agent="bmad-agent-dev",
                 command="Fix CI failures",
                 tools=fix_tools,
                 working_dir=working_dir,

@@ -27,8 +27,7 @@ logger = logging.getLogger(__name__)
 # Ordered list of phases in the orchestrator pipeline.
 # Must match the node names in orchestrator.py's build_orchestrator_graph().
 PHASE_ORDER = [
-    "create_story",
-    "implement",
+    "dev_story",
     "code_review",
     "run_ci",
     "git_commit",

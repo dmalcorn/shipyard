@@ -2,8 +2,15 @@
 
 Implements the per-story build pipeline as a LangGraph StateGraph:
 
-  check_story → [create_story] → check_dev → [implement] →
-  code_review → run_ci → [fix_ci] → git_commit → END
+  check_story → check_dev → [dev_story] → code_review →
+  run_ci → [fix_ci] → git_commit → END
+
+The dev_story node combines story creation and implementation into a
+single BMAD dev agent invocation. This mirrors the upstream BMAD v6.3.0
+change where the SM agent was removed and the dev agent handles both
+story creation (CS) and development (DS). The combined invocation reads
+planning artifacts once and carries context forward, improving coherence
+and reducing redundant token consumption.
 
 Key design principles:
   1. Bash first, LLM on failure — CI runs as bash nodes,
@@ -40,10 +47,8 @@ from src.multi_agent.bmad_invoke import (
     TOOLS_CI_GENERATE,
     TOOLS_CODE_REVIEW,
     TOOLS_DEV,
-    TOOLS_SM,
     TIMEOUT_LONG,
     TIMEOUT_MEDIUM,
-    TIMEOUT_SHORT,
     invoke_bmad_agent,
 )
 
@@ -65,8 +70,7 @@ MAX_CI_CYCLES = 4
 # Default model overrides per node. None = use CLI default.
 # Override via set_model_config() (called from factory.yaml loader).
 _MODEL_CONFIG: dict[str, str | None] = {
-    "create_story": "sonnet",
-    "implement": "sonnet",
+    "dev_story": "sonnet",
     "code_review": "sonnet",
     "fix_ci": "sonnet",
 }
@@ -226,86 +230,64 @@ def _find_story_status(working_dir: str, task_id: str) -> str | None:
 
 
 def check_story_exists_node(state: OrchestratorState) -> dict[str, Any]:
-    """Non-LLM check: does a story file already exist with 'ready-for-dev' status?"""
-    task_id = state.get("task_id", "")
-    working_dir = _get_working_dir(state)
-    status = _find_story_status(working_dir, task_id)
+    """Non-LLM check: does a story file already exist?
 
-    if status in ("ready-for-dev", "review", "done"):
-        print(f"\n>>> [check_story] Story {task_id} already exists with status '{status}' — skipping create_story")
-        return {"story_exists": True, "current_phase": "check_story"}
-
-    print(f"\n>>> [check_story] Story {task_id} not found or status '{status}' — proceeding to create_story")
-    return {"story_exists": False, "current_phase": "check_story"}
-
-
-def route_after_story_check(state: OrchestratorState) -> str:
-    """Route based on whether the story file already exists."""
-    if state.get("story_exists"):
-        return "skip"
-    return "create"
-
-
-def check_dev_status_node(state: OrchestratorState) -> dict[str, Any]:
-    """Non-LLM check: is the story already developed (status: review)?"""
+    Determines what the dev_story node needs to do:
+    - No story file → create + implement (full run)
+    - Story exists with ready-for-dev → implement only (skip creation)
+    - Story exists with review/done → skip dev_story entirely
+    """
     task_id = state.get("task_id", "")
     working_dir = _get_working_dir(state)
     status = _find_story_status(working_dir, task_id)
 
     if status in ("review", "done"):
-        print(f"\n>>> [check_dev] Story {task_id} has status '{status}' — skipping implement, proceeding to code_review")
-        return {"dev_complete": True, "current_phase": "check_dev"}
+        print(f"\n>>> [check_story] Story {task_id} has status '{status}' — skipping dev_story")
+        return {"story_exists": True, "dev_complete": True, "current_phase": "check_story"}
 
-    print(f"\n>>> [check_dev] Story {task_id} status is '{status}' — proceeding to implement")
-    return {"dev_complete": False, "current_phase": "check_dev"}
+    if status == "ready-for-dev":
+        print(f"\n>>> [check_story] Story {task_id} exists "
+              f"with status 'ready-for-dev' — dev_story will implement only")
+        return {"story_exists": True, "dev_complete": False, "current_phase": "check_story"}
+
+    print(f"\n>>> [check_story] Story {task_id} not found or "
+          f"status '{status}' — dev_story will create + implement")
+    return {"story_exists": False, "dev_complete": False, "current_phase": "check_story"}
 
 
-def route_after_dev_check(state: OrchestratorState) -> str:
-    """Route based on whether implementation is already done."""
+def route_after_story_check(state: OrchestratorState) -> str:
+    """Route based on story status: skip dev entirely, or run dev_story."""
     if state.get("dev_complete"):
         return "skip"
-    return "implement"
+    return "dev"
 
 
-def create_story_node(state: OrchestratorState) -> dict[str, Any]:
-    """Invoke BMAD create-story agent to produce a story spec from the epic description."""
+def dev_story_node(state: OrchestratorState) -> dict[str, Any]:
+    """Invoke BMAD dev agent to create the story spec and implement it.
+
+    Combines the former create_story + implement into a single agent
+    invocation. The dev agent reads planning artifacts once, creates the
+    story file (CS), then immediately implements it (DS) — carrying full
+    context forward without re-reading.
+
+    When the story file already exists (story_exists=True), tells the
+    agent to skip creation and proceed directly to implementation.
+    """
     task_id = state.get("task_id", "")
     working_dir = _get_working_dir(state)
-    print(f"\n>>> [create_story] Invoking bmad-create-story: create story {task_id}")
-
-    result = invoke_bmad_agent(
-        bmad_agent="bmad-create-story",
-        command=f"create story {task_id}",
-        tools=TOOLS_SM,
-        working_dir=working_dir,
-        timeout=TIMEOUT_SHORT,
-        model=_model_for("create_story"),
-    )
-
-    print(f"    [create_story] Done: success={result['success']}, files={result.get('files_modified', [])}")
-
-    if not result["success"]:
-        return {
-            "current_phase": "create_story",
-            "pipeline_status": "failed",
-            "error": f"create_story failed (exit={result['exit_code']}): {result['output'][:500]}",
-            "files_modified": result.get("files_modified", []),
-        }
-
-    _save_phase(state, "create_story")
-    return {
-        "current_phase": "create_story",
-        "files_modified": result.get("files_modified", []),
-    }
-
-
-def implement_node(state: OrchestratorState) -> dict[str, Any]:
-    """Invoke BMAD DEV agent to implement code (TDD green phase)."""
-    task_id = state.get("task_id", "")
-    working_dir = _get_working_dir(state)
+    story_exists = state.get("story_exists", False)
     last_test_output = state.get("last_test_output", "")
     test_cycle = state.get("test_cycle_count", 0)
-    print(f"\n>>> [implement] Invoking bmad-dev-story: develop story {task_id} (cycle={test_cycle})")
+
+    if story_exists:
+        # Story already created — implement only
+        command = f"DS for story {task_id}"
+        print(f"\n>>> [dev_story] Story exists — invoking bmad-agent-dev: "
+              f"DS for {task_id} (cycle={test_cycle})")
+    else:
+        # Full flow — create then implement in one session
+        command = f"CS for story {task_id}, then DS for the same story"
+        print(f"\n>>> [dev_story] Invoking bmad-agent-dev: CS + DS for {task_id}")
 
     extra = ""
     if test_cycle > 0 and last_test_output:
@@ -316,28 +298,29 @@ def implement_node(state: OrchestratorState) -> dict[str, Any]:
         )
 
     result = invoke_bmad_agent(
-        bmad_agent="bmad-dev-story",
-        command=f"develop story {task_id}",
+        bmad_agent="bmad-agent-dev",
+        command=command,
         tools=TOOLS_DEV,
         working_dir=working_dir,
-        timeout=TIMEOUT_MEDIUM,
+        timeout=TIMEOUT_LONG,
         extra_context=extra,
-        model=_model_for("implement"),
+        model=_model_for("dev_story"),
     )
 
-    print(f"    [implement] Done: success={result['success']}, files={result.get('files_modified', [])}")
+    print(f"    [dev_story] Done: success={result['success']}, "
+          f"files={result.get('files_modified', [])}")
 
     if not result["success"]:
         return {
-            "current_phase": "implement",
+            "current_phase": "dev_story",
             "pipeline_status": "failed",
-            "error": f"implement failed (exit={result['exit_code']}): {result['output'][:500]}",
+            "error": f"dev_story failed (exit={result['exit_code']}): {result['output'][:500]}",
             "files_modified": result.get("files_modified", []),
         }
 
-    _save_phase(state, "implement")
+    _save_phase(state, "dev_story")
     return {
-        "current_phase": "implement",
+        "current_phase": "dev_story",
         "files_modified": result.get("files_modified", []),
     }
 
@@ -346,10 +329,10 @@ def code_review_node(state: OrchestratorState) -> dict[str, Any]:
     """Invoke BMAD DEV agent for code review with auto-fix."""
     task_id = state.get("task_id", "")
     working_dir = _get_working_dir(state)
-    print(f"\n>>> [code_review] Invoking bmad-dev CR for {task_id}")
+    print(f"\n>>> [code_review] Invoking bmad-agent-dev CR for {task_id}")
 
     result = invoke_bmad_agent(
-        bmad_agent="bmad-dev",
+        bmad_agent="bmad-agent-dev",
         command=f"code review for story {task_id}",
         tools=TOOLS_CODE_REVIEW,
         working_dir=working_dir,
@@ -383,7 +366,7 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
     task_id = state.get("task_id", "")
     working_dir = _get_working_dir(state)
     last_ci_output = state.get("last_ci_output", "")
-    print(f"\n>>> [fix_ci] Invoking bmad-dev to fix CI for {task_id}")
+    print(f"\n>>> [fix_ci] Invoking bmad-agent-dev to fix CI for {task_id}")
 
     extra = ""
     if last_ci_output:
@@ -403,7 +386,7 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
         )
 
     result = invoke_bmad_agent(
-        bmad_agent="bmad-dev",
+        bmad_agent="bmad-agent-dev",
         command=f"Fix CI failures for story {task_id}",
         tools=TOOLS_CI_FIX,
         working_dir=working_dir,
@@ -793,7 +776,7 @@ echo "=== All checks passed ==="
 
 
 def generate_ci_script(working_dir: str | None) -> str:
-    """Generate scripts/ci.sh by invoking bmad-architect on the approved tech stack.
+    """Generate scripts/ci.sh by invoking bmad-agent-architect on the approved tech stack.
 
     Reads _bmad-output/approved-tech-stack.md from the target project directory
     and asks the architect agent to produce a comprehensive CI script covering
@@ -891,9 +874,9 @@ def generate_ci_script(working_dir: str | None) -> str:
         f"APPROVED TECH STACK:\n```\n{tech_stack_content}\n```"
     )
 
-    print(f"\n    [ci] Invoking bmad-architect to generate CI script from approved tech stack...")
+    print("\n    [ci] Invoking bmad-agent-architect to generate CI script...")
     result = invoke_bmad_agent(
-        bmad_agent="bmad-architect",
+        bmad_agent="bmad-agent-architect",
         command=architect_prompt,
         tools=TOOLS_CI_GENERATE,
         working_dir=working_dir,
@@ -926,8 +909,8 @@ def generate_ci_script(working_dir: str | None) -> str:
         f.write(script_content)
     os.chmod(ci_path, 0o755)
 
-    logger.info("Generated CI script at %s via bmad-architect", ci_path)
-    print(f"    [ci] Generated scripts/ci.sh via bmad-architect")
+    logger.info("Generated CI script at %s via bmad-agent-architect", ci_path)
+    print(f"    [ci] Generated scripts/ci.sh via bmad-agent-architect")
     return ci_path
 
 
@@ -1294,12 +1277,10 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     """Build the story orchestrator pipeline as a StateGraph.
 
     Pipeline (happy path):
-    check_story → [create_story] → check_dev → [implement] → code_review → run_ci → git_commit
-    (create_story skipped if story exists with ready-for-dev status)
-    (implement skipped if story has status: review)
+    check_story → [dev_story] → code_review → run_ci → git_commit
+    (dev_story creates + implements in one invocation; skipped if status is review/done)
 
     Failure routing:
-    - run_tests fail → implement retry (up to MAX_TEST_CYCLES)
     - check_review has P1/P2 → fix_review → code_review
     - run_ci fail → fix_ci → run_ci retry (up to MAX_CI_CYCLES)
 
@@ -1310,11 +1291,9 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
 
     # --- Non-LLM check nodes ---
     graph.add_node("check_story", check_story_exists_node)
-    graph.add_node("check_dev", check_dev_status_node)
 
     # --- LLM nodes (BMAD agent invocations) ---
-    graph.add_node("create_story", create_story_node)
-    graph.add_node("implement", implement_node)
+    graph.add_node("dev_story", dev_story_node)
     graph.add_node("code_review", code_review_node)
     graph.add_node("fix_ci", fix_ci_node)
 
@@ -1327,29 +1306,17 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
 
     # --- Edges ---
 
-    # Entry: check if story already exists with ready-for-dev
+    # Entry: check story status to decide what dev_story needs to do
     graph.add_edge(START, "check_story")
     graph.add_conditional_edges(
         "check_story",
         route_after_story_check,
-        {"skip": "check_dev", "create": "create_story"},
-    )
-    graph.add_conditional_edges(
-        "create_story",
-        route_after_llm_node,
-        {"continue": "check_dev", "error": "error_handler"},
+        {"skip": "code_review", "dev": "dev_story"},
     )
 
-    # Check if dev is already done (status: review) → skip to code_review
+    # Dev story (create + implement) → code review (fail → error)
     graph.add_conditional_edges(
-        "check_dev",
-        route_after_dev_check,
-        {"skip": "code_review", "implement": "implement"},
-    )
-
-    # Implement → code review (fail → error)
-    graph.add_conditional_edges(
-        "implement",
+        "dev_story",
         route_after_llm_node,
         {"continue": "code_review", "error": "error_handler"},
     )

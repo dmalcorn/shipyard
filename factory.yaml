@@ -26,8 +26,7 @@ target:
 # or full model IDs like "claude-sonnet-4-6".
 models:
   # Story-level nodes (orchestrator.py)
-  create_story: sonnet
-  implement: sonnet
+  dev_story: sonnet
   code_review: sonnet
   fix_ci: sonnet
 
