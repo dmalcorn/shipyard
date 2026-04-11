@@ -22,10 +22,18 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-RELAY_URL = os.environ.get("SHIPYARD_RELAY_URL", "")
-RELAY_KEY = os.environ.get("SHIPYARD_RELAY_KEY", "")
+# Read at call time via _get_relay_config(), not import time, so that
+# load_dotenv() in main.py has a chance to populate the environment first.
 BATCH_INTERVAL_SECONDS = 1.5
 MAX_BATCH_SIZE = 50
+
+
+def _get_relay_config() -> tuple[str, str]:
+    """Return (RELAY_URL, RELAY_KEY) from the environment at call time."""
+    return (
+        os.environ.get("SHIPYARD_RELAY_URL", ""),
+        os.environ.get("SHIPYARD_RELAY_KEY", ""),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +172,13 @@ def init_relay(session_id: str, pipeline_type: str = "rebuild") -> WebRelay | No
         The WebRelay instance, or None if not configured.
     """
     global _relay
-    if not RELAY_URL or not RELAY_KEY:
+    relay_url, relay_key = _get_relay_config()
+    if not relay_url or not relay_key:
         logger.info("WebRelay not configured (SHIPYARD_RELAY_URL / SHIPYARD_RELAY_KEY not set)")
         return None
     _relay = WebRelay(
-        relay_url=RELAY_URL,
-        relay_key=RELAY_KEY,
+        relay_url=relay_url,
+        relay_key=relay_key,
         session_id=session_id,
         pipeline_type=pipeline_type,
     )

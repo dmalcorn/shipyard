@@ -694,23 +694,33 @@ def write_status_node(state: RebuildState) -> dict[str, Any]:
     )
 
     # Rolling checkpoint: save resume state so a hard kill doesn't lose
-    # all progress.  On resume the completed epic won't re-run because
-    # resume_epic_index points to the *next* epic.
+    # all progress.  Only advance past the current epic if it was NOT
+    # interrupted by pause/Ctrl+C — otherwise the resume would skip
+    # stories that were never attempted.
     epic_index = state.get("epic_index", 0)
-    resume_state = {
-        "session_id": state.get("session_id", ""),
-        "target_dir": target_dir,
-        "resume_epic_index": epic_index + 1,  # next epic to run
-        "resume_story_index": 0,  # next epic starts from story 0
-        "resume_stories_completed": state.get("stories_completed", 0),
-        "resume_stories_failed": state.get("stories_failed", 0),
-        "resume_total_interventions": total_interventions,
-        "resume_story_results": story_results,
-    }
-    session_file = os.path.join(target_dir, "checkpoints/session.json")
-    os.makedirs(os.path.dirname(session_file), exist_ok=True)
-    with open(session_file, "w", encoding="utf-8") as f:
-        json.dump(resume_state, f, indent=2)
+    epic_status = state.get("current_epic_status", "")
+
+    if epic_status == "paused" or is_pause_requested():
+        # Paused mid-epic: stay on the same epic. The per-story rolling
+        # checkpoint (in process_story_result_node) already recorded
+        # the correct resume_story_index for completed stories.
+        logger.info("Skipping epic-level checkpoint — epic was paused/interrupted")
+    else:
+        # Epic ran to completion (possibly with failures): advance to next epic
+        resume_state = {
+            "session_id": state.get("session_id", ""),
+            "target_dir": target_dir,
+            "resume_epic_index": epic_index + 1,  # next epic to run
+            "resume_story_index": 0,  # next epic starts from story 0
+            "resume_stories_completed": state.get("stories_completed", 0),
+            "resume_stories_failed": state.get("stories_failed", 0),
+            "resume_total_interventions": total_interventions,
+            "resume_story_results": story_results,
+        }
+        session_file = os.path.join(target_dir, "checkpoints", "session.json")
+        os.makedirs(os.path.dirname(session_file), exist_ok=True)
+        with open(session_file, "w", encoding="utf-8") as f:
+            json.dump(resume_state, f, indent=2)
 
     return {}
 
@@ -799,11 +809,12 @@ def route_after_load_backlog(state: RebuildState) -> str:
 
 
 def route_after_epic(state: RebuildState) -> str:
-    """Route after epic completes: more epics, aborted, paused, or done."""
-    epic_status = state.get("current_epic_status", "")
+    """Route after epic completes: more epics, paused, or done.
 
-    if epic_status == "aborted":
-        return "aborted"
+    Failed stories never halt the pipeline — they are recorded and
+    the next epic proceeds. Only an explicit pause (Ctrl+C) stops.
+    """
+    epic_status = state.get("current_epic_status", "")
 
     if epic_status == "paused" or is_pause_requested():
         return "paused"
@@ -924,7 +935,6 @@ def build_rebuild_graph() -> StateGraph:  # type: ignore[type-arg]
         route_after_epic,
         {
             "more_epics": "advance_epic",
-            "aborted": "write_final",
             "paused": "write_paused",
             "all_done": "write_final",
         },

@@ -306,10 +306,7 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
     }
 
     if status != "completed":
-        updates["epic_status"] = "aborted"
-        updates["current_story_error"] = (
-            f"Story {story_id} ({story_name}) failed — aborting epic and pipeline."
-        )
+        logger.warning("Story %s (%s) failed — continuing to next story", story_id, story_name)
 
     # Rolling story-level checkpoint: if a hard kill happens before the
     # next story finishes, resume will skip already-completed stories.
@@ -411,15 +408,12 @@ def epic_paused_node(state: EpicState) -> dict[str, Any]:
 
 
 def route_after_story_result(state: EpicState) -> str:
-    """Route after processing a story result: success → next, failure → abort.
+    """Route after processing a story result: always advance to next story.
 
-    There is no retry or skip. A failed story likely has downstream
-    dependencies, so the entire epic (and pipeline) must stop.
+    Failed stories are recorded but never block the rest of the epic.
+    The pipeline keeps going — skipping is not an option.
     """
-    status = state.get("current_story_status", "failed")
-    if status == "completed":
-        return "next_story"
-    return "aborted"
+    return "next_story"
 
 
 def route_next_story(state: EpicState) -> str:
@@ -1075,7 +1069,7 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_conditional_edges(
         "process_result",
         route_after_story_result,
-        {"next_story": "advance_story", "aborted": END},
+        {"next_story": "advance_story"},
     )
 
     graph.add_conditional_edges(

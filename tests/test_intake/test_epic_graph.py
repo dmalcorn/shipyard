@@ -66,7 +66,7 @@ class TestProcessStoryResultNode:
         assert result["stories_failed"] == 0
         assert result["story_results"][0]["status"] == "completed"
 
-    def test_failed_story_aborts(self) -> None:
+    def test_failed_story_continues(self) -> None:
         state: EpicState = {
             "epic_name": "Auth",
             "stories": [{"story": "Login"}],
@@ -78,8 +78,8 @@ class TestProcessStoryResultNode:
         result = process_story_result_node(state)
         assert result["stories_completed"] == 1
         assert result["stories_failed"] == 1
-        assert result["epic_status"] == "aborted"
-        assert "aborting" in result["current_story_error"].lower()
+        # Failed stories are recorded but never abort the epic
+        assert "epic_status" not in result
 
 
 class TestAdvanceStoryNode:
@@ -102,8 +102,8 @@ class TestRouteAfterStoryResult:
     def test_completed(self) -> None:
         assert route_after_story_result({"current_story_status": "completed"}) == "next_story"
 
-    def test_failed_aborts(self) -> None:
-        assert route_after_story_result({"current_story_status": "failed"}) == "aborted"
+    def test_failed_continues(self) -> None:
+        assert route_after_story_result({"current_story_status": "failed"}) == "next_story"
 
 
 class TestRouteNextStory:

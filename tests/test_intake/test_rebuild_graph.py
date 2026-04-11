@@ -99,13 +99,14 @@ class TestAdvanceEpicNode:
 class TestRouteAfterEpic:
     """route_after_epic routes based on epic status and remaining epics."""
 
-    def test_aborted(self) -> None:
+    def test_aborted_continues(self) -> None:
+        """A failed epic still advances to the next epic — never halts."""
         state: RebuildState = {
             "current_epic_status": "aborted",
             "epics": [{"epic_num": "1"}, {"epic_num": "2"}],
             "epic_index": 0,
         }
-        assert route_after_epic(state) == "aborted"
+        assert route_after_epic(state) == "more_epics"
 
     def test_more_epics(self) -> None:
         state: RebuildState = {
@@ -151,6 +152,8 @@ class TestTagEpicNode:
             "target_dir": target,
             "epics": [{"epic_num": "1", "epic_name": "Authentication", "stories": []}],
             "epic_index": 0,
+            "current_epic_status": "completed",
+            "stories_failed": 0,
         }
         tag_epic_node(state)
 

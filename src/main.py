@@ -562,6 +562,11 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
     from src.intake.pause import request_pause, reset_pause
     from src.multi_agent.orchestrator import set_model_config
 
+    # Normalize path to OS-native format (resolves mixed separators from
+    # MINGW64 bash on Windows where CLI gives forward slashes but
+    # os.path.join appends backslashes).
+    target_dir = os.path.normpath(os.path.abspath(target_dir))
+
     # Configure console logging so pipeline progress is visible
     logging.basicConfig(
         level=logging.INFO,
