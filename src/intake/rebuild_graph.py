@@ -468,16 +468,27 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
 
     # Generate CI script from approved tech stack (architect-powered)
     try:
-        generate_ci_script(target_dir)
-        # Commit the generated CI script
-        subprocess.run(
+        ci_path = generate_ci_script(target_dir)
+        # Only commit if the CI script was newly generated (not pre-existing)
+        add_result = subprocess.run(
             ["git", "add", "scripts/ci.sh"],
-            cwd=target_dir, capture_output=True, check=True,
+            cwd=target_dir, capture_output=True, text=True,
         )
-        subprocess.run(
-            ["git", "commit", "-m", "chore: generate CI script from approved tech stack"],
-            cwd=target_dir, capture_output=True, text=True, check=True,
-        )
+        if add_result.returncode == 0:
+            # Check if there's actually anything staged before committing
+            diff_result = subprocess.run(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=target_dir, capture_output=True,
+            )
+            if diff_result.returncode != 0:
+                # There are staged changes — commit them
+                subprocess.run(
+                    ["git", "commit", "-m", "chore: generate CI script from approved tech stack"],
+                    cwd=target_dir, capture_output=True, text=True, check=True,
+                )
+            else:
+                logger.info("CI script unchanged — nothing to commit")
+                print("    [ci] CI script already up to date — nothing to commit")
     except FileNotFoundError:
         # approved-tech-stack.md missing — generate_ci_script already logged the error
         return {
@@ -488,8 +499,8 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
             ),
         }
     except Exception as e:
-        logger.warning("CI script generation failed, continuing without it: %s", e)
-        print(f"    [init] WARN: CI script generation failed: {e}")
+        logger.warning("CI script setup issue, continuing without it: %s", e)
+        print(f"    [init] CI script setup skipped: {e}")
 
     # Configure origin with multiple push URLs (idempotent — safe on resume)
     push_urls = [
@@ -626,11 +637,26 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
 
 
 def tag_epic_node(state: RebuildState) -> dict[str, Any]:
-    """Create a git tag marking epic completion."""
+    """Create a git tag marking epic completion — only when all stories passed."""
     target_dir = state.get("target_dir", "")
     epics = state.get("epics", [])
     epic_index = state.get("epic_index", 0)
     epic_num = epics[epic_index]["epic_num"]
+    epic_status = state.get("current_epic_status", "")
+    epic_failed = state.get("stories_failed", 0)
+
+    # Only tag if the epic genuinely completed with no failures
+    if epic_status not in ("completed", "running") or epic_failed > 0:
+        reason = epic_status if epic_status else "unknown status"
+        if epic_failed > 0:
+            reason = f"{epic_failed} story(ies) failed"
+        logger.info(
+            "Skipping epic-%s-complete tag — epic not fully successful (%s)",
+            epic_num, reason,
+        )
+        print(f"    [tag] Skipping epic-{epic_num}-complete tag — {reason}")
+        _push_to_remotes(target_dir)
+        return {}
 
     tag_name = f"epic-{epic_num}-complete"
     result = subprocess.run(
