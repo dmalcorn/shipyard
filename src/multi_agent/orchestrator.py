@@ -781,6 +781,14 @@ def generate_ci_script(working_dir: str | None) -> str:
         FileNotFoundError: If _bmad-output/approved-tech-stack.md does not exist.
     """
     base = working_dir or "."
+
+    # If scripts/ci.sh already exists, leave it alone — the user pre-created it.
+    existing_ci = os.path.join(base, "scripts", "ci.sh")
+    if os.path.isfile(existing_ci):
+        logger.info("CI script already exists at %s, skipping generation", existing_ci)
+        print(f"    [ci] Found existing {existing_ci} — skipping generation")
+        return existing_ci
+
     tech_stack_path = os.path.join(base, "_bmad-output", "approved-tech-stack.md")
 
     if not os.path.isfile(tech_stack_path):
