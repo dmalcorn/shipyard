@@ -81,6 +81,24 @@ def set_model_config(config: dict[str, str | None]) -> None:
     _MODEL_CONFIG.update(config)
 
 
+# ---------------------------------------------------------------------------
+# Story-level review toggle
+# ---------------------------------------------------------------------------
+
+_STORY_REVIEWS_ENABLED: bool = True
+
+
+def get_story_reviews_enabled() -> bool:
+    """Return whether story-level code reviews are enabled."""
+    return _STORY_REVIEWS_ENABLED
+
+
+def set_story_reviews_enabled(enabled: bool) -> None:
+    """Enable or disable story-level code reviews."""
+    global _STORY_REVIEWS_ENABLED  # noqa: PLW0603
+    _STORY_REVIEWS_ENABLED = enabled
+
+
 def _model_for(node: str) -> str | None:
     """Return the model override for a given node, or None for default."""
     return _MODEL_CONFIG.get(node)
@@ -329,6 +347,12 @@ def code_review_node(state: OrchestratorState) -> dict[str, Any]:
     """Invoke BMAD DEV agent for code review with auto-fix."""
     task_id = state.get("task_id", "")
     working_dir = _get_working_dir(state)
+
+    if not _STORY_REVIEWS_ENABLED:
+        print(f"\n>>> [code_review] Skipped for {task_id} (story reviews disabled)")
+        _save_phase(state, "code_review")
+        return {"current_phase": "code_review"}
+
     print(f"\n>>> [code_review] Invoking bmad-agent-dev CR for {task_id}")
 
     result = invoke_bmad_agent(

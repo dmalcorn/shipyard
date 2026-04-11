@@ -21,6 +21,12 @@ langsmith:
 target:
   dir: "C:\\alcorn\\Gauntlet\\8-Capstone\\chat2bpmn"
 
+# Review configuration.
+# Set story_level to false to skip per-story code reviews
+# (epic-level reviews still run after all stories complete).
+reviews:
+  story_level: true
+
 # Per-node model overrides.
 # Valid values: null (use CLI default), "haiku", "sonnet", "opus",
 # or full model IDs like "claude-sonnet-4-6".

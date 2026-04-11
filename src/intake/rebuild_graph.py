@@ -30,7 +30,12 @@ from src.intake.backlog import load_backlog
 from src.intake.cost_tracker import get_invocation_count, get_total_cost
 from src.intake.epic_graph import EpicState, build_epic_runner
 from src.intake.pause import is_pause_requested
-from src.multi_agent.orchestrator import _detect_project_type, generate_ci_script
+from src.multi_agent.orchestrator import (
+    _detect_project_type,
+    generate_ci_script,
+    get_story_reviews_enabled,
+    set_story_reviews_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +268,26 @@ def preflight_check_node(state: RebuildState) -> dict[str, Any]:
     return {}
 
 
+def _prompt_story_reviews() -> None:
+    """Ask the operator whether to run story-level code reviews.
+
+    Skips the prompt if reviews were already disabled via --no-story-reviews
+    or factory.yaml (the CLI sets the flag before the graph runs).
+    """
+    if not get_story_reviews_enabled():
+        print("  Story-level code reviews: DISABLED (set by CLI/config)")
+        return
+    try:
+        answer = input("\nRun story-level code reviews? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer in ("n", "no"):
+        set_story_reviews_enabled(False)
+        print("  Story-level code reviews: DISABLED (epic reviews still active)")
+    else:
+        print("  Story-level code reviews: ENABLED")
+
+
 def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     """Parse epics.md and group stories by epic."""
     target_dir = state.get("target_dir", "")
@@ -316,6 +341,8 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
             print(f"  Epic {e['epic_num']}: {e['epic_name']} ({len(e['stories'])} stories)")
         print(f"{'='*60}")
 
+        _prompt_story_reviews()
+
         return {
             "epics": epics,
             "epic_index": resume_epic_index,
@@ -334,6 +361,8 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     for e in epics:
         print(f"  Epic {e['epic_num']}: {e['epic_name']} ({len(e['stories'])} stories)")
     print(f"{'='*60}")
+
+    _prompt_story_reviews()
 
     return {
         "epics": epics,

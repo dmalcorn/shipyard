@@ -63,6 +63,19 @@ def get_model_config(config: dict[str, Any]) -> dict[str, str | None]:
     return {k: (v if v else None) for k, v in models.items()}
 
 
+def get_reviews_config(config: dict[str, Any]) -> dict[str, bool]:
+    """Extract reviews section from config.
+
+    Returns:
+        Dict with review flags (e.g. ``{"story_level": True}``).
+        Missing keys default to True (reviews enabled).
+    """
+    reviews = config.get("reviews", {})
+    if not isinstance(reviews, dict):
+        return {}
+    return {k: bool(v) for k, v in reviews.items()}
+
+
 def get_git_config(config: dict[str, Any]) -> dict[str, str]:
     """Extract git identity settings."""
     git = config.get("git", {})

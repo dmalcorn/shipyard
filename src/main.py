@@ -555,12 +555,26 @@ def _load_session(target_dir: str) -> dict[str, str] | None:
         return None
 
 
-def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
+def _run_rebuild_cli(
+    target_dir: str,
+    resume: bool = False,
+    *,
+    skip_story_reviews: bool = False,
+) -> None:
     """Run the rebuild loop from CLI with interactive intervention."""
-    from src.config import get_langsmith_project, get_model_config, get_target_dir, load_factory_config
+    from src.config import (
+        get_langsmith_project,
+        get_model_config,
+        get_reviews_config,
+        get_target_dir,
+        load_factory_config,
+    )
     from src.intake.epic_graph import set_epic_model_config
     from src.intake.pause import request_pause, reset_pause
-    from src.multi_agent.orchestrator import set_model_config
+    from src.multi_agent.orchestrator import (
+        set_model_config,
+        set_story_reviews_enabled,
+    )
 
     # Normalize path to OS-native format (resolves mixed separators from
     # MINGW64 bash on Windows where CLI gives forward slashes but
@@ -583,6 +597,12 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
         print(f"  Model overrides: {
             {k: v for k, v in model_config.items() if v}
         }")
+
+    # Apply review configuration (CLI flag overrides factory.yaml)
+    reviews_config = get_reviews_config(config)
+    if skip_story_reviews or not reviews_config.get("story_level", True):
+        set_story_reviews_enabled(False)
+        print("  Story-level code reviews: DISABLED (epic reviews still active)")
 
     ls_project = get_langsmith_project(config)
     if ls_project and not os.environ.get("LANGCHAIN_PROJECT"):
@@ -729,6 +749,11 @@ def main() -> None:
         help="Resume a previously paused rebuild from its last checkpoint",
     )
     parser.add_argument(
+        "--no-story-reviews",
+        action="store_true",
+        help="Skip story-level code reviews (epic reviews still run)",
+    )
+    parser.add_argument(
         "--target-dir",
         default="./target/",
         help="Target output directory (default: ./target/)",
@@ -739,7 +764,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.rebuild:
-        _run_rebuild_cli(args.rebuild, resume=args.resume)
+        _run_rebuild_cli(args.rebuild, resume=args.resume, skip_story_reviews=args.no_story_reviews)
     elif args.cli:
         _run_cli()
     else:
