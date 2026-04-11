@@ -439,9 +439,12 @@ async def api_stream_logs(session_id: str) -> EventSourceResponse:
             events = get_session_logs(session_id, after_id=last_id)
             for ev in events:
                 last_id = ev["id"]
+                data = ev["text"]
+                if ev.get("metadata"):
+                    data = json.dumps({"text": ev["text"], "metadata": ev["metadata"]})
                 yield {
                     "event": ev["event_type"],
-                    "data": ev["text"],
+                    "data": data,
                     "id": str(ev["id"]),
                 }
             # Check if session has ended

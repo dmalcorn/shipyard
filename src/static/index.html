@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shipyard — Command Bridge</title>
+<title>Software Factory — Command Bridge</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
@@ -290,138 +290,16 @@ header {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Flow Graph ── */
-.panel-flow { margin-top: 0.5rem; }
+/* ── Progress Card ── */
+.panel-progress { margin-top: 0.5rem; }
 
-.flow-lanes {
-  display: flex;
-  flex-direction: column;
-  gap: 1.2rem;
-}
-
-.flow-lane {
-  display: flex;
-  align-items: center;
-  gap: 0;
-}
-
-.flow-lane-label {
+.progress-position {
   font-family: var(--font-display);
+  font-size: 1rem;
   font-weight: 700;
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--text-dim);
-  width: 80px;
-  flex-shrink: 0;
-  text-align: right;
-  padding-right: 0.8rem;
-}
-
-.flow-nodes {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  flex: 1;
-  position: relative;
-}
-
-.flow-node {
-  position: relative;
-  background: var(--bg-input);
-  border: 1px solid var(--border-weld);
-  border-radius: var(--radius);
-  padding: 0.45rem 0.7rem;
-  font-size: 0.65rem;
-  font-weight: 600;
-  color: var(--text-dim);
-  white-space: nowrap;
-  transition: all 0.35s ease;
-  z-index: 1;
-}
-
-.flow-node.completed {
-  border-color: var(--green-ok);
-  color: var(--green-ok);
-  background: var(--green-glow);
-}
-
-.flow-node.active {
-  border-color: var(--amber);
-  color: var(--amber);
-  background: var(--amber-glow);
-  box-shadow: 0 0 12px rgba(232, 168, 48, 0.25), inset 0 0 8px rgba(232, 168, 48, 0.08);
-  animation: node-pulse 2s ease infinite;
-}
-
-.flow-node.failed {
-  border-color: var(--red-alert);
-  color: var(--red-alert);
-  background: var(--red-glow);
-}
-
-.flow-node.idle {
-  border-color: var(--border-weld);
-  color: var(--text-dim);
-  background: var(--bg-input);
-}
-
-@keyframes node-pulse {
-  0%, 100% { box-shadow: 0 0 12px rgba(232, 168, 48, 0.25); }
-  50% { box-shadow: 0 0 20px rgba(232, 168, 48, 0.45), inset 0 0 12px rgba(232, 168, 48, 0.12); }
-}
-
-.flow-connector {
-  width: 28px;
-  height: 2px;
-  background: var(--border-weld);
-  flex-shrink: 0;
-  position: relative;
-  transition: background 0.35s ease;
-}
-
-.flow-connector::after {
-  content: '';
-  position: absolute;
-  right: -1px;
-  top: -3px;
-  width: 0;
-  height: 0;
-  border-left: 5px solid var(--border-weld);
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  transition: border-left-color 0.35s ease;
-}
-
-.flow-connector.lit { background: var(--amber-dim); }
-.flow-connector.lit::after { border-left-color: var(--amber-dim); }
-.flow-connector.done { background: var(--green-ok); }
-.flow-connector.done::after { border-left-color: var(--green-ok); }
-
-.flow-loop {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  border: 1px dashed var(--border-weld);
-  border-radius: var(--radius);
-  padding: 0.3rem 0.4rem;
-  position: relative;
-  transition: border-color 0.35s ease;
-}
-
-.flow-loop.active-loop { border-color: var(--amber-dim); }
-
-.flow-loop-label {
-  position: absolute;
-  top: -8px;
-  left: 10px;
-  font-size: 0.5rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-dim);
-  background: var(--bg-plate);
-  padding: 0 0.3rem;
+  color: var(--text-primary);
+  margin-bottom: 0.6rem;
+  min-height: 1.4em;
 }
 
 /* ── Stats Bar ── */
@@ -475,8 +353,6 @@ header {
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
-  .flow-lane { flex-wrap: wrap; }
-  .flow-lane-label { width: 100%; text-align: left; padding-bottom: 0.3rem; }
   .stats-bar { flex-wrap: wrap; }
   .stat-box { min-width: 80px; }
 }
@@ -488,7 +364,7 @@ header {
 <header>
   <div class="logo">
     <div class="logo-icon">&#9875;</div>
-    Shipyard
+    Software Factory
   </div>
   <div class="header-controls">
     <div class="live-badge" id="liveBadge">
@@ -524,39 +400,16 @@ header {
     </div>
   </div>
 
-  <!-- Flow Graph + Stats -->
-  <div class="panel panel-flow">
+  <!-- Pipeline Progress -->
+  <div class="panel panel-progress">
     <div class="panel-header">
-      Rebuild Pipeline
-      <span class="tag tag-live">FLOW</span>
+      Pipeline Progress
+      <span class="tag tag-live">LIVE</span>
       <div class="spacer"></div>
-      <span id="storyLabel" style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-dim);"></span>
     </div>
     <div class="panel-body">
-      <div class="flow-lanes">
-        <div class="flow-lane">
-          <div class="flow-lane-label">Rebuild</div>
-          <div class="flow-nodes">
-            <div class="flow-node idle" id="fr-load">Load Backlog</div>
-            <div class="flow-connector" id="fc-r1"></div>
-            <div class="flow-node idle" id="fr-init">Init Project</div>
-            <div class="flow-connector" id="fc-r2"></div>
-            <div class="flow-loop" id="fr-loop">
-              <div class="flow-loop-label">per story</div>
-              <div class="flow-node idle" id="fr-tdd">TDD Pipeline</div>
-              <div class="flow-connector" id="fc-r3"></div>
-              <div class="flow-node idle" id="fr-test">Test</div>
-              <div class="flow-connector" id="fc-r4"></div>
-              <div class="flow-node idle" id="fr-review">Review</div>
-              <div class="flow-connector" id="fc-r5"></div>
-              <div class="flow-node idle" id="fr-tag">Git Tag</div>
-            </div>
-            <div class="flow-connector" id="fc-r6"></div>
-            <div class="flow-node idle" id="fr-done">Complete</div>
-          </div>
-        </div>
-      </div>
-
+      <div class="progress-position" id="progressPosition">Waiting for pipeline...</div>
+      <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
       <div class="stats-bar">
         <div class="stat-box">
           <div class="stat-value" id="statCompleted">&mdash;</div>
@@ -575,7 +428,6 @@ header {
           <div class="stat-label">Total</div>
         </div>
       </div>
-      <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
     </div>
   </div>
 
@@ -597,7 +449,7 @@ const terminalEmpty = document.getElementById('terminalEmpty');
 const sessionSelect = document.getElementById('sessionSelect');
 const liveBadge = document.getElementById('liveBadge');
 const modeTag = document.getElementById('modeTag');
-const storyLabel = document.getElementById('storyLabel');
+const progressPosition = document.getElementById('progressPosition');
 
 // ── Helpers ──
 function escapeHtml(s) {
@@ -653,63 +505,16 @@ function setMode(mode) {
   }
 }
 
-// ── Flow Graph ──
-const REBUILD_NODES = ['fr-load','fr-init','fr-tdd','fr-test','fr-review','fr-tag','fr-done'];
-const REBUILD_CONNS = ['fc-r1','fc-r2','fc-r3','fc-r4','fc-r5','fc-r6'];
-const STAGE_INDEX = {
-  loading_backlog:0, init_project:1, tdd_pipeline:2, testing:3, reviewing:4, git_tag:5, complete:6
-};
-
-function setFlowState(nodeId, state) {
-  const el = document.getElementById(nodeId);
-  if (el) el.className = 'flow-node ' + state;
+// ── Parse SSE data (may be JSON with metadata or plain text) ──
+function parseEventData(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.text !== undefined) return parsed;
+  } catch {}
+  return { text: raw, metadata: null };
 }
 
-function setConnector(connId, state) {
-  const el = document.getElementById(connId);
-  if (el) el.className = 'flow-connector' + (state ? ' ' + state : '');
-}
-
-function resetFlow() {
-  REBUILD_NODES.forEach(id => setFlowState(id, 'idle'));
-  REBUILD_CONNS.forEach(id => setConnector(id, ''));
-  document.getElementById('fr-loop').classList.remove('active-loop');
-}
-
-function advanceFlow(activeIdx) {
-  REBUILD_NODES.forEach((id, i) => {
-    if (i < activeIdx) setFlowState(id, 'completed');
-    else if (i === activeIdx) setFlowState(id, 'active');
-    else setFlowState(id, 'idle');
-  });
-  REBUILD_CONNS.forEach((id, i) => {
-    if (i < activeIdx) setConnector(id, 'done');
-    else if (i === activeIdx) setConnector(id, 'lit');
-    else setConnector(id, '');
-  });
-  if (activeIdx >= 2 && activeIdx <= 5) {
-    document.getElementById('fr-loop').classList.add('active-loop');
-  } else {
-    document.getElementById('fr-loop').classList.remove('active-loop');
-  }
-}
-
-function completeFlow() {
-  REBUILD_NODES.forEach(id => setFlowState(id, 'completed'));
-  REBUILD_CONNS.forEach(id => setConnector(id, 'done'));
-  document.getElementById('fr-loop').classList.remove('active-loop');
-}
-
-function updateFlowFromEvent(text, eventType) {
-  if (eventType !== 'stage') return;
-  const stage = text.trim().toLowerCase().replace(/\s+/g, '_');
-  const idx = STAGE_INDEX[stage];
-  if (idx !== undefined) {
-    if (stage === 'complete') completeFlow();
-    else advanceFlow(idx);
-  }
-}
-
+// ── Stats & Progress ──
 function updateStats(metadata) {
   if (!metadata) return;
   if (metadata.completed !== undefined) document.getElementById('statCompleted').textContent = metadata.completed;
@@ -720,8 +525,11 @@ function updateStats(metadata) {
     const pct = (metadata.story_index / metadata.total_stories) * 100;
     document.getElementById('rebuildProgress').style.width = pct + '%';
   }
-  if (metadata.story && metadata.epic) {
-    storyLabel.innerHTML = escapeHtml(metadata.epic) + ' / ' + escapeHtml(metadata.story);
+  const parts = [];
+  if (metadata.epic) parts.push(escapeHtml(metadata.epic));
+  if (metadata.story) parts.push(escapeHtml(metadata.story));
+  if (parts.length > 0) {
+    progressPosition.innerHTML = parts.join(' &mdash; ');
   }
 }
 
@@ -730,7 +538,7 @@ function resetStats() {
     document.getElementById(id).innerHTML = '&mdash;';
   });
   document.getElementById('rebuildProgress').style.width = '0%';
-  storyLabel.textContent = '';
+  progressPosition.textContent = 'Waiting for pipeline...';
 }
 
 // ── Live Mode (SSE) ──
@@ -738,7 +546,6 @@ function startLive(sessionId) {
   stopLive();
   liveSessionId = sessionId;
   clearTerminal();
-  resetFlow();
   resetStats();
   setMode('live');
   appendLine('Connected to live session: ' + sessionId, 'stage');
@@ -746,21 +553,24 @@ function startLive(sessionId) {
   liveEventSource = new EventSource(API + '/api/stream/' + sessionId);
 
   liveEventSource.addEventListener('log', function(e) {
-    appendLine(e.data, 'log');
+    const d = parseEventData(e.data);
+    appendLine(d.text, 'log');
+    if (d.metadata) updateStats(d.metadata);
   });
 
   liveEventSource.addEventListener('stage', function(e) {
-    appendLine('>>> STAGE: ' + e.data, 'stage');
-    updateFlowFromEvent(e.data, 'stage');
+    const d = parseEventData(e.data);
+    appendLine('>>> STAGE: ' + d.text, 'stage');
+    if (d.metadata) updateStats(d.metadata);
   });
 
   liveEventSource.addEventListener('error_event', function(e) {
-    appendLine(e.data, 'error');
+    const d = parseEventData(e.data);
+    appendLine(d.text, 'error');
   });
 
   liveEventSource.addEventListener('done', function(e) {
     appendLine('\n--- Session ended ---', 'stage');
-    completeFlow();
     liveEventSource.close();
     liveEventSource = null;
     setMode('idle');
@@ -797,7 +607,6 @@ function startPolling(sessionId) {
       for (const ev of d.events) {
         if (ev.event_type === 'stage') {
           appendLine('>>> STAGE: ' + ev.text, 'stage');
-          updateFlowFromEvent(ev.text, 'stage');
         } else {
           appendLine(ev.text, ev.event_type);
         }
@@ -810,7 +619,6 @@ function startPolling(sessionId) {
       const ad = await active.json();
       if (!ad.active || ad.active.session_id !== sessionId) {
         appendLine('\n--- Session ended ---', 'stage');
-        completeFlow();
         stopPolling();
         setMode('idle');
         loadSessionList();
@@ -832,7 +640,6 @@ function stopPolling() {
 async function loadReplay(sessionId) {
   stopLive();
   clearTerminal();
-  resetFlow();
   resetStats();
   setMode('replay');
   appendLine('Loading session: ' + sessionId + '...', 'stage');
@@ -851,13 +658,11 @@ async function loadReplay(sessionId) {
     for (const ev of d.events) {
       if (ev.event_type === 'stage') {
         appendLine('>>> STAGE: ' + ev.text, 'stage');
-        updateFlowFromEvent(ev.text, 'stage');
       } else {
         appendLine(ev.text, ev.event_type);
       }
       if (ev.metadata) updateStats(ev.metadata);
     }
-    completeFlow();
   } catch (e) {
     appendLine('Failed to load session: ' + e.message, 'error');
   }
@@ -892,7 +697,6 @@ sessionSelect.addEventListener('change', function() {
   if (!sessionId) {
     stopLive();
     clearTerminal();
-    resetFlow();
     resetStats();
     setMode('idle');
     return;

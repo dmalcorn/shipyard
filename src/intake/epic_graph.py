@@ -24,6 +24,7 @@ from langgraph.types import Send
 
 from src.audit_log.audit import get_logger
 from src.intake.pause import is_pause_requested
+from src.pipeline_tracker import update_story_progress
 from src.multi_agent.bmad_invoke import (
     TIMEOUT_LONG,
     TIMEOUT_MEDIUM,
@@ -190,6 +191,12 @@ def select_story_node(state: EpicState) -> dict[str, Any]:
     print(f"STORY {story_id}: {story_name} (Epic {epic_num})")
     print(f"{'─'*60}")
 
+    update_story_progress(state.get("session_id", ""),
+        epic=f"Epic {epic_num}: {epic_name}",
+        story=f"Story {story_id}: {story_name}",
+        story_index=state.get("rebuild_prior_completed", 0) + story_index,
+    )
+
     return {
         "current_story_status": "",
         "current_story_error": "",
@@ -298,6 +305,15 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
     }
 
     print(f"\n    STORY RESULT: {story_id} ({story_name}) — {status}")
+
+    global_completed = state.get("rebuild_prior_completed", 0) + stories_completed
+    global_failed = state.get("rebuild_prior_failed", 0) + stories_failed
+    update_story_progress(state.get("session_id", ""),
+        completed=global_completed,
+        failed=global_failed,
+        interventions=state.get("rebuild_prior_interventions", 0) + state.get("total_interventions", 0),
+        story_index=state.get("rebuild_prior_completed", 0) + story_index + 1,
+    )
 
     updates: dict[str, Any] = {
         "story_results": [result_entry],

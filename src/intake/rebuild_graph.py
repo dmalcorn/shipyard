@@ -30,6 +30,7 @@ from src.intake.backlog import load_backlog
 from src.intake.cost_tracker import get_invocation_count, get_total_cost
 from src.intake.epic_graph import EpicState, build_epic_runner
 from src.intake.pause import is_pause_requested
+from src.pipeline_tracker import update_story_progress
 from src.multi_agent.orchestrator import (
     _detect_project_type,
     generate_ci_script,
@@ -343,6 +344,13 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
 
         _prompt_story_reviews()
 
+        update_story_progress(state.get("session_id", ""),
+            total_stories=total_stories,
+            completed=state.get("resume_stories_completed", 0),
+            failed=state.get("resume_stories_failed", 0),
+            interventions=state.get("resume_total_interventions", 0),
+        )
+
         return {
             "epics": epics,
             "epic_index": resume_epic_index,
@@ -363,6 +371,13 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     print(f"{'='*60}")
 
     _prompt_story_reviews()
+
+    update_story_progress(state.get("session_id", ""),
+        total_stories=total_stories,
+        completed=0,
+        failed=0,
+        interventions=0,
+    )
 
     return {
         "epics": epics,
@@ -574,6 +589,10 @@ def select_epic_node(state: RebuildState) -> dict[str, Any]:
     print(f"\n{'='*60}")
     print(f"EPIC {epic['epic_num']}: {epic.get('epic_name', '')} ({epic_index + 1}/{len(epics)})")
     print(f"{'='*60}")
+
+    update_story_progress(state.get("session_id", ""),
+        epic=f"Epic {epic['epic_num']}: {epic.get('epic_name', '')}",
+    )
 
     return {
         "current_epic_status": "",
