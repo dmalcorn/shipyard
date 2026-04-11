@@ -87,6 +87,9 @@ class OrchestratorState(TypedDict, total=False):
     last_test_output: str
     last_ci_output: str
 
+    # Story existence check
+    story_exists: bool
+
     # Review gate
     has_review_issues: bool
     review_file_path: str
@@ -164,6 +167,40 @@ def _log_bash_to_audit(session_id: str, script_name: str, result: str) -> None:
 # ---------------------------------------------------------------------------
 # LLM Nodes — thin wrappers around invoke_bmad_agent()
 # ---------------------------------------------------------------------------
+
+
+def check_story_exists_node(state: OrchestratorState) -> dict[str, Any]:
+    """Non-LLM check: does a story file already exist with 'ready-for-dev' status?"""
+    task_id = state.get("task_id", "")
+    working_dir = _get_working_dir(state)
+    impl_dir = os.path.join(working_dir, "_bmad-output", "implementation-artifacts")
+
+    # Look for story files matching the exact task_id (e.g., "1-4" matches "1-4-*.md")
+    # Uses "{task_id}-" prefix to avoid false matches (e.g., "1-4" must not match "1-40-...")
+    prefix = f"{task_id}-"
+    if os.path.isdir(impl_dir):
+        for fname in os.listdir(impl_dir):
+            if fname.startswith(prefix) and fname.endswith(".md"):
+                # Verify the character after the task_id digits is not another digit
+                rest = fname[len(prefix):]
+                if rest and rest[0].isdigit():
+                    continue
+                fpath = os.path.join(impl_dir, fname)
+                with open(fpath, encoding="utf-8") as f:
+                    content = f.read(500)  # Only need the header
+                if "Status: ready-for-dev" in content:
+                    print(f"\n>>> [check_story] Story {task_id} already exists with ready-for-dev status — skipping create_story")
+                    return {"story_exists": True, "current_phase": "check_story"}
+
+    print(f"\n>>> [check_story] Story {task_id} not found or not ready-for-dev — proceeding to create_story")
+    return {"story_exists": False, "current_phase": "check_story"}
+
+
+def route_after_story_check(state: OrchestratorState) -> str:
+    """Route based on whether the story file already exists."""
+    if state.get("story_exists"):
+        return "skip"
+    return "create"
 
 
 def create_story_node(state: OrchestratorState) -> dict[str, Any]:
@@ -1258,8 +1295,8 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     """Build the story orchestrator pipeline as a StateGraph.
 
     Pipeline (happy path):
-    create_story → write_tests → implement → run_tests → test_review →
-    check_review → code_review → run_ci → git_commit
+    check_story → [create_story] → implement → code_review → run_ci → git_commit
+    (create_story is skipped if story file exists with ready-for-dev status)
 
     Failure routing:
     - run_tests fail → implement retry (up to MAX_TEST_CYCLES)
@@ -1271,9 +1308,11 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     """
     graph = StateGraph(OrchestratorState)
 
+    # --- Non-LLM check nodes ---
+    graph.add_node("check_story", check_story_exists_node)
+
     # --- LLM nodes (BMAD agent invocations) ---
     graph.add_node("create_story", create_story_node)
-    graph.add_node("write_tests", write_tests_node)
     graph.add_node("implement", implement_node)
     graph.add_node("code_review", code_review_node)
     graph.add_node("fix_ci", fix_ci_node)
@@ -1287,15 +1326,15 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
 
     # --- Edges ---
 
-    # Entry: create story spec (fail → error, success → write tests)
-    graph.add_edge(START, "create_story")
+    # Entry: check if story already exists with ready-for-dev
+    graph.add_edge(START, "check_story")
     graph.add_conditional_edges(
-        "create_story",
-        route_after_llm_node,
-        {"continue": "write_tests", "error": "error_handler"},
+        "check_story",
+        route_after_story_check,
+        {"skip": "implement", "create": "create_story"},
     )
     graph.add_conditional_edges(
-        "write_tests",
+        "create_story",
         route_after_llm_node,
         {"continue": "implement", "error": "error_handler"},
     )
