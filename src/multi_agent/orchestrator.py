@@ -89,6 +89,7 @@ class OrchestratorState(TypedDict, total=False):
 
     # Story existence check
     story_exists: bool
+    dev_complete: bool
 
     # Review gate
     has_review_issues: bool
@@ -169,28 +170,36 @@ def _log_bash_to_audit(session_id: str, script_name: str, result: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _find_story_status(working_dir: str, task_id: str) -> str | None:
+    """Find a story file for the given task_id and return its Status value, or None."""
+    impl_dir = os.path.join(working_dir, "_bmad-output", "implementation-artifacts")
+    prefix = f"{task_id}-"
+    if not os.path.isdir(impl_dir):
+        return None
+    for fname in os.listdir(impl_dir):
+        if fname.startswith(prefix) and fname.endswith(".md"):
+            # Verify the character after the task_id digits is not another digit
+            rest = fname[len(prefix):]
+            if rest and rest[0].isdigit():
+                continue
+            fpath = os.path.join(impl_dir, fname)
+            with open(fpath, encoding="utf-8") as f:
+                content = f.read(500)  # Only need the header
+            for line in content.splitlines():
+                if line.startswith("Status:"):
+                    return line.split(":", 1)[1].strip()
+    return None
+
+
 def check_story_exists_node(state: OrchestratorState) -> dict[str, Any]:
     """Non-LLM check: does a story file already exist with 'ready-for-dev' status?"""
     task_id = state.get("task_id", "")
     working_dir = _get_working_dir(state)
-    impl_dir = os.path.join(working_dir, "_bmad-output", "implementation-artifacts")
+    status = _find_story_status(working_dir, task_id)
 
-    # Look for story files matching the exact task_id (e.g., "1-4" matches "1-4-*.md")
-    # Uses "{task_id}-" prefix to avoid false matches (e.g., "1-4" must not match "1-40-...")
-    prefix = f"{task_id}-"
-    if os.path.isdir(impl_dir):
-        for fname in os.listdir(impl_dir):
-            if fname.startswith(prefix) and fname.endswith(".md"):
-                # Verify the character after the task_id digits is not another digit
-                rest = fname[len(prefix):]
-                if rest and rest[0].isdigit():
-                    continue
-                fpath = os.path.join(impl_dir, fname)
-                with open(fpath, encoding="utf-8") as f:
-                    content = f.read(500)  # Only need the header
-                if "Status: ready-for-dev" in content:
-                    print(f"\n>>> [check_story] Story {task_id} already exists with ready-for-dev status — skipping create_story")
-                    return {"story_exists": True, "current_phase": "check_story"}
+    if status == "ready-for-dev":
+        print(f"\n>>> [check_story] Story {task_id} already exists with ready-for-dev status — skipping create_story")
+        return {"story_exists": True, "current_phase": "check_story"}
 
     print(f"\n>>> [check_story] Story {task_id} not found or not ready-for-dev — proceeding to create_story")
     return {"story_exists": False, "current_phase": "check_story"}
@@ -201,6 +210,27 @@ def route_after_story_check(state: OrchestratorState) -> str:
     if state.get("story_exists"):
         return "skip"
     return "create"
+
+
+def check_dev_status_node(state: OrchestratorState) -> dict[str, Any]:
+    """Non-LLM check: is the story already developed (status: review)?"""
+    task_id = state.get("task_id", "")
+    working_dir = _get_working_dir(state)
+    status = _find_story_status(working_dir, task_id)
+
+    if status == "review":
+        print(f"\n>>> [check_dev] Story {task_id} has status 'review' — skipping implement, proceeding to code_review")
+        return {"dev_complete": True, "current_phase": "check_dev"}
+
+    print(f"\n>>> [check_dev] Story {task_id} status is '{status}' — proceeding to implement")
+    return {"dev_complete": False, "current_phase": "check_dev"}
+
+
+def route_after_dev_check(state: OrchestratorState) -> str:
+    """Route based on whether implementation is already done."""
+    if state.get("dev_complete"):
+        return "skip"
+    return "implement"
 
 
 def create_story_node(state: OrchestratorState) -> dict[str, Any]:
@@ -1295,8 +1325,9 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     """Build the story orchestrator pipeline as a StateGraph.
 
     Pipeline (happy path):
-    check_story → [create_story] → implement → code_review → run_ci → git_commit
-    (create_story is skipped if story file exists with ready-for-dev status)
+    check_story → [create_story] → check_dev → [implement] → code_review → run_ci → git_commit
+    (create_story skipped if story exists with ready-for-dev status)
+    (implement skipped if story has status: review)
 
     Failure routing:
     - run_tests fail → implement retry (up to MAX_TEST_CYCLES)
@@ -1310,6 +1341,7 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
 
     # --- Non-LLM check nodes ---
     graph.add_node("check_story", check_story_exists_node)
+    graph.add_node("check_dev", check_dev_status_node)
 
     # --- LLM nodes (BMAD agent invocations) ---
     graph.add_node("create_story", create_story_node)
@@ -1331,12 +1363,19 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_conditional_edges(
         "check_story",
         route_after_story_check,
-        {"skip": "implement", "create": "create_story"},
+        {"skip": "check_dev", "create": "create_story"},
     )
     graph.add_conditional_edges(
         "create_story",
         route_after_llm_node,
-        {"continue": "implement", "error": "error_handler"},
+        {"continue": "check_dev", "error": "error_handler"},
+    )
+
+    # Check if dev is already done (status: review) → skip to code_review
+    graph.add_conditional_edges(
+        "check_dev",
+        route_after_dev_check,
+        {"skip": "code_review", "implement": "implement"},
     )
 
     # Implement → code review (fail → error)
