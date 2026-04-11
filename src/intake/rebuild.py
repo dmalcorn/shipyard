@@ -234,8 +234,8 @@ def _run_rebuild_core(
             )
             logger.info(
                 "Resume state loaded: starting at epic %d, story %d, %d stories already done",
-                initial_state["resume_epic_index"],
-                initial_state["resume_story_index"],
+                initial_state["resume_epic_index"] + 1,
+                initial_state["resume_story_index"] + 1,
                 initial_state["resume_stories_completed"],
             )
         else:

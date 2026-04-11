@@ -397,7 +397,7 @@ def epic_paused_node(state: EpicState) -> dict[str, Any]:
     total = len(state.get("stories", []))
     logger.info(
         "Epic %s paused after story %d/%d (completed: %d)",
-        epic_num, story_index, total, completed,
+        epic_num, story_index + 1, total, completed,
     )
     return {"epic_status": "paused"}
 
