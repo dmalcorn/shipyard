@@ -18,8 +18,18 @@ import time
 from typing import Any
 
 from src.intake.cost_tracker import add_cost
+from src.intake.pause import force_quit_event
+from src.multi_agent.proc_registry import register, unregister
 
 logger = logging.getLogger(__name__)
+
+
+def _subprocess_env() -> dict[str, str]:
+    """Build env for Claude subprocesses — disables git pager to prevent hangs."""
+    env = os.environ.copy()
+    env["GIT_PAGER"] = "cat"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
 
 # ---------------------------------------------------------------------------
 # Default timeout (seconds) per agent type
@@ -163,6 +173,15 @@ def _build_bmad_prompt(
         extra_context: Optional additional context appended to the prompt.
     """
     prompt = (
+        f"AUTOMATED PIPELINE MODE — This is a non-interactive execution. "
+        f"There is no human operator. stdin is closed. You MUST:\n"
+        f"- Never display menus or greetings\n"
+        f"- Never wait for user input or confirmation\n"
+        f"- Never ask clarifying questions\n"
+        f"- Skip any step that says STOP, WAIT, or HALT for user input\n"
+        f"- Proceed with best judgment on all decisions\n"
+        f"- On failure after 3 retries, log the error and exit\n"
+        f"- Execute the command below immediately and completely\n\n"
         f"IMMEDIATE ACTION REQUIRED - YOUR VERY FIRST ACTION MUST BE "
         f"TO INVOKE THE BMAD AGENT.\n\n"
         f"Step 1: Use the Skill tool to invoke '{bmad_agent}'\n\n"
@@ -174,9 +193,7 @@ def _build_bmad_prompt(
         f"Persona: [Your persona name from the agent file]\n"
         f"Loaded files:\n"
         f"  - [exact path to each file you read during activation]\n"
-        f"=== END IDENTIFICATION ===\n\n"
-        f"Mode: Automated, no menus, no questions, always fix issues "
-        f"automatically, no waiting for user input."
+        f"=== END IDENTIFICATION ==="
     )
     if extra_context:
         prompt += f"\n\n{extra_context}"
@@ -249,7 +266,25 @@ def invoke_bmad_agent(
             errors="replace",
             cwd=cwd,
             stdin=subprocess.DEVNULL,
+            env=_subprocess_env(),
         )
+        register(proc)
+
+        # Watchdog: kill subprocess on force-quit (second Ctrl+C)
+        def _watchdog() -> None:
+            force_quit_event.wait()
+            if proc.poll() is None:
+                print(f"\n      [bmad] Force-quit: killing {bmad_agent} subprocess...")
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                except OSError:
+                    pass
+
+        watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+        watchdog_thread.start()
 
         # Stream stderr in a background thread so it doesn't block
         def _drain_stderr() -> None:
@@ -281,6 +316,7 @@ def invoke_bmad_agent(
 
         proc.wait(timeout=30)
         stderr_thread.join(timeout=5)
+        unregister(proc)
 
         exit_code = proc.returncode
         success = exit_code == 0
@@ -290,6 +326,7 @@ def invoke_bmad_agent(
         print(f"      [bmad] TIMEOUT after {elapsed:.0f}s: {bmad_agent} {command}")
         proc.kill()
         proc.wait()
+        unregister(proc)
         output_chunks.append(f"TIMEOUT: Claude CLI did not respond within {timeout}s")
         success = False
         exit_code = 124
@@ -387,7 +424,25 @@ def invoke_claude_cli(
             errors="replace",
             cwd=cwd,
             stdin=subprocess.DEVNULL,
+            env=_subprocess_env(),
         )
+        register(proc)
+
+        # Watchdog: kill subprocess on force-quit (second Ctrl+C)
+        def _watchdog() -> None:
+            force_quit_event.wait()
+            if proc.poll() is None:
+                print(f"\n      [{label}] Force-quit: killing subprocess...")
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                except OSError:
+                    pass
+
+        watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+        watchdog_thread.start()
 
         def _drain_stderr() -> None:
             assert proc.stderr is not None
@@ -414,6 +469,7 @@ def invoke_claude_cli(
 
         proc.wait(timeout=30)
         stderr_thread.join(timeout=5)
+        unregister(proc)
 
         exit_code = proc.returncode
         success = exit_code == 0
@@ -423,6 +479,7 @@ def invoke_claude_cli(
         print(f"      [{label}] TIMEOUT after {elapsed:.0f}s")
         proc.kill()
         proc.wait()
+        unregister(proc)
         output_chunks.append(f"TIMEOUT: Claude CLI did not respond within {timeout}s")
         success = False
         exit_code = 124
@@ -454,6 +511,7 @@ def invoke_ci_with_fix(
     working_dir: str | None = None,
     max_attempts: int = 4,
     fix_timeout: int = TIMEOUT_LONG,
+    scope_hint: str = "",
 ) -> dict[str, Any]:
     """Run CI via bash, invoking BMAD dev agent only on failure.
 
@@ -466,10 +524,13 @@ def invoke_ci_with_fix(
         working_dir: Working directory for commands.
         max_attempts: Maximum CI+fix cycles before giving up.
         fix_timeout: Timeout for the LLM fix call.
+        scope_hint: Scope constraint for the fix agent (e.g. "story 1-3"
+            or "epic 1"). Tells the agent not to fix pre-existing failures
+            outside this scope.
 
     Returns:
-        Dict with keys: passed (bool), ci_output (str), attempts (int),
-        files_modified (list[str]).
+        Dict with keys: passed (bool), ci_output (str), ci_output_path (str),
+        attempts (int), files_modified (list[str]).
     """
     cwd = working_dir or os.getcwd()
     all_files_modified: list[str] = []
@@ -485,6 +546,8 @@ def invoke_ci_with_fix(
                 text=True,
                 timeout=300,
                 cwd=cwd,
+                encoding="utf-8",
+                errors="replace",
             )
             ci_output = result.stdout
             if result.stderr:
@@ -510,13 +573,36 @@ def invoke_ci_with_fix(
         if attempt < max_attempts:
             logger.info("CI failed, invoking BMAD dev agent to fix...")
 
+            scope_constraint = ""
+            if scope_hint:
+                scope_constraint = (
+                    f"\n\nIMPORTANT SCOPE CONSTRAINT: Only fix failures "
+                    f"that are related to {scope_hint}. Do NOT fix "
+                    f"pre-existing failures, broken tests, or issues in "
+                    f"code that was not modified as part of {scope_hint}. "
+                    f"If a test was already failing before {scope_hint}, "
+                    f"leave it alone."
+                )
+
+            # Write CI output to file so the LLM reads on demand
+            ci_out_dir = os.path.join(cwd, "checkpoints")
+            os.makedirs(ci_out_dir, exist_ok=True)
+            safe_hint = re.sub(r"[^\w\-]", "_", scope_hint) if scope_hint else "ci"
+            ci_out_file = f"ci-output-{safe_hint}.txt"
+            ci_out_path = os.path.join(ci_out_dir, ci_out_file)
+            with open(ci_out_path, "w", encoding="utf-8") as f:
+                f.write(ci_output)
+            ci_rel_path = os.path.join("checkpoints", ci_out_file)
+
             fix_context = (
-                f"CI failed. Here is the CI output:\n\n"
-                f"```\n{ci_output[:5000]}\n```\n\n"
+                f"CI failed. The full CI output is saved at "
+                f"`{ci_rel_path}`. Read that file to understand "
+                f"the errors.\n\n"
                 f"Fix all errors reported by the CI pipeline — this may "
                 f"include lint errors, type-check errors, security scan "
                 f"findings, and test failures. Read the output carefully "
                 f"to determine which tools reported issues."
+                f"{scope_constraint}"
             )
 
             fix_result = invoke_bmad_agent(
@@ -530,9 +616,19 @@ def invoke_ci_with_fix(
             all_files_modified.extend(fix_result.get("files_modified", []))
 
     logger.error("CI failed after %d attempts", max_attempts)
+    # Write final failure output to file for downstream consumers
+    ci_out_dir = os.path.join(cwd, "checkpoints")
+    os.makedirs(ci_out_dir, exist_ok=True)
+    safe_hint = re.sub(r"[^\w\-]", "_", scope_hint) if scope_hint else "ci"
+    ci_out_file = f"ci-output-{safe_hint}.txt"
+    ci_out_path = os.path.join(ci_out_dir, ci_out_file)
+    with open(ci_out_path, "w", encoding="utf-8") as f:
+        f.write(ci_output)
+    ci_rel_path = os.path.join("checkpoints", ci_out_file)
     return {
         "passed": False,
         "ci_output": ci_output,
+        "ci_output_path": ci_rel_path,
         "attempts": max_attempts,
         "files_modified": all_files_modified,
     }

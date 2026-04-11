@@ -1,17 +1,20 @@
-"""Story orchestrator pipeline — redesigned.
+"""Story orchestrator pipeline.
 
-Implements the per-story build pipeline as a LangGraph StateGraph,
-matching the proven patterns from looper/build-loop.sh:
+Implements the per-story build pipeline as a LangGraph StateGraph:
 
-  create_story → write_tests → implement → run_tests → [pass] →
-  code_review → run_ci → [pass] → git_commit → END
+  check_story → [create_story] → check_dev → [implement] →
+  code_review → run_ci → [fix_ci] → git_commit → END
 
 Key design principles:
-  1. Bash first, LLM on failure — tests and CI run as bash nodes,
+  1. Bash first, LLM on failure — CI runs as bash nodes,
      LLM agents are only invoked when something fails.
   2. Invoke BMAD agents — LLM nodes call invoke_bmad_agent() with
      a BMAD agent name and command, not hand-crafted prompts.
   3. Scoped tool permissions — each phase gets only the tools it needs.
+  4. Per-node model selection — each node can use a different model
+     via set_model_config().
+  5. Phase-level checkpoints — each completed phase is recorded to
+     checkpoints/phase.json for crash recovery.
 
 The heavy review pipeline (dual review + architect triage) lives in
 epic_graph.py as post-epic processing, not here.
@@ -31,14 +34,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from src.audit_log.audit import get_logger
+from src.intake.checkpoint import clear_phase_checkpoint, save_phase_checkpoint
 from src.multi_agent.bmad_invoke import (
     TOOLS_CI_FIX,
     TOOLS_CI_GENERATE,
     TOOLS_CODE_REVIEW,
     TOOLS_DEV,
     TOOLS_SM,
-    TOOLS_TEA,
-    TOOLS_TEA_FIX,
     TIMEOUT_LONG,
     TIMEOUT_MEDIUM,
     TIMEOUT_SHORT,
@@ -55,6 +57,29 @@ logger = logging.getLogger(__name__)
 # Retry limits
 MAX_TEST_CYCLES = 5
 MAX_CI_CYCLES = 4
+
+# ---------------------------------------------------------------------------
+# Per-node model configuration
+# ---------------------------------------------------------------------------
+
+# Default model overrides per node. None = use CLI default.
+# Override via set_model_config() (called from factory.yaml loader).
+_MODEL_CONFIG: dict[str, str | None] = {
+    "create_story": "sonnet",
+    "implement": "sonnet",
+    "code_review": "sonnet",
+    "fix_ci": "sonnet",
+}
+
+
+def set_model_config(config: dict[str, str | None]) -> None:
+    """Update per-node model overrides from external config."""
+    _MODEL_CONFIG.update(config)
+
+
+def _model_for(node: str) -> str | None:
+    """Return the model override for a given node, or None for default."""
+    return _MODEL_CONFIG.get(node)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +183,15 @@ def _validate_review_file(file_path: str) -> bool:
         return False
 
 
+def _save_phase(state: Mapping[str, Any], phase: str) -> None:
+    """Save a phase-level checkpoint after successful completion."""
+    session_id = state.get("session_id", "")
+    task_id = state.get("task_id", "")
+    working_dir = _get_working_dir(state) or "."
+    if session_id and task_id:
+        save_phase_checkpoint(session_id, working_dir, task_id, phase)
+
+
 def _log_bash_to_audit(session_id: str, script_name: str, result: str) -> None:
     """Log bash execution to audit logger if session is active."""
     audit = get_logger(session_id)
@@ -218,8 +252,8 @@ def check_dev_status_node(state: OrchestratorState) -> dict[str, Any]:
     working_dir = _get_working_dir(state)
     status = _find_story_status(working_dir, task_id)
 
-    if status == "review":
-        print(f"\n>>> [check_dev] Story {task_id} has status 'review' — skipping implement, proceeding to code_review")
+    if status in ("review", "done"):
+        print(f"\n>>> [check_dev] Story {task_id} has status '{status}' — skipping implement, proceeding to code_review")
         return {"dev_complete": True, "current_phase": "check_dev"}
 
     print(f"\n>>> [check_dev] Story {task_id} status is '{status}' — proceeding to implement")
@@ -245,6 +279,7 @@ def create_story_node(state: OrchestratorState) -> dict[str, Any]:
         tools=TOOLS_SM,
         working_dir=working_dir,
         timeout=TIMEOUT_SHORT,
+        model=_model_for("create_story"),
     )
 
     print(f"    [create_story] Done: success={result['success']}, files={result.get('files_modified', [])}")
@@ -257,38 +292,9 @@ def create_story_node(state: OrchestratorState) -> dict[str, Any]:
             "files_modified": result.get("files_modified", []),
         }
 
+    _save_phase(state, "create_story")
     return {
         "current_phase": "create_story",
-        "files_modified": result.get("files_modified", []),
-    }
-
-
-def write_tests_node(state: OrchestratorState) -> dict[str, Any]:
-    """Invoke BMAD TEA agent to write acceptance tests (TDD red phase)."""
-    task_id = state.get("task_id", "")
-    working_dir = _get_working_dir(state)
-    print(f"\n>>> [write_tests] Invoking bmad-testarch-atdd: Create Failing Acceptance Tests for {task_id}")
-
-    result = invoke_bmad_agent(
-        bmad_agent="bmad-testarch-atdd",
-        command=f"Create Failing Acceptance Tests for story {task_id}",
-        tools=TOOLS_TEA,
-        working_dir=working_dir,
-        timeout=TIMEOUT_SHORT,
-    )
-
-    print(f"    [write_tests] Done: success={result['success']}, files={result.get('files_modified', [])}")
-
-    if not result["success"]:
-        return {
-            "current_phase": "write_tests",
-            "pipeline_status": "failed",
-            "error": f"write_tests failed (exit={result['exit_code']}): {result['output'][:500]}",
-            "files_modified": result.get("files_modified", []),
-        }
-
-    return {
-        "current_phase": "write_tests",
         "files_modified": result.get("files_modified", []),
     }
 
@@ -316,6 +322,7 @@ def implement_node(state: OrchestratorState) -> dict[str, Any]:
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
         extra_context=extra,
+        model=_model_for("implement"),
     )
 
     print(f"    [implement] Done: success={result['success']}, files={result.get('files_modified', [])}")
@@ -328,61 +335,9 @@ def implement_node(state: OrchestratorState) -> dict[str, Any]:
             "files_modified": result.get("files_modified", []),
         }
 
+    _save_phase(state, "implement")
     return {
         "current_phase": "implement",
-        "files_modified": result.get("files_modified", []),
-    }
-
-
-def review_tests_node(state: OrchestratorState) -> dict[str, Any]:
-    """Invoke BMAD TEA agent to review tests."""
-    task_id = state.get("task_id", "")
-    working_dir = _get_working_dir(state)
-    print(f"\n>>> [test_review] Invoking bmad-qa RV for {task_id}")
-
-    result = invoke_bmad_agent(
-        bmad_agent="bmad-qa",
-        command=f"review tests for story {task_id}",
-        tools=TOOLS_TEA,
-        working_dir=working_dir,
-        timeout=TIMEOUT_MEDIUM,
-    )
-
-    print(f"    [test_review] Done: success={result['success']}")
-
-    return {
-        "current_phase": "test_review",
-        "files_modified": result.get("files_modified", []),
-    }
-
-
-def fix_review_node(state: OrchestratorState) -> dict[str, Any]:
-    """Invoke BMAD TEA agent to fix P1/P2 issues from test review."""
-    task_id = state.get("task_id", "")
-    working_dir = _get_working_dir(state)
-    review_path = state.get("review_file_path", "")
-    print(f"\n>>> [fix_review] Invoking bmad-qa to fix review issues for {task_id}")
-
-    extra = ""
-    if review_path:
-        extra = (
-            f"Read the test review file: {review_path}\n"
-            f"Apply fixes for ALL 'Must Fix' (P1) and 'Should Fix' (P2) issues."
-        )
-
-    result = invoke_bmad_agent(
-        bmad_agent="bmad-qa",
-        command=f"Fix review issues for story {task_id}",
-        tools=TOOLS_TEA_FIX,
-        working_dir=working_dir,
-        timeout=TIMEOUT_MEDIUM,
-        extra_context=extra,
-    )
-
-    print(f"    [fix_review] Done: success={result['success']}")
-
-    return {
-        "current_phase": "fix_review",
         "files_modified": result.get("files_modified", []),
     }
 
@@ -399,6 +354,7 @@ def code_review_node(state: OrchestratorState) -> dict[str, Any]:
         tools=TOOLS_CODE_REVIEW,
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
+        model=_model_for("code_review"),
         extra_context=(
             "When the code review workflow asks what to do with issues, "
             "automatically choose to fix them. No waiting for user input."
@@ -415,6 +371,7 @@ def code_review_node(state: OrchestratorState) -> dict[str, Any]:
             "files_modified": result.get("files_modified", []),
         }
 
+    _save_phase(state, "code_review")
     return {
         "current_phase": "code_review",
         "files_modified": result.get("files_modified", []),
@@ -437,6 +394,12 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
             f"include lint errors, type-check errors, security scan "
             f"findings, and test failures. Read the output carefully "
             f"to determine which tools reported issues."
+            f"\n\nIMPORTANT SCOPE CONSTRAINT: Only fix failures "
+            f"that are related to story {task_id}. Do NOT fix "
+            f"pre-existing failures, broken tests, or issues in "
+            f"code that was not modified as part of story {task_id}. "
+            f"If a test was already failing before story {task_id}, "
+            f"leave it alone."
         )
 
     result = invoke_bmad_agent(
@@ -446,6 +409,7 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
         extra_context=extra,
+        model=_model_for("fix_ci"),
     )
 
     print(f"    [fix_ci] Done: success={result['success']}")
@@ -934,6 +898,7 @@ def generate_ci_script(working_dir: str | None) -> str:
         tools=TOOLS_CI_GENERATE,
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
+        model="sonnet",
     )
 
     if not result.get("success"):
@@ -1189,6 +1154,10 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         }
 
     print(f"    [git_commit] SUCCESS: committed {task_id}")
+
+    # Story complete — clear phase checkpoint
+    working_dir = _get_working_dir(state) or "."
+    clear_phase_checkpoint(working_dir)
 
     return {
         "pipeline_status": "completed",

@@ -46,6 +46,28 @@ logger = logging.getLogger(__name__)
 # Epic-level retry limit for fix cycle
 MAX_EPIC_FIX_CYCLES = 2
 
+# ---------------------------------------------------------------------------
+# Per-node model configuration (epic-level)
+# ---------------------------------------------------------------------------
+
+_EPIC_MODEL_CONFIG: dict[str, str | None] = {
+    "epic_review": "sonnet",
+    "epic_analysis": "sonnet",
+    "epic_fix_cat_a": "sonnet",
+    "epic_architect": "opus",
+    "epic_fix_dev": "sonnet",
+}
+
+
+def set_epic_model_config(config: dict[str, str | None]) -> None:
+    """Update per-node model overrides for epic-level nodes."""
+    _EPIC_MODEL_CONFIG.update(config)
+
+
+def _epic_model_for(node: str) -> str | None:
+    """Return the model override for a given epic node, or None for default."""
+    return _EPIC_MODEL_CONFIG.get(node)
+
 # Epic-level review directories (separate from story-level)
 EPIC_REVIEWS_DIR = "epic-reviews"
 EPIC_FIX_PLAN_PATH = "epic-fix-plan.md"
@@ -529,6 +551,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
             tools=TOOLS_REVIEW_READONLY,
             working_dir=working_dir,
             timeout=TIMEOUT_MEDIUM,
+            model=_epic_model_for("epic_review"),
         )
     else:
         # Plain Claude review — integration, correctness, cross-story consistency
@@ -549,6 +572,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
             tools=TOOLS_REVIEW_READONLY,
             working_dir=working_dir,
             timeout=TIMEOUT_MEDIUM,
+            model=_epic_model_for("epic_review"),
             label=f"claude-review",
         )
 
@@ -640,6 +664,7 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
         tools=analyze_tools,
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
+        model=_epic_model_for("epic_analysis"),
         label="analyze-reviews",
     )
 
@@ -716,6 +741,7 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
         tools=TOOLS_DEV,
         working_dir=working_dir,
         timeout=TIMEOUT_LONG,
+        model=_epic_model_for("epic_fix_cat_a"),
         label="fix-cat-a",
     )
 
@@ -819,7 +845,7 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
         tools=architect_tools,
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
-        model="opus",
+        model=_epic_model_for("epic_architect"),
         label="architect",
     )
 
@@ -878,6 +904,7 @@ def epic_fix_node(state: EpicState) -> dict[str, Any]:
         tools=TOOLS_DEV,
         working_dir=working_dir,
         timeout=TIMEOUT_LONG,
+        model=_epic_model_for("epic_fix_dev"),
         label="fix-architect",
     )
 
@@ -903,10 +930,12 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
     # Full CI (no story scoping) via the same fallback chain as per-story
     ci_command = resolve_ci_command(working_dir, story_id=None)
 
+    epic_num = state.get("epic_num", "")
     result = invoke_ci_with_fix(
         ci_command=ci_command,
         working_dir=working_dir,
         max_attempts=4,
+        scope_hint=f"epic {epic_num}" if epic_num else "",
     )
 
     passed = result.get("passed", False)

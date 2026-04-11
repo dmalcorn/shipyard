@@ -1,0 +1,39 @@
+# Shipyard Factory Configuration
+# Secrets (API keys) go in .env, not here. This file can be committed.
+
+operator:
+  first_name: "Diane"
+  last_name: "Alcorn"
+  email: "dianealcorn@gmail.com"
+
+github:
+  username: "dmalcorn"
+  target_repo: "chat2bpmn"
+  target_remote_url: "https://github.com/dmalcorn/chat2bpmn.git"
+
+git:
+  author_name: "Diane Alcorn"
+  author_email: "dianealcorn@gmail.com"
+
+langsmith:
+  project: "chat2bpmn"
+
+target:
+  dir: "C:\\alcorn\\Gauntlet\\8-Capstone\\chat2bpmn"
+
+# Per-node model overrides.
+# Valid values: null (use CLI default), "haiku", "sonnet", "opus",
+# or full model IDs like "claude-sonnet-4-6".
+models:
+  # Story-level nodes (orchestrator.py)
+  create_story: sonnet
+  implement: sonnet
+  code_review: sonnet
+  fix_ci: sonnet
+
+  # Epic-level nodes (epic_graph.py)
+  epic_review: sonnet
+  epic_analysis: sonnet
+  epic_fix_cat_a: sonnet
+  epic_architect: opus
+  epic_fix_dev: sonnet

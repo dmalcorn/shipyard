@@ -36,7 +36,6 @@ from src.intake.intervention_log import (
     cli_intervention_prompt,
     process_api_intervention,
 )
-from src.intake.pipeline import run_intake_pipeline
 from src.intake.rebuild import run_rebuild
 from src.log_relay import (
     create_session,
@@ -90,23 +89,6 @@ class InstructResponse(BaseModel):
     session_id: str
     response: str
     messages_count: int
-
-
-class IntakeRequest(BaseModel):
-    """Request body for the /intake endpoint."""
-
-    spec_dir: str
-    session_id: str | None = None
-    target_dir: str = "./target/"
-
-
-class IntakeResponse(BaseModel):
-    """Response body for the /intake endpoint."""
-
-    session_id: str
-    pipeline_status: str
-    output_dir: str
-    error: str = ""
 
 
 class RebuildRequest(BaseModel):
@@ -283,33 +265,6 @@ def instruct(request: InstructRequest) -> InstructResponse:
         session_id=session_id,
         response=response_text,
         messages_count=messages_count,
-    )
-
-
-@app.post("/intake", response_model=IntakeResponse)
-def intake(request: IntakeRequest) -> IntakeResponse:
-    """Run the spec intake pipeline on a target project's documentation.
-
-    Args:
-        request: The intake request with spec_dir and optional session_id/target_dir.
-
-    Returns:
-        IntakeResponse with pipeline status and output directory.
-    """
-    session_id = request.session_id or str(uuid.uuid4())
-    output_dir = request.target_dir
-
-    result = run_intake_pipeline(
-        spec_dir=request.spec_dir,
-        output_dir=output_dir,
-        session_id=session_id,
-    )
-
-    return IntakeResponse(
-        session_id=session_id,
-        pipeline_status=result.get("pipeline_status", "unknown"),
-        output_dir=output_dir,
-        error=result.get("error", ""),
     )
 
 
@@ -602,7 +557,10 @@ def _load_session(target_dir: str) -> dict[str, str] | None:
 
 def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
     """Run the rebuild loop from CLI with interactive intervention."""
+    from src.config import get_langsmith_project, get_model_config, get_target_dir, load_factory_config
+    from src.intake.epic_graph import set_epic_model_config
     from src.intake.pause import request_pause, reset_pause
+    from src.multi_agent.orchestrator import set_model_config
 
     # Configure console logging so pipeline progress is visible
     logging.basicConfig(
@@ -610,6 +568,27 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
         format="%(asctime)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Load factory.yaml and apply configuration
+    config = load_factory_config()
+    model_config = get_model_config(config)
+    if model_config:
+        set_model_config(model_config)
+        set_epic_model_config(model_config)
+        print(f"  Model overrides: {
+            {k: v for k, v in model_config.items() if v}
+        }")
+
+    ls_project = get_langsmith_project(config)
+    if ls_project and not os.environ.get("LANGCHAIN_PROJECT"):
+        os.environ["LANGCHAIN_PROJECT"] = ls_project
+
+    # Use factory.yaml target_dir as fallback if CLI arg is a default
+    if target_dir == "./target/" and config:
+        yaml_target = get_target_dir(config)
+        if yaml_target != "./target/":
+            target_dir = yaml_target
+            print(f"  Target dir from factory.yaml: {target_dir}")
 
     # Reset pause flag from any previous run in this process
     reset_pause()
@@ -667,7 +646,11 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
             print("    Press Ctrl+C again to force-quit immediately.")
             request_pause()
         else:
-            print("\n*** Force-quitting.")
+            print("\n*** Force-quitting — killing all subprocesses...")
+            from src.intake.pause import request_force_quit
+            from src.multi_agent.proc_registry import kill_all
+            request_force_quit()
+            kill_all()
             raise SystemExit(1)
 
     original_sigint = signal.getsignal(signal.SIGINT)
@@ -726,38 +709,10 @@ def _run_rebuild_cli(target_dir: str, resume: bool = False) -> None:
             signal.signal(signal.SIGTERM, original_sigterm)
 
 
-def _run_intake(spec_dir: str, target_dir: str) -> None:
-    """Run the intake pipeline from CLI."""
-    session_id = str(uuid.uuid4())
-    print(f"Shipyard Intake (session: {session_id})")
-    print(f"Spec dir: {spec_dir}")
-    print(f"Target dir: {target_dir}")
-
-    result = run_intake_pipeline(
-        spec_dir=spec_dir,
-        output_dir=target_dir,
-        session_id=session_id,
-    )
-
-    status = result.get("pipeline_status", "unknown")
-    if status == "completed":
-        print(f"\nIntake completed. Output written to {target_dir}/")
-        print(f"  - {target_dir}/spec-summary.md")
-        print(f"  - {target_dir}/epics.md")
-    else:
-        error = result.get("error", "Unknown error")
-        print(f"\nIntake failed: {error}")
-
-
 def main() -> None:
     """Route to CLI mode, intake mode, or start the FastAPI server."""
     parser = argparse.ArgumentParser(description="Shipyard agent server")
     parser.add_argument("--cli", action="store_true", help="Run interactive CLI mode")
-    parser.add_argument(
-        "--intake",
-        metavar="SPEC_DIR",
-        help="Run intake pipeline on a spec directory",
-    )
     parser.add_argument(
         "--rebuild",
         metavar="TARGET_DIR",
@@ -780,8 +735,6 @@ def main() -> None:
 
     if args.rebuild:
         _run_rebuild_cli(args.rebuild, resume=args.resume)
-    elif args.intake:
-        _run_intake(args.intake, args.target_dir)
     elif args.cli:
         _run_cli()
     else:
