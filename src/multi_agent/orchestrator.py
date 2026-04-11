@@ -1147,6 +1147,14 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         logger.warning("Removing stale git index.lock")
         os.remove(lock_file)
 
+    # Auto-format before commit to avoid CI churn from prettier failures
+    if _detect_project_type(cwd) == "node":
+        fmt_ok, fmt_out = _run_bash(["npx", "prettier", "--write", "."], cwd=cwd, timeout=120)
+        if fmt_ok:
+            print("    [git_commit] prettier --write applied")
+        else:
+            logger.warning("prettier --write failed (non-blocking): %s", fmt_out[:200])
+
     commit_ok, commit_out = _run_bash(["git", "add", "-A"], cwd=cwd)
     if commit_ok:
         commit_ok, commit_out = _run_bash(["git", "commit", "-m", message], cwd=cwd)

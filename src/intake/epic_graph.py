@@ -36,6 +36,7 @@ from src.multi_agent.bmad_invoke import (
 )
 from src.multi_agent.orchestrator import (
     OrchestratorState,
+    _detect_project_type,
     _ensure_migrations,
     _run_bash,
     build_orchestrator,
@@ -978,6 +979,16 @@ def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
     if os.path.exists(lock_file):
         logger.warning("Removing stale git index.lock")
         os.remove(lock_file)
+
+    # Auto-format before commit to avoid CI churn from prettier failures
+    if _detect_project_type(working_dir) == "node":
+        fmt_ok, fmt_out = _run_bash(
+            ["npx", "prettier", "--write", "."], cwd=working_dir, timeout=120,
+        )
+        if fmt_ok:
+            print("    [epic_git_commit] prettier --write applied")
+        else:
+            logger.warning("prettier --write failed (non-blocking): %s", fmt_out[:200])
 
     commit_ok, commit_out = _run_bash(["git", "add", "-A"], cwd=working_dir)
     if commit_ok:
