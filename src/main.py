@@ -423,18 +423,19 @@ async def api_get_logs(session_id: str, after_id: int = 0) -> dict[str, Any]:
 
 
 @app.get("/api/stream/{session_id}")
-async def api_stream_logs(session_id: str) -> EventSourceResponse:
+async def api_stream_logs(session_id: str, after_id: int = 0) -> EventSourceResponse:
     """SSE endpoint for live-streaming log events to the browser.
 
     Args:
         session_id: Session to stream.
+        after_id: Only stream events after this ID (skip historical backfill).
 
     Returns:
         Server-Sent Events stream of log lines.
     """
 
     async def event_generator() -> Any:
-        last_id = 0
+        last_id = after_id
         while True:
             events = get_session_logs(session_id, after_id=last_id)
             for ev in events:

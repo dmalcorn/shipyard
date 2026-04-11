@@ -466,6 +466,8 @@ function classifyLine(text) {
   return 'line-log';
 }
 
+const MAX_TERMINAL_LINES = 2000;
+
 function appendLine(text, eventType) {
   terminalEmpty.style.display = 'none';
   const span = document.createElement('span');
@@ -479,6 +481,12 @@ function appendLine(text, eventType) {
   }
   span.textContent = text + '\n';
   terminal.appendChild(span);
+  // Trim oldest lines to keep DOM size bounded
+  while (terminal.children.length > MAX_TERMINAL_LINES + 1) {
+    const first = terminal.firstElementChild;
+    if (first && first !== terminalEmpty) terminal.removeChild(first);
+    else break;
+  }
   terminal.scrollTop = terminal.scrollHeight;
 }
 
@@ -542,31 +550,58 @@ function resetStats() {
 }
 
 // ── Live Mode (SSE) ──
-function startLive(sessionId) {
+async function startLive(sessionId) {
   stopLive();
   liveSessionId = sessionId;
   clearTerminal();
   resetStats();
   setMode('live');
-  appendLine('Connected to live session: ' + sessionId, 'stage');
 
-  liveEventSource = new EventSource(API + '/api/stream/' + sessionId);
+  // Fetch recent tail for backfill instead of streaming all history
+  try {
+    const r = await fetch(API + '/api/logs/' + sessionId);
+    const d = await r.json();
+    // Show only the last 200 events for backfill
+    const tail = d.events.slice(-200);
+    for (const ev of tail) {
+      if (ev.event_type === 'stage') {
+        appendLine('>>> STAGE: ' + ev.text, 'stage');
+      } else {
+        appendLine(ev.text, ev.event_type);
+      }
+      if (ev.metadata) updateStats(ev.metadata);
+      lastEventId = ev.id;
+    }
+    // Also scan all metadata events for stats (progress, counts)
+    for (const ev of d.events) {
+      if (ev.metadata && Object.keys(ev.metadata).length > 0) updateStats(ev.metadata);
+      lastEventId = ev.id;
+    }
+  } catch (e) {
+    appendLine('Backfill failed, streaming from now...', 'error');
+  }
+
+  // Connect SSE starting after the last backfilled event
+  liveEventSource = new EventSource(API + '/api/stream/' + sessionId + '?after_id=' + lastEventId);
 
   liveEventSource.addEventListener('log', function(e) {
     const d = parseEventData(e.data);
     appendLine(d.text, 'log');
     if (d.metadata) updateStats(d.metadata);
+    if (e.lastEventId) lastEventId = parseInt(e.lastEventId, 10);
   });
 
   liveEventSource.addEventListener('stage', function(e) {
     const d = parseEventData(e.data);
     appendLine('>>> STAGE: ' + d.text, 'stage');
     if (d.metadata) updateStats(d.metadata);
+    if (e.lastEventId) lastEventId = parseInt(e.lastEventId, 10);
   });
 
   liveEventSource.addEventListener('error_event', function(e) {
     const d = parseEventData(e.data);
     appendLine(d.text, 'error');
+    if (e.lastEventId) lastEventId = parseInt(e.lastEventId, 10);
   });
 
   liveEventSource.addEventListener('done', function(e) {
@@ -578,7 +613,7 @@ function startLive(sessionId) {
   });
 
   liveEventSource.onerror = function() {
-    // SSE connection lost — fall back to polling
+    // SSE connection lost — fall back to polling from where we left off
     if (liveEventSource) liveEventSource.close();
     liveEventSource = null;
     startPolling(sessionId);
@@ -597,7 +632,7 @@ function stopLive() {
 // ── Polling fallback ──
 function startPolling(sessionId) {
   stopPolling();
-  lastEventId = 0;
+  // Continue from where SSE left off (lastEventId is preserved)
   setMode('live');
 
   pollInterval = setInterval(async () => {
