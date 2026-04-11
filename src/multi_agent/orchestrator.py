@@ -197,11 +197,11 @@ def check_story_exists_node(state: OrchestratorState) -> dict[str, Any]:
     working_dir = _get_working_dir(state)
     status = _find_story_status(working_dir, task_id)
 
-    if status == "ready-for-dev":
-        print(f"\n>>> [check_story] Story {task_id} already exists with ready-for-dev status — skipping create_story")
+    if status in ("ready-for-dev", "review", "done"):
+        print(f"\n>>> [check_story] Story {task_id} already exists with status '{status}' — skipping create_story")
         return {"story_exists": True, "current_phase": "check_story"}
 
-    print(f"\n>>> [check_story] Story {task_id} not found or not ready-for-dev — proceeding to create_story")
+    print(f"\n>>> [check_story] Story {task_id} not found or status '{status}' — proceeding to create_story")
     return {"story_exists": False, "current_phase": "check_story"}
 
 
