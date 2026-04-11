@@ -161,6 +161,39 @@ def get_relay() -> WebRelay | None:
     return _relay
 
 
+def _close_stale_sessions(relay_url: str, relay_key: str) -> None:
+    """Close any sessions stuck in 'running' status from prior crashed runs.
+
+    Without this, the dashboard locks onto a dead session and ignores
+    the new one. Safe to call every startup — it's a no-op when there
+    are no stale sessions.
+    """
+    try:
+        req = urllib.request.Request(
+            relay_url.rstrip("/") + "/api/sessions", method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            sessions = json.loads(resp.read().decode())
+        stale = [s for s in sessions if s.get("status") == "running"]
+        for s in stale:
+            data = json.dumps({
+                "session_id": s["session_id"], "status": "completed",
+            }).encode("utf-8")
+            end_req = urllib.request.Request(
+                relay_url.rstrip("/") + "/api/sessions/end",
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {relay_key}",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(end_req, timeout=5).read()
+            logger.info("Closed stale relay session: %s", s["session_id"][:20])
+    except Exception as e:
+        logger.debug("Stale session cleanup skipped: %s", e)
+
+
 def init_relay(session_id: str, pipeline_type: str = "rebuild") -> WebRelay | None:
     """Initialize and start the relay if SHIPYARD_RELAY_URL is set.
 
@@ -176,6 +209,10 @@ def init_relay(session_id: str, pipeline_type: str = "rebuild") -> WebRelay | No
     if not relay_url or not relay_key:
         logger.info("WebRelay not configured (SHIPYARD_RELAY_URL / SHIPYARD_RELAY_KEY not set)")
         return None
+
+    # Clean up sessions left in 'running' state by prior crashed runs
+    _close_stale_sessions(relay_url, relay_key)
+
     _relay = WebRelay(
         relay_url=relay_url,
         relay_key=relay_key,
