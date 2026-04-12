@@ -219,8 +219,8 @@ def _run_bash(command: list[str], timeout: int = 300, cwd: str | None = None) ->
             output += "\n" + result.stderr
         if len(output) > 5000:
             total = len(output)
-            suffix = f"\n(truncated, {total} chars total)"
-            output = output[: 5000 - len(suffix)] + suffix
+            marker = f"[truncated: showing last 5000 of {total} chars]\n"
+            output = marker + output[-(5000 - len(marker)):]
         return result.returncode == 0, output
     except subprocess.TimeoutExpired:
         return False, f"Command timed out after {timeout}s: {' '.join(command)}"
