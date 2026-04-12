@@ -9,6 +9,7 @@ plumbing are exercised indirectly through end-to-end pipeline runs.
 from __future__ import annotations
 
 from src.multi_agent.bmad_invoke import (
+    _build_bmad_prompt,
     _extract_agent_identification,
     _model_families_match,
     _print_stream_event,
@@ -111,16 +112,18 @@ class TestPrintStreamEventInitBranch:
 
 
 class TestExtractAgentIdentification:
-    """_extract_agent_identification unchanged by the model-check work —
-    included here as a regression anchor while we're touching this file."""
+    """_extract_agent_identification grabs whatever fields appear
+    between the markers — it's format-agnostic so the prompt schema
+    can evolve without breaking it."""
 
-    def test_finds_block(self) -> None:
+    def test_finds_block_with_current_three_field_shape(self) -> None:
         output = (
             "some preamble\n"
             "=== AGENT IDENTIFICATION ===\n"
             "Agent: DEV Agent\n"
             "Persona: Amelia\n"
-            "Model: claude-sonnet-4-6\n"
+            "Loaded files:\n"
+            "  - .claude/skills/bmad-agent-dev/SKILL.md\n"
             "=== END IDENTIFICATION ===\n"
             "trailing text\n"
         )
@@ -128,6 +131,54 @@ class TestExtractAgentIdentification:
         assert block is not None
         assert "Agent: DEV Agent" in block
         assert "Persona: Amelia" in block
+        assert "Loaded files:" in block
+
+    def test_finds_block_with_legacy_model_field(self) -> None:
+        # Older runs included a Model: line. The extractor is tolerant
+        # so we can still read archived fixtures from before the cleanup.
+        output = (
+            "=== AGENT IDENTIFICATION ===\n"
+            "Agent: DEV Agent\n"
+            "Model: claude-sonnet-4-6\n"
+            "=== END IDENTIFICATION ===\n"
+        )
+        block = _extract_agent_identification(output)
+        assert block is not None
+        assert "Agent: DEV Agent" in block
 
     def test_missing_block_returns_none(self) -> None:
         assert _extract_agent_identification("no block here") is None
+
+
+class TestBmadPromptStealth:
+    """The BMAD prompt must not ask the agent about its model.
+
+    Stealth requirement: we compare requested vs resolved model using
+    the CLI's stream-json init event, which is produced by the CLI
+    process itself and invisible to the agent. Asking the agent to
+    self-report its model would tell it we care about this data, which
+    a sufficiently eager-to-please model might respond to by shading
+    its answer. Machine metadata is the authoritative source; the
+    agent must never be queried about it.
+    """
+
+    def test_prompt_does_not_ask_for_model(self) -> None:
+        prompt = _build_bmad_prompt("DS for story 1-1", "bmad-agent-dev")
+        lowered = prompt.lower()
+        # None of these phrasings should appear — each is a form of
+        # asking the agent to self-identify its model.
+        assert "what llm are you" not in lowered
+        assert "state your underlying model" not in lowered
+        assert "state your model" not in lowered
+        assert "model:" not in lowered
+
+    def test_prompt_still_asks_for_agent_persona_and_loaded_files(
+        self,
+    ) -> None:
+        # Things only the agent knows about its own activation.
+        prompt = _build_bmad_prompt("DS for story 1-1", "bmad-agent-dev")
+        assert "Agent:" in prompt
+        assert "Persona:" in prompt
+        assert "Loaded files:" in prompt
+        assert "=== AGENT IDENTIFICATION ===" in prompt
+        assert "=== END IDENTIFICATION ===" in prompt

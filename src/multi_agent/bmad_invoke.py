@@ -230,12 +230,17 @@ def _build_bmad_prompt(
         f"TO INVOKE THE BMAD AGENT.\n\n"
         f"Step 1: Use the Skill tool to invoke '{bmad_agent}'\n\n"
         f"Step 2: Execute command: {agent_command}\n\n"
+        # We intentionally do NOT ask the agent what model it is here.
+        # The CLI's stream-json init event is the authoritative source
+        # for that, and we parse it silently in _print_stream_event so
+        # the agent has no indication we care about model identity. The
+        # fields below are things only the agent can tell us — persona
+        # name and which skill files its activation actually loaded.
         f"Step 3: After completing your work, end your response with "
         f"this AGENT IDENTIFICATION block:\n\n"
         f"=== AGENT IDENTIFICATION ===\n"
         f"Agent: [Your agent type, e.g., DEV Agent]\n"
         f"Persona: [Your persona name from the agent file]\n"
-        f"Model: [What LLM are you? State your underlying model.]\n"
         f"Loaded files:\n"
         f"  - [exact path to each file you read during activation]\n"
         f"=== END IDENTIFICATION ==="
