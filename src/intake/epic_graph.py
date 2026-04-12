@@ -24,7 +24,13 @@ from langgraph.types import Send
 
 from src.audit_log.audit import get_logger
 from src.intake.pause import is_pause_requested
-from src.pipeline_tracker import update_story_progress
+from src.intake.review_sieve import (
+    SieveResult,
+    append_deferred_work,
+    render_analysis_file,
+    render_category_file,
+    sieve_reviews,
+)
 from src.multi_agent.bmad_invoke import (
     TIMEOUT_LONG,
     TIMEOUT_MEDIUM,
@@ -42,6 +48,13 @@ from src.multi_agent.orchestrator import (
     build_orchestrator,
     get_fix_pre_existing,
     resolve_ci_command,
+)
+from src.pipeline_tracker import update_story_progress
+
+# deferred-work.md lives under the target repo's BMAD output tree; BMAD
+# skills also append to this path at story level.
+DEFERRED_WORK_RELATIVE_PATH = os.path.join(
+    "_bmad-output", "implementation-artifacts", "deferred-work.md",
 )
 
 logger = logging.getLogger(__name__)
@@ -722,10 +735,16 @@ def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
 
 
 def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
-    """Compare, deduplicate, and classify review findings as Category A or B.
+    """Route reviewer findings into Category A / Category B / deferred buckets.
 
-    Invokes a dev-level Claude CLI agent to read both review files and
-    produce: analysis.md, category-a-fix-plan.md, category-b-architect-review.md.
+    Fast path: parse both review files deterministically and emit the
+    three output files directly — no LLM, no re-analysis. Both the BMAD
+    skill and the Claude reviewer already triage their own findings, so
+    this step is clerical.
+
+    Fallback: if the sieve can't parse either file (0 findings or an
+    exception), invoke the legacy analyze-reviews agent. Belt and
+    suspenders during transition.
     """
     working_dir = state.get("target_dir") or None
     review_paths = state.get("epic_review_file_paths", [])
@@ -735,6 +754,125 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
     cat_a_path = _reviews_path(CATEGORY_A_PLAN_FILENAME, working_dir=working_dir)
     cat_b_path = _reviews_path(CATEGORY_B_REVIEW_FILENAME, working_dir=working_dir)
 
+    bmad_path = _reviews_path(REVIEW_BMAD_FILENAME, working_dir=working_dir)
+    claude_path = _reviews_path(REVIEW_CLAUDE_FILENAME, working_dir=working_dir)
+
+    sieve_result = _run_review_sieve(
+        bmad_path=bmad_path,
+        claude_path=claude_path,
+        epic_num=epic_num,
+        analysis_path=analysis_path,
+        cat_a_path=cat_a_path,
+        cat_b_path=cat_b_path,
+        working_dir=working_dir,
+    )
+
+    if sieve_result is not None:
+        logger.info(
+            "Review sieve: bmad=%d claude=%d cat_a=%d cat_b=%d defer=%d",
+            len(sieve_result.bmad_findings),
+            len(sieve_result.claude_findings),
+            len(sieve_result.cat_a),
+            len(sieve_result.cat_b),
+            len(sieve_result.defer),
+        )
+        return {
+            "analysis_path": analysis_path,
+            "category_a_fix_plan_path": cat_a_path,
+            "category_b_review_path": cat_b_path,
+            "has_category_b_items": bool(sieve_result.cat_b),
+        }
+
+    logger.warning(
+        "Review sieve produced no findings — falling back to analyze-reviews agent",
+    )
+    return _analyze_reviews_agent_fallback(
+        review_paths=review_paths,
+        analysis_path=analysis_path,
+        cat_a_path=cat_a_path,
+        cat_b_path=cat_b_path,
+        working_dir=working_dir,
+    )
+
+
+def _run_review_sieve(
+    bmad_path: str,
+    claude_path: str,
+    epic_num: str,
+    analysis_path: str,
+    cat_a_path: str,
+    cat_b_path: str,
+    working_dir: str | None,
+) -> SieveResult | None:
+    """Run the deterministic sieve. Returns None when the caller should fall back."""
+    try:
+        with open(bmad_path, encoding="utf-8") as f:
+            bmad_content = f.read()
+    except Exception:
+        logger.exception("Failed to read BMAD review file at %s", bmad_path)
+        return None
+
+    try:
+        with open(claude_path, encoding="utf-8") as f:
+            claude_content = f.read()
+    except Exception:
+        logger.exception("Failed to read Claude review file at %s", claude_path)
+        return None
+
+    result = sieve_reviews(bmad_content, claude_content)
+    if not result.has_any_findings:
+        return None
+
+    cat_a_body = render_category_file(
+        "Category A Fix Plan",
+        epic_num,
+        result.cat_a,
+        empty_sentinel="No Category A items found.",
+    )
+    cat_b_body = render_category_file(
+        "Category B — Architect Review",
+        epic_num,
+        result.cat_b,
+        empty_sentinel="No Category B items found.",
+    )
+    analysis_body = render_analysis_file(
+        epic_num, result, bmad_path, claude_path,
+    )
+
+    try:
+        with open(cat_a_path, "w", encoding="utf-8") as f:
+            f.write(cat_a_body)
+        with open(cat_b_path, "w", encoding="utf-8") as f:
+            f.write(cat_b_body)
+        with open(analysis_path, "w", encoding="utf-8") as f:
+            f.write(analysis_body)
+    except Exception:
+        logger.exception("Sieve failed to write category files")
+        return None
+
+    if result.defer:
+        deferred_path = os.path.join(
+            working_dir or ".", DEFERRED_WORK_RELATIVE_PATH,
+        )
+        try:
+            append_deferred_work(deferred_path, epic_num, result.defer)
+            logger.info(
+                "Appended %d deferred items to %s", len(result.defer), deferred_path,
+            )
+        except Exception:
+            logger.exception("Failed to append deferred items to %s", deferred_path)
+
+    return result
+
+
+def _analyze_reviews_agent_fallback(
+    review_paths: list[str],
+    analysis_path: str,
+    cat_a_path: str,
+    cat_b_path: str,
+    working_dir: str | None,
+) -> dict[str, Any]:
+    """Legacy LLM-powered analyze-reviews agent, used only when the sieve fails."""
     review_files_str = ", ".join(f"`{p}`" for p in review_paths)
 
     prompt = (
@@ -768,7 +906,6 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
         f"Use Write tool to create these files. Do NOT modify any source code."
     )
 
-    # Analyze node uses dev-level tools for file writing but no code editing
     analyze_tools = "Read,Write,Glob,Grep,Task,TodoWrite"
 
     result = invoke_claude_cli(
@@ -780,9 +917,8 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
         label="analyze-reviews",
     )
 
-    logger.info("Review analysis completed: success=%s", result.get("success"))
+    logger.info("Review analysis (fallback agent) completed: success=%s", result.get("success"))
 
-    # Determine if Category B items exist
     has_cat_b = False
     if os.path.exists(cat_b_path):
         try:
