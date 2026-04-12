@@ -181,6 +181,13 @@ class OrchestratorState(TypedDict, total=False):
     # Working directory (target project for rebuild mode)
     working_dir: str
 
+    # Phase-level resume: set by the epic graph when a stale phase.json
+    # matches (session_id, task_id) of the story about to run. When
+    # non-empty, the entry router jumps the pipeline directly to that
+    # phase instead of starting at check_story. Empty string = normal
+    # entry (default).
+    resume_from_phase: str
+
     # Error accumulation
     error_log: Annotated[list[str], operator.add]
     error: str
@@ -314,6 +321,30 @@ def route_after_story_check(state: OrchestratorState) -> str:
     if state.get("dev_complete"):
         return "skip"
     return "dev"
+
+
+# Valid phase-resume targets for the entry router. dev_story is
+# deliberately not a target: the story-status gate in
+# check_story_exists_node handles that case by reading the story
+# file's actual status rather than trusting a checkpoint.
+_RESUME_ENTRY_PHASES = {"code_review", "run_ci", "git_commit"}
+
+
+def route_on_entry(state: OrchestratorState) -> str:
+    """Route from START based on any phase-resume hint in state.
+
+    When the epic graph loaded a matching phase.json, it sets
+    resume_from_phase to the next phase to run. Jump there directly,
+    skipping phases that already completed in a prior session.
+
+    Fall through to the normal check_story entry when no resume hint
+    is present or the hint isn't a valid resume target.
+    """
+    phase = state.get("resume_from_phase", "")
+    if phase in _RESUME_ENTRY_PHASES:
+        print(f"\n>>> [route_on_entry] Phase-resume: jumping to {phase}")
+        return phase
+    return "check_story"
 
 
 def dev_story_node(state: OrchestratorState) -> dict[str, Any]:
@@ -1174,6 +1205,9 @@ def run_ci_node(state: OrchestratorState) -> dict[str, Any]:
 
     print(f"    [run_ci] Result: {'PASS' if passed else 'FAIL'} (cycle={ci_cycle})")
 
+    if passed:
+        _save_phase(state, "run_ci")
+
     return {
         "test_passed": passed,
         "ci_cycle_count": ci_cycle,
@@ -1409,8 +1443,20 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
 
     # --- Edges ---
 
-    # Entry: check story status to decide what dev_story needs to do
-    graph.add_edge(START, "check_story")
+    # Entry: if the epic graph loaded a phase.json matching this story,
+    # jump directly to the next unfinished phase (code_review / run_ci /
+    # git_commit). Otherwise fall through to check_story for the normal
+    # story-status gate.
+    graph.add_conditional_edges(
+        START,
+        route_on_entry,
+        {
+            "check_story": "check_story",
+            "code_review": "code_review",
+            "run_ci": "run_ci",
+            "git_commit": "git_commit",
+        },
+    )
     graph.add_conditional_edges(
         "check_story",
         route_after_story_check,

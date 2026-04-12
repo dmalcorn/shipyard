@@ -23,6 +23,13 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from src.audit_log.audit import get_logger
+from src.intake.checkpoint import (
+    clear_epic_phase_checkpoint,
+    clear_phase_checkpoint,
+    load_epic_phase_checkpoint,
+    load_phase_checkpoint,
+    save_epic_phase_checkpoint,
+)
 from src.intake.pause import is_pause_requested
 from src.intake.review_sieve import (
     SieveResult,
@@ -165,6 +172,12 @@ class EpicState(TypedDict, total=False):
     rebuild_prior_interventions: int
     rebuild_prior_results: list[dict[str, Any]]
 
+    # Phase-level resume for epic post-processing. Set by run_epic_node
+    # when a stale epic-phase.json matches (session_id, epic_num).
+    # Non-empty = jump past the story loop and earlier post-processing
+    # phases directly to this phase. Empty = normal entry.
+    resume_from_epic_phase: str
+
 
 class EpicReviewNodeInput(TypedDict):
     """Input schema for epic-level review node via Send API."""
@@ -259,6 +272,32 @@ def run_story_node(state: EpicState) -> dict[str, Any]:
 
     abs_target_dir = os.path.abspath(target_dir)
 
+    # Phase-level resume: if a phase.json checkpoint exists from a
+    # previous interrupted run of THIS exact story in THIS session,
+    # pass the next unfinished phase down so the orchestrator graph
+    # can skip already-completed phases. Any mismatch (different
+    # session, different story, missing file) means no resume hint
+    # and the mismatched file is cleared so it can't confuse later
+    # stories in this run.
+    resume_from_phase = ""
+    ckpt = load_phase_checkpoint(abs_target_dir)
+    if ckpt:
+        ckpt_session = ckpt.get("session_id", "")
+        ckpt_story = ckpt.get("story_id", "")
+        if ckpt_session == session_id and ckpt_story == task_id:
+            resume_from_phase = ckpt.get("next_phase", "") or ""
+            if resume_from_phase:
+                print(
+                    f"    [run_story] Phase checkpoint found for {task_id}: "
+                    f"resuming at {resume_from_phase}",
+                )
+        else:
+            logger.info(
+                "Stale phase checkpoint cleared (ckpt=%s/%s, current=%s/%s)",
+                ckpt_session, ckpt_story, session_id, task_id,
+            )
+            clear_phase_checkpoint(abs_target_dir)
+
     compiled = build_orchestrator()
 
     initial_state: OrchestratorState = {
@@ -279,6 +318,7 @@ def run_story_node(state: EpicState) -> dict[str, Any]:
         "error_log": [],
         "error": "",
         "working_dir": abs_target_dir,
+        "resume_from_phase": resume_from_phase,
     }
 
     try:
@@ -790,6 +830,7 @@ def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
         else:
             logger.warning("Epic review file missing or empty: %s", path)
 
+    _save_epic_phase(state, "epic_reviews")
     return {"epic_review_file_paths": valid_paths}
 
 
@@ -835,6 +876,7 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
             len(sieve_result.cat_b),
             len(sieve_result.defer),
         )
+        _save_epic_phase(state, "epic_analysis")
         return {
             "analysis_path": analysis_path,
             "category_a_fix_plan_path": cat_a_path,
@@ -845,13 +887,15 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
     logger.warning(
         "Review sieve produced no findings — falling back to analyze-reviews agent",
     )
-    return _analyze_reviews_agent_fallback(
+    fallback_result = _analyze_reviews_agent_fallback(
         review_paths=review_paths,
         analysis_path=analysis_path,
         cat_a_path=cat_a_path,
         cat_b_path=cat_b_path,
         working_dir=working_dir,
     )
+    _save_epic_phase(state, "epic_analysis")
+    return fallback_result
 
 
 def _run_review_sieve(
@@ -1041,6 +1085,7 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
     # Skip if no Category A plan exists or is empty
     if not os.path.exists(cat_a_path):
         logger.info("No Category A fix plan found — skipping")
+        _save_epic_phase(state, "epic_category_a")
         return {"category_a_fixes_applied": False}
 
     try:
@@ -1048,8 +1093,10 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
             cat_a_content = f.read()
         if "no category a" in cat_a_content.lower():
             logger.info("No Category A items — skipping")
+            _save_epic_phase(state, "epic_category_a")
             return {"category_a_fixes_applied": False}
     except Exception:
+        _save_epic_phase(state, "epic_category_a")
         return {"category_a_fixes_applied": False}
 
     prompt = (
@@ -1090,6 +1137,7 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
         except Exception:
             pass
 
+    _save_epic_phase(state, "epic_category_a")
     return {
         "category_a_fixes_applied": True,
         "has_category_b_items": has_cat_b,
@@ -1201,6 +1249,7 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
     else:
         logger.warning("Architect did not write fix plan at %s", fix_plan_full)
 
+    _save_epic_phase(state, "epic_architect")
     return {
         "epic_fix_plan_path": fix_plan_full,
         "epic_fixes_needed": fixes_needed,
@@ -1252,6 +1301,7 @@ def epic_fix_node(state: EpicState) -> dict[str, Any]:
 
     logger.info("Epic Fix Dev completed: success=%s", result.get("success"))
 
+    _save_epic_phase(state, "epic_fix")
     return {
         "epic_files_modified": result.get("files_modified", []),
     }
@@ -1288,6 +1338,9 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
             f"epic CI ({result.get('attempts', 0)} attempts)",
             "PASS" if passed else "FAIL",
         )
+
+    if passed:
+        _save_epic_phase(state, "epic_ci")
 
     return {
         "epic_test_passed": passed,
@@ -1335,6 +1388,9 @@ def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
     if not commit_ok:
         logger.warning("Epic git commit failed: %s", commit_out[:200])
 
+    if commit_ok:
+        _save_epic_phase(state, "epic_git_commit")
+
     return {}
 
 
@@ -1343,6 +1399,49 @@ def route_after_epic_ci(state: EpicState) -> str:
     if state.get("epic_test_passed", False):
         return "pass"
     return "error"
+
+
+# Map of resume-phase name → target node in the epic graph. Jumping to
+# a node also skips every earlier phase (including the story loop).
+# "epic_reviews" is deliberately absent — the reviews phase includes
+# parallel fan-out/fan-in that's hard to resume mid-flight, so a
+# checkpoint at that phase just means "reviews were being collected."
+# The safest resume target for that state is analyze_reviews (the
+# review files on disk are the only durable artifact).
+_EPIC_RESUME_TARGETS = {
+    "epic_analysis": "analyze_reviews",
+    "epic_category_a": "fix_category_a",
+    "epic_architect": "epic_architect",
+    "epic_fix": "epic_fix",
+    "epic_ci": "epic_ci",
+    "epic_git_commit": "epic_git_commit",
+}
+
+
+def _save_epic_phase(state: EpicState, phase: str) -> None:
+    """Save an epic phase-level checkpoint after successful completion."""
+    session_id = state.get("session_id", "")
+    epic_num = state.get("epic_num", "")
+    working_dir = state.get("target_dir") or "."
+    if session_id and epic_num:
+        save_epic_phase_checkpoint(session_id, working_dir, epic_num, phase)
+
+
+def route_on_epic_entry(state: EpicState) -> str:
+    """Route from START based on any epic-phase resume hint.
+
+    When run_epic_node loaded a matching epic-phase.json, it sets
+    resume_from_epic_phase to the next phase to run. Jump directly
+    to the corresponding node, bypassing the story loop and any
+    earlier post-processing phases. Fall through to select_story
+    for the normal story-loop entry when no hint is present.
+    """
+    phase = state.get("resume_from_epic_phase", "")
+    target = _EPIC_RESUME_TARGETS.get(phase)
+    if target:
+        print(f"\n>>> [route_on_epic_entry] Epic phase-resume: jumping to {target}")
+        return target
+    return "select_story"
 
 
 def epic_error_node(state: EpicState) -> dict[str, Any]:
@@ -1367,6 +1466,8 @@ def epic_error_node(state: EpicState) -> dict[str, Any]:
 
 def epic_complete_node(state: EpicState) -> dict[str, Any]:
     """Mark epic as completed."""
+    working_dir = state.get("target_dir") or "."
+    clear_epic_phase_checkpoint(working_dir)
     return {"epic_status": "completed"}
 
 
@@ -1422,7 +1523,22 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("epic_complete", epic_complete_node)
 
     # --- Story loop edges ---
-    graph.add_edge(START, "select_story")
+    # Entry: if run_epic_node loaded a matching epic-phase.json, jump
+    # directly to the next unfinished post-processing phase, skipping
+    # the story loop. Otherwise fall through to the normal story loop.
+    graph.add_conditional_edges(
+        START,
+        route_on_epic_entry,
+        {
+            "select_story": "select_story",
+            "analyze_reviews": "analyze_reviews",
+            "fix_category_a": "fix_category_a",
+            "epic_architect": "epic_architect",
+            "epic_fix": "epic_fix",
+            "epic_ci": "epic_ci",
+            "epic_git_commit": "epic_git_commit",
+        },
+    )
     graph.add_edge("select_story", "run_story")
     graph.add_edge("run_story", "process_result")
 

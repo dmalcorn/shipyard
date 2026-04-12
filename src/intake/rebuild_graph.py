@@ -27,6 +27,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from src.intake.backlog import load_backlog
+from src.intake.checkpoint import (
+    clear_epic_phase_checkpoint,
+    load_epic_phase_checkpoint,
+)
 from src.intake.cost_tracker import get_invocation_count, get_total_cost
 from src.intake.epic_graph import EpicState, build_epic_runner
 from src.intake.pause import is_pause_requested
@@ -642,9 +646,37 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
     # subsequent epics always start from story 0.
     start_story = resume_story_index if resume_story_index > 0 else 0
 
+    # Epic phase-level resume: if an epic-phase.json from a prior run
+    # of this exact (session_id, epic_num) exists, pass the next
+    # unfinished post-processing phase down so the epic graph can skip
+    # the story loop and earlier post-processing. Stale checkpoints
+    # (different session or different epic) are cleared so they can't
+    # confuse later epics in this run.
+    abs_target_dir = os.path.abspath(target_dir)
+    resume_from_epic_phase = ""
+    epic_ckpt = load_epic_phase_checkpoint(abs_target_dir)
+    if epic_ckpt:
+        ckpt_session = epic_ckpt.get("session_id", "")
+        ckpt_epic = epic_ckpt.get("epic_num", "")
+        if ckpt_session == session_id and ckpt_epic == epic["epic_num"]:
+            resume_from_epic_phase = epic_ckpt.get("next_phase", "") or ""
+            if resume_from_epic_phase:
+                print(
+                    f"    [run_epic] Epic phase checkpoint found for "
+                    f"epic {epic['epic_num']}: resuming at "
+                    f"{resume_from_epic_phase}",
+                )
+        else:
+            logger.info(
+                "Stale epic-phase checkpoint cleared "
+                "(ckpt=%s/epic-%s, current=%s/epic-%s)",
+                ckpt_session, ckpt_epic, session_id, epic["epic_num"],
+            )
+            clear_epic_phase_checkpoint(abs_target_dir)
+
     epic_input: EpicState = {
         "session_id": session_id,
-        "target_dir": os.path.abspath(target_dir),
+        "target_dir": abs_target_dir,
         "epic_num": epic["epic_num"],
         "epic_name": epic["epic_name"],
         "stories": epic["stories"],
@@ -673,6 +705,7 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
         "rebuild_prior_failed": state.get("stories_failed", 0),
         "rebuild_prior_interventions": state.get("total_interventions", 0),
         "rebuild_prior_results": state.get("all_story_results", []),
+        "resume_from_epic_phase": resume_from_epic_phase,
     }
 
     compiled_epic = build_epic_runner()
