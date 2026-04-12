@@ -1,10 +1,17 @@
 """Tests for src/intake/review_sieve.py.
 
-Fixtures are real Epic 3 review outputs captured from chat2bpmn on
-2026-04-12 — the first time the factory produced epic-level BMAD
-output with read-only tools. They exercise the parsers against content
-that is deliberately duplicated (the BMAD skill emits its final report
-twice) and contain all four BMAD triage categories.
+Fixtures are real review outputs captured from chat2bpmn:
+
+- ``epic-3-review-*.md`` — 2026-04-12 night run, ``### PATCH Findings``
+  section headings with ``**[P1]**``-style tagged items.
+- ``epic-4-review-*.md`` — 2026-04-12 morning run, the first epic with
+  the correct git-history file scope. BMAD emitted a different format:
+  ``### CRITICAL / HIGH — Patch Required`` headings with ``**F01**``
+  items carrying inline ``` `[patch]` ``` category markers. The
+  original sieve parser silently dropped all 20 BMAD findings because
+  it didn't recognize either the heading or the item shape. The new
+  parser prefers the inline category marker and keeps the heading as
+  a safety-net fallback.
 """
 
 from __future__ import annotations
@@ -26,6 +33,8 @@ from src.intake.review_sieve import (
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "review_sieve"
 BMAD_FIXTURE = FIXTURES_DIR / "epic-3-review-bmad.md"
 CLAUDE_FIXTURE = FIXTURES_DIR / "epic-3-review-claude.md"
+BMAD_FIXTURE_E4 = FIXTURES_DIR / "epic-4-review-bmad.md"
+CLAUDE_FIXTURE_E4 = FIXTURES_DIR / "epic-4-review-claude.md"
 
 
 @pytest.fixture
@@ -36,6 +45,16 @@ def bmad_content() -> str:
 @pytest.fixture
 def claude_content() -> str:
     return CLAUDE_FIXTURE.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def bmad_content_e4() -> str:
+    return BMAD_FIXTURE_E4.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def claude_content_e4() -> str:
+    return CLAUDE_FIXTURE_E4.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +314,130 @@ class TestRenderAnalysisFile:
         assert "Category B" in body
         assert "Deferred" in body
         assert f"BMAD findings parsed: {len(result.bmad_findings)}" in body
+
+
+# ---------------------------------------------------------------------------
+# Epic 4 format drift — inline category markers take precedence over headings
+# ---------------------------------------------------------------------------
+
+
+class TestParseBmadReviewEpic4Format:
+    """Parser must handle the ``**F01** `[patch]``` item shape under a
+    ``### CRITICAL / HIGH — Patch Required`` heading."""
+
+    def test_extracts_all_patch_findings(self, bmad_content_e4: str) -> None:
+        findings = parse_bmad_review(bmad_content_e4)
+        patches = [f for f in findings if f.category == "patch"]
+        # Epic 4's BMAD review tagged 17 items as `[patch]` inline.
+        assert len(patches) == 17
+
+    def test_extracts_all_defer_findings(self, bmad_content_e4: str) -> None:
+        findings = parse_bmad_review(bmad_content_e4)
+        defers = [f for f in findings if f.category == "defer"]
+        # Epic 4's BMAD review tagged 3 items as `[defer]` inline.
+        assert len(defers) == 3
+
+    def test_finds_20_total_items(self, bmad_content_e4: str) -> None:
+        findings = parse_bmad_review(bmad_content_e4)
+        assert len(findings) == 20
+
+    def test_item_idents_are_F_prefixed(self, bmad_content_e4: str) -> None:
+        findings = parse_bmad_review(bmad_content_e4)
+        idents = {f.ident for f in findings}
+        # Items in Epic 4 are numbered F01 through F20 (with some gaps).
+        assert all(i.startswith("F") for i in idents)
+        assert len(idents) == 20
+
+    def test_sieve_routes_epic_4_correctly(
+        self,
+        bmad_content_e4: str,
+        claude_content_e4: str,
+    ) -> None:
+        result = sieve_reviews(bmad_content_e4, claude_content_e4)
+        # 17 BMAD patches + 6 Claude minors → Cat A
+        # 4 Claude critical + 2 Claude major   → Cat B
+        # 3 BMAD defers                        → defer
+        claude_minors = sum(1 for f in result.claude_findings if f.category == "minor")
+        claude_high = sum(1 for f in result.claude_findings if f.category in ("major", "critical"))
+        assert len(result.cat_a) == 17 + claude_minors
+        assert len(result.cat_b) == claude_high
+        assert len(result.defer) == 3
+
+
+class TestBmadInlineCategoryPrecedence:
+    """Synthetic tests: inline ``[patch]``-style markers outrank the
+    section heading, even when the two disagree."""
+
+    def test_inline_marker_overrides_section_heading(self) -> None:
+        content = (
+            "### DEFER Findings\n\n"
+            "**F01** `[patch]` **This should route to patch, not defer**\n"
+            "body line\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "patch"
+        assert findings[0].ident == "F01"
+
+    def test_heading_used_when_no_inline_marker(self) -> None:
+        content = "### PATCH Findings\n\n**[P1]** description of the thing\nbody\n"
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "patch"
+
+    def test_heading_keyword_detection_matches_epic4_wording(self) -> None:
+        # "### CRITICAL / HIGH — Patch Required" should classify as patch.
+        content = (
+            "### CRITICAL / HIGH — Patch Required\n\n"
+            "**F01** description only, no inline tag\nbody\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "patch"
+
+    def test_heading_keyword_deferred(self) -> None:
+        content = "### DEFERRED\n\n**F01** body only\n"
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "defer"
+
+    def test_item_without_category_anywhere_is_ignored(self) -> None:
+        # No section heading, no inline marker → cannot be categorized.
+        content = "**F01** orphaned item, no context\n"
+        assert parse_bmad_review(content) == []
+
+    def test_mixed_formats_in_one_file(self) -> None:
+        content = (
+            "### PATCH Findings\n\n"
+            "**[P1]** old-style item\n\n"
+            "### DEFERRED\n\n"
+            "**F02** `[defer]` new-style item with inline tag\n"
+        )
+        findings = parse_bmad_review(content)
+        cats = {f.ident: f.category for f in findings}
+        assert cats == {"P1": "patch", "F02": "defer"}
+
+
+# ---------------------------------------------------------------------------
+# Fallback guard — non-empty file but zero findings must trip the LLM fallback
+# ---------------------------------------------------------------------------
+
+
+class TestSieveFallbackGuard:
+    """The analyze_reviews_node wrapper calls back to the LLM agent
+    when ``_run_review_sieve`` returns ``None``. This module doesn't
+    own that wrapper, but the contract is: if either reviewer's file
+    has substantial content and parsed to zero findings, the sieve
+    must signal fallback. Tested via the wrapper in epic_graph."""
+
+    def test_sieve_reviews_records_zero_when_format_unknown(self) -> None:
+        # Simulate a long BMAD file with an unrecognized format.
+        bmad = "## Some Heading\n\n" + ("paragraph of prose. " * 200) + "\n"
+        claude = "## Findings\n\n### 1. Title\n\n- **Severity:** minor\n- **Action:** x\n"
+        result = sieve_reviews(bmad, claude)
+        assert result.bmad_findings == []
+        assert len(result.claude_findings) == 1
+        # This is the condition the wrapper uses to trigger fallback:
+        # "bmad file is substantial but bmad findings are empty".
+        assert len(bmad) > 1000
+        assert not result.bmad_findings

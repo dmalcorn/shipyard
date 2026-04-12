@@ -31,25 +31,61 @@ BMAD_CATEGORIES = ("patch", "defer", "dismiss", "decision-needed")
 # Claude severity buckets (factory-side severity taxonomy)
 CLAUDE_SEVERITIES = ("critical", "major", "minor")
 
-# Section heading -> BMAD category
-_BMAD_SECTION_MAP = {
-    "patch findings": "patch",
-    "patch": "patch",
-    "defer findings": "defer",
-    "defer": "defer",
-    "decision-needed": "decision-needed",
-    "decision-needed findings": "decision-needed",
-    "decision needed": "decision-needed",
-    "decision needed findings": "decision-needed",
-    "dismissed": "dismiss",
-    "dismiss": "dismiss",
-}
+# Matches an item line in either BMAD format:
+#   **[P1]** description            (Epic 3 style)
+#   **F01** `[patch]` description   (Epic 4 style)
+# The optional brackets around the ident are tolerated, and the rest of
+# the line (including any inline category marker) is captured as group 2.
+_BMAD_ITEM_TAG = re.compile(r"^\s*\*\*\[?([A-Za-z]+\d+)\]?\*\*\s*(.*)$")
 
-_BMAD_ITEM_TAG = re.compile(r"^\s*\*\*\[([A-Za-z]\d+)\]\*\*\s*(.*)$")
+# Matches an inline BMAD category marker like `[patch]`, `[defer]`, etc.
+# The BMAD skill's Step 3 triage vocabulary is the authoritative source:
+# whatever appears in backticked brackets on a finding line is the
+# finding's category, regardless of how the enclosing section is named.
+_BMAD_INLINE_CATEGORY = re.compile(
+    r"`\[(patch|defer|dismiss|decision[-\s]needed)\]`",
+    re.IGNORECASE,
+)
+
 _BMAD_SECTION_HEADING = re.compile(r"^###\s+(.+?)(?:\s*\(.*?\))?\s*$")
 
 _CLAUDE_FINDING_HEADING = re.compile(r"^###\s+(\d+)\.\s+(.*?)\s*$")
 _CLAUDE_FIELD_LINE = re.compile(r"^\s*-\s*\*\*(?P<key>[A-Za-z /]+):\*\*\s*(?P<value>.*)$")
+
+
+def _classify_bmad_heading(heading_text: str) -> str | None:
+    """Return the BMAD category a section heading belongs to, or None.
+
+    Keyword-based so we handle format drift — Epic 3 emitted
+    ``### PATCH Findings`` / ``### DEFER Findings``; Epic 4 emitted
+    ``### CRITICAL / HIGH — Patch Required`` / ``### DEFERRED``.
+    Anything with the category keyword in the heading matches.
+
+    Checked in priority order so mixed headings (e.g. "patch required,
+    defer rest") resolve to the most specific bucket available. In
+    practice the inline per-item marker takes precedence over the
+    section heading anyway — this is a safety net, not the main path.
+    """
+    text = heading_text.lower()
+    if "patch" in text:
+        return "patch"
+    if "defer" in text:
+        return "defer"
+    if "dismiss" in text:
+        return "dismiss"
+    if "decision" in text and "need" in text:
+        return "decision-needed"
+    return None
+
+
+def _extract_inline_bmad_category(text: str) -> str | None:
+    """Return the normalized BMAD category found in a `[tag]`, or None."""
+    match = _BMAD_INLINE_CATEGORY.search(text)
+    if not match:
+        return None
+    raw = match.group(1).lower()
+    # Normalize "decision needed" and "decision-needed" to the canonical form.
+    return "decision-needed" if raw.startswith("decision") else raw
 
 
 @dataclass
@@ -98,15 +134,19 @@ class SieveResult:
 def parse_bmad_review(content: str) -> list[Finding]:
     """Parse a ``bmad-code-review`` skill output into findings.
 
-    Recognises the per-section format: ``### PATCH Findings`` /
-    ``### DEFER Findings`` / ``### Dismissed`` / ``### Decision-Needed``
-    containing items tagged ``**[P1]**``, ``**[D1]**``, etc. Dismissed
-    findings are parsed only when they appear as tagged items — the
-    reviewer sometimes collapses them into a single summary paragraph,
-    which is fine because the sieve drops dismissed items anyway.
+    Handles two known item formats:
 
-    The BMAD skill's output is sometimes emitted twice in the same file;
-    this parser dedups by ``(category, ident)``.
+    1. **Epic 3 style** — ``**[P1]** ...`` inside a ``### PATCH Findings``
+       (or similar) section. Category comes from the section heading.
+    2. **Epic 4 style** — ``**F01** `[patch]` ...`` with the category
+       tagged inline on the item. Category comes from the inline tag.
+
+    The inline tag takes precedence over the section heading when both
+    are present — it's emitted by the skill's Step 3 triage vocabulary
+    and is more reliable than heading text, which varies run to run.
+    Items without either a section heading or an inline tag are
+    ignored. The skill's output is sometimes duplicated in the same
+    file; dedup is by ``(category, ident)``.
     """
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
@@ -114,31 +154,45 @@ def parse_bmad_review(content: str) -> list[Finding]:
     lines = content.splitlines()
     current_category: str | None = None
     pending: Finding | None = None
+    body_lines: list[str] = []
 
     def flush() -> None:
-        nonlocal pending
+        nonlocal pending, body_lines
         if pending is None:
             return
-        key = (pending.category, pending.ident)
-        if key not in seen:
-            seen.add(key)
-            pending.body = pending.body.strip()
-            pending.file = _extract_first_backticked_path(pending.title) or pending.file
-            findings.append(pending)
+        # Late binding: if the item had no inline category and no section
+        # category was known at the time it was opened, try once more from
+        # anything that appeared in the body (some formats bury the tag
+        # on the second line).
+        if not pending.category:
+            inline = _extract_inline_bmad_category("\n".join(body_lines))
+            if inline:
+                pending.category = inline
+        if pending.category:
+            key = (pending.category, pending.ident)
+            if key not in seen:
+                seen.add(key)
+                pending.body = "\n".join(body_lines).strip()
+                pending.file = (
+                    _extract_first_backticked_path(pending.title)
+                    or _extract_first_backticked_path(pending.body)
+                    or pending.file
+                )
+                findings.append(pending)
         pending = None
+        body_lines = []
 
     for raw in lines:
-        # Section boundary: any ### heading — resolve whether it's a BMAD category.
         heading_match = _BMAD_SECTION_HEADING.match(raw)
         if heading_match:
             flush()
-            heading_text = heading_match.group(1).strip().lower()
+            heading_text = heading_match.group(1).strip()
             # Strip trailing count like "Dismissed (6)".
             heading_text = re.sub(r"\s*\(\d+\)\s*$", "", heading_text).strip()
-            current_category = _BMAD_SECTION_MAP.get(heading_text)
+            current_category = _classify_bmad_heading(heading_text)
             continue
 
-        # Hard section reset on ## or --- separators.
+        # Hard section reset on ## headings or --- separators.
         stripped = raw.strip()
         if stripped.startswith("## ") or stripped == "---":
             flush()
@@ -146,23 +200,23 @@ def parse_bmad_review(content: str) -> list[Finding]:
                 current_category = None
             continue
 
-        if current_category is None:
-            continue
-
         tag_match = _BMAD_ITEM_TAG.match(raw)
         if tag_match:
             flush()
             ident, rest = tag_match.group(1), tag_match.group(2).strip()
+            # Inline marker on the item line always wins.
+            inline_category = _extract_inline_bmad_category(rest)
+            category = inline_category or current_category or ""
             pending = Finding(
                 source="bmad",
                 ident=ident,
                 title=rest,
-                category=current_category,
+                category=category,
             )
             continue
 
         if pending is not None:
-            pending.body += raw + "\n"
+            body_lines.append(raw)
 
     flush()
     return findings

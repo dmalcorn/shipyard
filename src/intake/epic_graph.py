@@ -863,6 +863,28 @@ def _run_review_sieve(
         return None
 
     result = sieve_reviews(bmad_content, claude_content)
+
+    # Fallback guard: if either reviewer's file is substantial but the
+    # sieve parsed zero findings from it, the format probably drifted.
+    # Return None so the caller falls back to the LLM agent — safer than
+    # proceeding with half-parsed results. A 1 KB threshold skips empty
+    # or placeholder files but catches any real review.
+    _SIEVE_MIN_CONTENT = 1000
+    if len(bmad_content.strip()) > _SIEVE_MIN_CONTENT and not result.bmad_findings:
+        logger.warning(
+            "BMAD review is %d chars but sieve parsed 0 findings — "
+            "format drift suspected, triggering LLM fallback",
+            len(bmad_content),
+        )
+        return None
+    if len(claude_content.strip()) > _SIEVE_MIN_CONTENT and not result.claude_findings:
+        logger.warning(
+            "Claude review is %d chars but sieve parsed 0 findings — "
+            "format drift suspected, triggering LLM fallback",
+            len(claude_content),
+        )
+        return None
+
     if not result.has_any_findings:
         return None
 
