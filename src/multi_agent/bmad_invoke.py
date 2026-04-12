@@ -106,7 +106,7 @@ def _print_stream_event(
         print(f"      {tag} RESULT: {status} ({turns} turns, ${cost:.4f})")
         if result_text:
             # Show first 300 chars of result
-            preview = result_text[:300].replace("\n", "\n      " + " " * len(tag) + " ")
+            preview = result_text[:500].replace("\n", "\n      " + " " * len(tag) + " ")
             print(f"      {tag}   {preview}")
             output_chunks.append(result_text)
         return
@@ -124,7 +124,7 @@ def _print_stream_event(
             if block_type == "text":
                 text = block.get("text", "").strip()
                 if text:
-                    preview = text[:200].replace("\n", "\n      " + " " * len(tag) + " ")
+                    preview = text[:500].replace("\n", "\n      " + " " * len(tag) + " ")
                     print(f"      {tag} {preview}")
                     output_chunks.append(text)
             elif block_type == "tool_use":
@@ -137,7 +137,7 @@ def _print_stream_event(
                     if path:
                         print(f"      {tag} -> {tool_name}: {path}")
                     else:
-                        summary = str(tool_input)[:120]
+                        summary = str(tool_input)[:500]
                         print(f"      {tag} -> {tool_name}: {summary}")
                 else:
                     print(f"      {tag} -> {tool_name}")
@@ -292,7 +292,7 @@ def invoke_bmad_agent(
                 line = line.rstrip()
                 if line:
                     stderr_lines.append(line)
-                    print(f"      [bmad:err] {line[:200]}")
+                    print(f"      [bmad:err] {line[:500]}")
 
         stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
         stderr_thread.start()
@@ -310,7 +310,7 @@ def invoke_bmad_agent(
                 _print_stream_event(event, bmad_agent, start_time, output_chunks)
             except json.JSONDecodeError:
                 # Not JSON — print raw
-                print(f"      [bmad:raw] {raw_line[:200]}")
+                print(f"      [bmad:raw] {raw_line[:500]}")
                 output_chunks.append(raw_line)
 
         proc.wait(timeout=30)
@@ -449,7 +449,7 @@ def invoke_claude_cli(
                 line = line.rstrip()
                 if line:
                     stderr_lines.append(line)
-                    print(f"      [{label}:err] {line[:200]}")
+                    print(f"      [{label}:err] {line[:500]}")
 
         stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
         stderr_thread.start()
@@ -463,7 +463,7 @@ def invoke_claude_cli(
                 event = json.loads(raw_line)
                 _print_stream_event(event, label, start_time, output_chunks)
             except json.JSONDecodeError:
-                print(f"      [{label}:raw] {raw_line[:200]}")
+                print(f"      [{label}:raw] {raw_line[:500]}")
                 output_chunks.append(raw_line)
 
         proc.wait(timeout=30)
