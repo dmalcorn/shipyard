@@ -1230,15 +1230,41 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         logger.warning("Removing stale git index.lock")
         os.remove(lock_file)
 
-    # If the tree is already clean, the story's changes were committed by a
-    # prior run (e.g. resuming past dev_story with story-level reviews/CI
-    # disabled). Treat as success rather than halting on "nothing to commit".
+    # If the tree is already clean, the story's changes may have been
+    # committed by a prior run (legitimate resume) OR dev_story produced
+    # nothing (bug / pause-kill). Distinguish by checking git log for an
+    # actual "story {task_id} complete" commit — if none exists, the
+    # clean tree means no work was ever done, and we must fail.
     _, status_out = _run_bash(["git", "status", "--porcelain"], cwd=cwd)
     if not status_out.strip():
-        print(f"    [git_commit] Tree is clean — {task_id} already committed, skipping")
-        clear_phase_checkpoint(_get_working_dir(state) or ".")
+        base_task_id = task_id.replace("-retry", "")
+        expected_msg = f"story {base_task_id} complete"
+        _, log_out = _run_bash(
+            ["git", "log", "-50", "--format=%s"],
+            cwd=cwd,
+        )
+        prior_commit_found = any(
+            line.strip() == expected_msg
+            for line in log_out.splitlines()
+        )
+        if prior_commit_found:
+            print(f"    [git_commit] Tree is clean — found prior '{expected_msg}' commit, skipping")
+            clear_phase_checkpoint(_get_working_dir(state) or ".")
+            return {
+                "pipeline_status": "completed",
+                "current_phase": "git_commit",
+            }
+        print(
+            f"    [git_commit] Tree is clean AND no prior "
+            f"'{expected_msg}' commit — dev_story produced nothing",
+        )
         return {
-            "pipeline_status": "completed",
+            "pipeline_status": "failed",
+            "error": (
+                f"No changes to commit for story {task_id} and no prior "
+                f"'{expected_msg}' commit found — dev_story silently did "
+                f"no work (likely pause-kill)"
+            ),
             "current_phase": "git_commit",
         }
 

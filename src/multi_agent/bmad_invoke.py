@@ -446,6 +446,16 @@ def invoke_bmad_agent(
 
     print(f"      [bmad] Complete: exit={exit_code} files_modified={len(files_modified)} output_len={len(output)}")
 
+    # Empty-output sanity: on exit=0 with zero output, the subprocess was
+    # pause-killed or crashed silently — treat as failure so the calling
+    # node routes to its error path instead of saving a bogus "success".
+    if success and len(output.strip()) == 0:
+        print(
+            f"      [bmad] WARNING: exit=0 but output_len=0 — "
+            f"treating as failure (likely pause-kill or silent crash)",
+        )
+        success = False
+
     # Extract and display agent identification if present
     ident = _extract_agent_identification(output)
     if ident:
@@ -599,6 +609,15 @@ def invoke_claude_cli(
 
     files_modified = _detect_modified_files(cwd)
     print(f"      [{label}] Complete: exit={exit_code} files_modified={len(files_modified)} output_len={len(output)}")
+
+    # Empty-output sanity: exit=0 with zero output means the subprocess
+    # was pause-killed or crashed silently. Downgrade to failure.
+    if success and len(output.strip()) == 0:
+        print(
+            f"      [{label}] WARNING: exit=0 but output_len=0 — "
+            f"treating as failure (likely pause-kill or silent crash)",
+        )
+        success = False
 
     return {
         "output": output,
