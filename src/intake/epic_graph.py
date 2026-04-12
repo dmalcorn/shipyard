@@ -775,7 +775,19 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
             command=(
                 f"Run the bmad-code-review skill on ALL code changes "
                 f"across this entire epic.\n\n"
-                f"Files to review:\n{files_list}"
+                f"Files to review:\n{files_list}\n\n"
+                f"OUTPUT HANDLING — READ CAREFULLY:\n"
+                f"- Output your complete review as your FINAL message "
+                f"to the console. The runtime captures your last console "
+                f"output and writes it to the review file automatically. "
+                f"You do NOT need to, and MUST NOT, write any file yourself.\n"
+                f"- Do NOT call Write, Edit, or any other file-creation "
+                f"tool. File writes are blocked in this environment.\n"
+                f"- If you attempt a Write/Edit and it fails, STOP "
+                f"immediately. Do NOT try workarounds like Bash heredocs, "
+                f"cp, touch, printf, python, or node — they will all "
+                f"fail. Proceed directly to outputting your full review "
+                f"as your final console message."
             ),
             tools=TOOLS_REVIEW_READONLY,
             working_dir=working_dir,
