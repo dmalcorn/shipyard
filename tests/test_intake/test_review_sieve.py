@@ -16,6 +16,7 @@ Fixtures are real review outputs captured from chat2bpmn:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,8 @@ BMAD_FIXTURE = FIXTURES_DIR / "epic-3-review-bmad.md"
 CLAUDE_FIXTURE = FIXTURES_DIR / "epic-3-review-claude.md"
 BMAD_FIXTURE_E4 = FIXTURES_DIR / "epic-4-review-bmad.md"
 CLAUDE_FIXTURE_E4 = FIXTURES_DIR / "epic-4-review-claude.md"
+BMAD_FIXTURE_E5 = FIXTURES_DIR / "epic-5-review-bmad.md"
+CLAUDE_FIXTURE_E5 = FIXTURES_DIR / "epic-5-review-claude.md"
 
 
 @pytest.fixture
@@ -55,6 +58,16 @@ def bmad_content_e4() -> str:
 @pytest.fixture
 def claude_content_e4() -> str:
     return CLAUDE_FIXTURE_E4.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def bmad_content_e5() -> str:
+    return BMAD_FIXTURE_E5.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def claude_content_e5() -> str:
+    return CLAUDE_FIXTURE_E5.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -441,3 +454,259 @@ class TestSieveFallbackGuard:
         # "bmad file is substantial but bmad findings are empty".
         assert len(bmad) > 1000
         assert not result.bmad_findings
+
+
+# ---------------------------------------------------------------------------
+# Epic 5 format drift — H2-category sections + whole-title bolds + bullet
+# list in deferred/dismissed sections. The first format that actually hit
+# the sieve in production; the original parser silently dropped all 27
+# BMAD findings and the analyze-reviews LLM fallback fired.
+# ---------------------------------------------------------------------------
+
+
+class TestParseBmadReviewEpic5Format:
+    """Parser must handle the Epic 5 BMAD skill output:
+
+    - Triage category comes from H2 headings like ``## Patch Findings (22)``
+      / ``## Deferred Findings (2)`` / ``## Dismissed Findings (3)``.
+    - Severity-based H3 subheadings (``### Critical``, ``### High``,
+      ``### Medium``) sit underneath the H2 but must NOT reset the
+      enclosing H2's category.
+    - Detail items use whole-title bold: ``**F1 — `getDivergenceForStep`
+      uses `Array.includes()` ...**`` (including backticked code inside
+      the title, not a file path).
+    - Deferred / dismissed items use a bullet-list variant:
+      ``- **F19** — title text``.
+    - File paths live on the line after the bold title, as a standalone
+      backticked token like `` `src/lib/synthesis/mermaid-generator.ts:97` ``.
+    """
+
+    def test_all_27_findings_parsed(self, bmad_content_e5: str) -> None:
+        findings = parse_bmad_review(bmad_content_e5)
+        # Final Report line: "0 decision_needed · 22 patch · 2 defer · 3 dismiss"
+        assert len(findings) == 27
+
+    def test_patch_count_matches_report_header(self, bmad_content_e5: str) -> None:
+        findings = parse_bmad_review(bmad_content_e5)
+        patches = [f for f in findings if f.category == "patch"]
+        assert len(patches) == 22
+
+    def test_defer_count_matches_report_header(self, bmad_content_e5: str) -> None:
+        findings = parse_bmad_review(bmad_content_e5)
+        defers = [f for f in findings if f.category == "defer"]
+        assert len(defers) == 2
+        assert {f.ident for f in defers} == {"F19", "F27"}
+
+    def test_dismiss_count_matches_report_header(self, bmad_content_e5: str) -> None:
+        findings = parse_bmad_review(bmad_content_e5)
+        dismissed = [f for f in findings if f.category == "dismiss"]
+        assert len(dismissed) == 3
+        assert {f.ident for f in dismissed} == {"F9", "F14", "F25"}
+
+    def test_all_idents_are_F_prefixed(self, bmad_content_e5: str) -> None:
+        findings = parse_bmad_review(bmad_content_e5)
+        for f in findings:
+            assert re.fullmatch(r"F\d+", f.ident), f"ident={f.ident!r}"
+
+    def test_dedups_duplicated_body(self, bmad_content_e5: str) -> None:
+        # Epic 5 file has the whole report duplicated — dedup by
+        # (category, ident) must keep each finding exactly once.
+        assert bmad_content_e5.count("## Epic 5 Code Review") == 2
+        findings = parse_bmad_review(bmad_content_e5)
+        keys = [(f.category, f.ident) for f in findings]
+        assert len(keys) == len(set(keys))
+
+    def test_file_paths_prefer_real_paths_over_code_symbols(
+        self, bmad_content_e5: str,
+    ) -> None:
+        # F1's title contains three backticked code symbols
+        # (`getDivergenceForStep`, `Array.includes()`, `.find()`),
+        # none of which are file paths. The actual path lives on the
+        # line below the title as ``src/lib/.../mermaid-generator.ts:97``.
+        # The path extractor must skip the code symbols and find the
+        # real path in the body.
+        findings = parse_bmad_review(bmad_content_e5)
+        f1 = next(f for f in findings if f.ident == "F1")
+        assert "mermaid-generator.ts" in f1.file
+        assert "getDivergenceForStep" not in f1.file
+
+    def test_severity_subheading_does_not_reset_category(
+        self, bmad_content_e5: str,
+    ) -> None:
+        # F2 lives under `## Patch Findings` → `### 🔴 Critical`.
+        # If the severity H3 reset current_category to None the way
+        # the old parser did for all H2 resets, F2 would parse with
+        # empty category and be dropped entirely.
+        findings = parse_bmad_review(bmad_content_e5)
+        f2 = next(f for f in findings if f.ident == "F2")
+        assert f2.category == "patch"
+
+    def test_bullet_list_defer_item_parsed(self, bmad_content_e5: str) -> None:
+        findings = parse_bmad_review(bmad_content_e5)
+        f19 = next(f for f in findings if f.ident == "F19")
+        assert f19.category == "defer"
+        assert "getDivergentStepIds" in f19.title
+
+    def test_source_is_bmad(self, bmad_content_e5: str) -> None:
+        findings = parse_bmad_review(bmad_content_e5)
+        assert all(f.source == "bmad" for f in findings)
+
+    def test_sieve_routes_epic_5_correctly(
+        self,
+        bmad_content_e5: str,
+        claude_content_e5: str,
+    ) -> None:
+        result = sieve_reviews(bmad_content_e5, claude_content_e5)
+        claude_minors = sum(
+            1 for f in result.claude_findings if f.category == "minor"
+        )
+        claude_high = sum(
+            1 for f in result.claude_findings if f.category in ("major", "critical")
+        )
+        # 22 BMAD patches + Claude minors → Cat A
+        # Claude major/critical → Cat B
+        # 2 BMAD defers → defer (3 dismisses dropped)
+        assert len(result.cat_a) == 22 + claude_minors
+        assert len(result.cat_b) == claude_high
+        assert len(result.defer) == 2
+        assert result.has_any_findings
+
+    def test_sieve_does_not_fall_back_on_epic_5(
+        self,
+        bmad_content_e5: str,
+        claude_content_e5: str,
+    ) -> None:
+        # The format-drift guard in epic_graph._run_review_sieve fires
+        # when a >1000-char BMAD file produces zero findings. Parsing
+        # 22+ BMAD findings from the Epic 5 fixture means the sieve
+        # handles this format natively and the expensive LLM fallback
+        # does not run.
+        assert len(bmad_content_e5) > 1000
+        result = sieve_reviews(bmad_content_e5, claude_content_e5)
+        assert len(result.bmad_findings) > 0
+
+
+class TestEpic5SyntheticEdgeCases:
+    """Small targeted tests for the new regexes that don't need fixtures."""
+
+    def test_h2_patch_findings_classifies(self) -> None:
+        content = (
+            "## Patch Findings (22)\n\n"
+            "### Critical\n\n"
+            "**F1 — `foo()` is broken in `src/a.ts:10`**\n"
+            "`src/a.ts:10`\n"
+            "body text\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "patch"
+        assert findings[0].ident == "F1"
+
+    def test_h2_deferred_findings_classifies(self) -> None:
+        content = (
+            "## Deferred Findings (1)\n\n"
+            "- **F9** — deferred thing on `src/b.ts:5`\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "defer"
+
+    def test_h2_dismissed_findings_classifies(self) -> None:
+        content = (
+            "## Dismissed Findings (2)\n\n"
+            "- **F1** — false positive\n"
+            "- **F2** — also false positive\n"
+        )
+        findings = parse_bmad_review(content)
+        # Dismissed items are parsed but the sieve drops them — this
+        # tests the parser, not the routing.
+        dismissed = [f for f in findings if f.category == "dismiss"]
+        assert len(dismissed) == 2
+
+    def test_whole_bold_format_with_backticks_in_title(self) -> None:
+        content = (
+            "## Patch Findings\n\n"
+            "### Critical\n\n"
+            "**F1 — `foo` uses `bar()` inside `baz()` — violation**\n"
+            "`src/real/path.ts:42`\n"
+            "explanation body\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        # Title keeps all the backticked code symbols intact.
+        assert "`foo`" in findings[0].title
+        assert "`bar()`" in findings[0].title
+        # File field prefers the path-like backtick in the body.
+        assert findings[0].file == "src/real/path.ts:42"
+
+    def test_severity_subheading_does_not_clobber_h2_category(self) -> None:
+        content = (
+            "## Patch Findings\n\n"
+            "### Medium\n\n"
+            "**F42 — something medium in `src/foo.ts`**\n"
+            "`src/foo.ts:10`\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "patch"
+
+    def test_unclassified_h2_still_resets(self) -> None:
+        # Without this, `**F1**` under "## Random Section" following
+        # "## Patch Findings" would inherit "patch" incorrectly.
+        content = (
+            "## Patch Findings\n\n"
+            "**[F1]** orphan item (no follow-up line)\n\n"
+            "## Random Unrelated Section\n\n"
+            "**[F2]** should NOT be classified as patch\n"
+        )
+        findings = parse_bmad_review(content)
+        idents = {f.ident: f.category for f in findings}
+        assert idents == {"F1": "patch"}  # F2 has no category → dropped
+
+    def test_bullet_list_without_dash_still_parses(self) -> None:
+        # Some variants might emit `- **F19** title` without an em-dash.
+        content = (
+            "## Deferred Findings\n\n"
+            "- **F19** a defer item without em-dash\n"
+            "- **F20** — another defer item with em-dash\n"
+        )
+        findings = parse_bmad_review(content)
+        idents = {f.ident for f in findings}
+        assert idents == {"F19", "F20"}
+        assert all(f.category == "defer" for f in findings)
+
+    def test_epic_5_preamble_triage_list_does_not_misclassify(self) -> None:
+        # Epic 5 preamble contains lines like "- **F9**: ... **Dismiss**
+        # (false positive)" BEFORE any H2 section. Those items should
+        # not be emitted as findings (no enclosing category), since
+        # the real classification comes later in the `## Dismissed
+        # Findings` H2 section.
+        content = (
+            "**Triage classifications:**\n\n"
+            "- **F9**: false positive. **Dismiss** (reason).\n"
+            "- **F14**: different reason. **Dismiss**.\n\n"
+            "## Dismissed Findings (2)\n\n"
+            "- **F9** — real dismiss entry\n"
+            "- **F14** — another real dismiss entry\n"
+        )
+        findings = parse_bmad_review(content)
+        # Only the H2-classified entries survive — NOT 4 total.
+        assert len(findings) == 2
+        assert all(f.category == "dismiss" for f in findings)
+
+    def test_path_extractor_ignores_code_symbols(self) -> None:
+        from src.intake.review_sieve import _extract_first_backticked_path
+        # Backticked code, no paths → returns empty.
+        assert _extract_first_backticked_path(
+            "`getDivergenceForStep` uses `Array.includes()`"
+        ) == ""
+        # Path present → wins over preceding code symbol.
+        assert _extract_first_backticked_path(
+            "`someFunction()` in `src/foo.ts:42`"
+        ) == "src/foo.ts:42"
+        # Bare extension at end of token → still recognized.
+        assert _extract_first_backticked_path("`package.json`") == "package.json"
+        # Path with line range.
+        assert _extract_first_backticked_path(
+            "`src/a/b/c.tsx:10`"
+        ) == "src/a/b/c.tsx:10"

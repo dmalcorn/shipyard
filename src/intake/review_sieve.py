@@ -31,12 +31,29 @@ BMAD_CATEGORIES = ("patch", "defer", "dismiss", "decision-needed")
 # Claude severity buckets (factory-side severity taxonomy)
 CLAUDE_SEVERITIES = ("critical", "major", "minor")
 
-# Matches an item line in either BMAD format:
+# Matches an item line in the Epic 3 / Epic 4 BMAD formats:
 #   **[P1]** description            (Epic 3 style)
 #   **F01** `[patch]` description   (Epic 4 style)
 # The optional brackets around the ident are tolerated, and the rest of
 # the line (including any inline category marker) is captured as group 2.
 _BMAD_ITEM_TAG = re.compile(r"^\s*\*\*\[?([A-Za-z]+\d+)\]?\*\*\s*(.*)$")
+
+# Matches the Epic 5 BMAD detail-section format where the whole
+# "ident — title" span is inside a single bold:
+#   **F1 — `getDivergenceForStep` uses `Array.includes()` ...**
+# The dash separator can be em-dash, en-dash, or hyphen. Greedy match
+# on the title keeps any inner backticked code intact.
+_BMAD_ITEM_TAG_WHOLE_BOLD = re.compile(
+    r"^\s*\*\*([A-Za-z]+\d+)\s*[\u2014\u2013\-]\s*(.+)\*\*\s*$",
+)
+
+# Matches the Epic 5 BMAD deferred/dismissed-section format:
+#   - **F19** — `getDivergentStepIds` called twice per render ...
+# The ident is bolded on its own, followed by an em-dash and the
+# rest of the line as plain text. Appears as a markdown bullet.
+_BMAD_ITEM_TAG_BULLET = re.compile(
+    r"^\s*[-*+]\s+\*\*([A-Za-z]+\d+)\*\*\s*[\u2014\u2013\-]?\s*(.*)$",
+)
 
 # Matches an inline BMAD category marker like `[patch]`, `[defer]`, etc.
 # The BMAD skill's Step 3 triage vocabulary is the authoritative source:
@@ -47,7 +64,17 @@ _BMAD_INLINE_CATEGORY = re.compile(
     re.IGNORECASE,
 )
 
-_BMAD_SECTION_HEADING = re.compile(r"^###\s+(.+?)(?:\s*\(.*?\))?\s*$")
+# Section heading — matches H2 (##) or H3 (###). Group 1 is the hash
+# marks so the caller can distinguish the level; group 2 is the text.
+#
+# H2 classification matters for the Epic 5 BMAD format, which groups
+# findings under `## Patch Findings (22)` / `## Deferred Findings (2)`
+# / `## Dismissed Findings (3)` H2 headings, with `### Critical /
+# High / Medium` *severity* subheadings underneath. Both levels are
+# matched; classification of an H3 that doesn't contain a triage
+# keyword leaves the enclosing H2's category in place (rather than
+# resetting to None, which would drop every Epic-5-style finding).
+_BMAD_SECTION_HEADING = re.compile(r"^(#{2,3})\s+(.+?)\s*$")
 
 _CLAUDE_FINDING_HEADING = re.compile(r"^###\s+(\d+)\.\s+(.*?)\s*$")
 _CLAUDE_FIELD_LINE = re.compile(r"^\s*-\s*\*\*(?P<key>[A-Za-z /]+):\*\*\s*(?P<value>.*)$")
@@ -134,19 +161,23 @@ class SieveResult:
 def parse_bmad_review(content: str) -> list[Finding]:
     """Parse a ``bmad-code-review`` skill output into findings.
 
-    Handles two known item formats:
+    Handles three known item formats:
 
     1. **Epic 3 style** — ``**[P1]** ...`` inside a ``### PATCH Findings``
        (or similar) section. Category comes from the section heading.
     2. **Epic 4 style** — ``**F01** `[patch]` ...`` with the category
        tagged inline on the item. Category comes from the inline tag.
+    3. **Epic 5 style** — ``**F1 — ...**`` (whole ident + title inside
+       one bold), grouped under ``## Patch Findings (22)`` /
+       ``## Deferred Findings (2)`` / ``## Dismissed Findings (3)``
+       H2 headings, with ``### Critical / High / Medium`` severity
+       *subsections* underneath. No inline category tag — the
+       category comes from the enclosing H2 heading.
 
     The inline tag takes precedence over the section heading when both
-    are present — it's emitted by the skill's Step 3 triage vocabulary
-    and is more reliable than heading text, which varies run to run.
-    Items without either a section heading or an inline tag are
-    ignored. The skill's output is sometimes duplicated in the same
-    file; dedup is by ``(category, ident)``.
+    are present. Items without either a section heading or an inline
+    tag are ignored. The skill's output is sometimes duplicated in the
+    same file; dedup is by ``(category, ident)``.
     """
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
@@ -186,20 +217,67 @@ def parse_bmad_review(content: str) -> list[Finding]:
         heading_match = _BMAD_SECTION_HEADING.match(raw)
         if heading_match:
             flush()
-            heading_text = heading_match.group(1).strip()
-            # Strip trailing count like "Dismissed (6)".
+            hashes = heading_match.group(1)
+            heading_text = heading_match.group(2).strip()
+            # Strip trailing count like "Dismissed (6)" or "Patch Findings (22)".
             heading_text = re.sub(r"\s*\(\d+\)\s*$", "", heading_text).strip()
-            current_category = _classify_bmad_heading(heading_text)
-            continue
-
-        # Hard section reset on ## headings or --- separators.
-        stripped = raw.strip()
-        if stripped.startswith("## ") or stripped == "---":
-            flush()
-            if stripped.startswith("## "):
+            classified = _classify_bmad_heading(heading_text)
+            if classified:
+                current_category = classified
+            elif len(hashes) == 2:
+                # Unclassified H2 — assume we've moved into a new top-level
+                # section ("## Summary", "## Code Review Complete", etc.)
+                # and reset so later items don't inherit the old category.
                 current_category = None
+            # Unclassified H3 (e.g. "### 🔴 Critical" under a classified
+            # H2 "## Patch Findings") → keep the H2 category in place.
             continue
 
+        # Hard section reset on --- separators.
+        stripped = raw.strip()
+        if stripped == "---":
+            flush()
+            continue
+
+        # Try the Epic 5 detail-section format first (whole-title
+        # bold with a required dash separator inside the span — the
+        # most specific pattern).
+        tag_match = _BMAD_ITEM_TAG_WHOLE_BOLD.match(raw)
+        if tag_match:
+            flush()
+            ident, rest = tag_match.group(1), tag_match.group(2).strip()
+            inline_category = _extract_inline_bmad_category(rest)
+            category = inline_category or current_category or ""
+            pending = Finding(
+                source="bmad",
+                ident=ident,
+                title=rest,
+                category=category,
+            )
+            continue
+
+        # Epic 5 deferred/dismissed-section bullet format:
+        #   - **F19** — title text
+        # The ident is its own bold, preceded by a bullet. Tried
+        # before the Epic 3 / Epic 4 plain-bold pattern because the
+        # latter's leading `\s*` can't eat the bullet character.
+        tag_match = _BMAD_ITEM_TAG_BULLET.match(raw)
+        if tag_match:
+            flush()
+            ident, rest = tag_match.group(1), tag_match.group(2).strip()
+            inline_category = _extract_inline_bmad_category(rest)
+            category = inline_category or current_category or ""
+            pending = Finding(
+                source="bmad",
+                ident=ident,
+                title=rest,
+                category=category,
+            )
+            continue
+
+        # Epic 3 / Epic 4 ident-only-bold pattern:
+        #   **[P1]** description            (Epic 3)
+        #   **F01** `[patch]` description   (Epic 4)
         tag_match = _BMAD_ITEM_TAG.match(raw)
         if tag_match:
             flush()
@@ -300,8 +378,21 @@ def parse_claude_review(content: str) -> list[Finding]:
 
 
 def _extract_first_backticked_path(text: str) -> str:
-    match = re.search(r"`([^`]+)`", text)
-    return match.group(1).strip() if match else ""
+    """Return the first backticked token that looks like a file path.
+
+    Scans every backticked token in order and returns the first one
+    that contains a path separator (``/``) or a short trailing file
+    extension (e.g. ``.ts``, ``.tsx``, ``.py``, optionally followed
+    by ``:line``). Returns ``""`` if nothing in the text looks like
+    a path — the caller then falls through to the next source (title
+    → body), rather than recording a code-symbol backtick (e.g.
+    ```` `getDivergenceForStep` ````) as the finding's file field.
+    """
+    for match in re.finditer(r"`([^`]+)`", text):
+        candidate = match.group(1).strip()
+        if "/" in candidate or re.search(r"\.\w{1,4}(?::\d+)?$", candidate):
+            return candidate
+    return ""
 
 
 def _strip_backticks(text: str) -> str:
