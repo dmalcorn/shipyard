@@ -104,6 +104,7 @@ def set_story_reviews_enabled(enabled: bool) -> None:
 # ---------------------------------------------------------------------------
 
 _STORY_CI_ENABLED: bool = True
+_FIX_PRE_EXISTING: bool = True
 
 
 def get_story_ci_enabled() -> bool:
@@ -115,6 +116,23 @@ def set_story_ci_enabled(enabled: bool) -> None:
     """Enable or disable story-level CI runs."""
     global _STORY_CI_ENABLED  # noqa: PLW0603
     _STORY_CI_ENABLED = enabled
+
+
+def get_fix_pre_existing() -> bool:
+    """Return whether CI fix agents should fix pre-existing errors.
+
+    When True (greenfield default), CI-fix agents fix any failure
+    reported by CI regardless of whether the current story/epic
+    introduced it. When False (brownfield-rebuild mode), a scope
+    constraint tells the fix agent to ignore pre-existing failures.
+    """
+    return _FIX_PRE_EXISTING
+
+
+def set_fix_pre_existing(enabled: bool) -> None:
+    """Enable or disable fixing pre-existing CI errors."""
+    global _FIX_PRE_EXISTING  # noqa: PLW0603
+    _FIX_PRE_EXISTING = enabled
 
 
 def _model_for(node: str) -> str | None:
@@ -419,13 +437,16 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
             f"include lint errors, type-check errors, security scan "
             f"findings, and test failures. Read the output carefully "
             f"to determine which tools reported issues."
-            f"\n\nIMPORTANT SCOPE CONSTRAINT: Only fix failures "
-            f"that are related to story {task_id}. Do NOT fix "
-            f"pre-existing failures, broken tests, or issues in "
-            f"code that was not modified as part of story {task_id}. "
-            f"If a test was already failing before story {task_id}, "
-            f"leave it alone."
         )
+        if not _FIX_PRE_EXISTING:
+            extra += (
+                f"\n\nIMPORTANT SCOPE CONSTRAINT: Only fix failures "
+                f"that are related to story {task_id}. Do NOT fix "
+                f"pre-existing failures, broken tests, or issues in "
+                f"code that was not modified as part of story {task_id}. "
+                f"If a test was already failing before story {task_id}, "
+                f"leave it alone."
+            )
 
     result = invoke_bmad_agent(
         bmad_agent="bmad-agent-dev",

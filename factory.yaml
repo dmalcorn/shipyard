@@ -30,8 +30,12 @@ reviews:
 # CI configuration.
 # Set story_level to false to skip per-story CI runs
 # (fix_ci retry loop is also skipped; commits still happen).
+# fix_pre_existing_errors: true = greenfield (fix every CI error),
+#   false = brownfield-rebuild (scope-constrain fixes to current story/epic).
+# Operator is prompted at startup; this value is the default shown.
 ci:
   story_level: true
+  fix_pre_existing_errors: true
 
 # Per-node model overrides.
 # Valid values: null (use CLI default), or Anthropic API model aliases:

@@ -40,6 +40,7 @@ from src.multi_agent.orchestrator import (
     _ensure_migrations,
     _run_bash,
     build_orchestrator,
+    get_fix_pre_existing,
     resolve_ci_command,
 )
 
@@ -1057,6 +1058,7 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
         working_dir=working_dir,
         max_attempts=4,
         scope_hint=f"epic {epic_num}" if epic_num else "",
+        fix_pre_existing=get_fix_pre_existing(),
     )
 
     passed = result.get("passed", False)

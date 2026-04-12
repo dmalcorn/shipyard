@@ -512,6 +512,7 @@ def invoke_ci_with_fix(
     max_attempts: int = 4,
     fix_timeout: int = TIMEOUT_LONG,
     scope_hint: str = "",
+    fix_pre_existing: bool = True,
 ) -> dict[str, Any]:
     """Run CI via bash, invoking BMAD dev agent only on failure.
 
@@ -524,9 +525,14 @@ def invoke_ci_with_fix(
         working_dir: Working directory for commands.
         max_attempts: Maximum CI+fix cycles before giving up.
         fix_timeout: Timeout for the LLM fix call.
-        scope_hint: Scope constraint for the fix agent (e.g. "story 1-3"
-            or "epic 1"). Tells the agent not to fix pre-existing failures
-            outside this scope.
+        scope_hint: Label used for ci-output filename and (when
+            ``fix_pre_existing`` is False) for the scope-constraint
+            message passed to the fix agent. Example: "story 1-3"
+            or "epic 1".
+        fix_pre_existing: When True (greenfield default), the fix
+            agent is told to fix every error CI reports. When False
+            (brownfield-rebuild mode), a scope constraint tells the
+            agent to ignore failures outside ``scope_hint``.
 
     Returns:
         Dict with keys: passed (bool), ci_output (str), ci_output_path (str),
@@ -574,7 +580,7 @@ def invoke_ci_with_fix(
             logger.info("CI failed, invoking BMAD dev agent to fix...")
 
             scope_constraint = ""
-            if scope_hint:
+            if scope_hint and not fix_pre_existing:
                 scope_constraint = (
                     f"\n\nIMPORTANT SCOPE CONSTRAINT: Only fix failures "
                     f"that are related to {scope_hint}. Do NOT fix "

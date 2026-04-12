@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -574,10 +575,12 @@ def _run_rebuild_cli(
         get_reviews_config,
         get_target_dir,
         load_factory_config,
+        save_ci_fix_pre_existing,
     )
     from src.intake.epic_graph import set_epic_model_config
     from src.intake.pause import request_pause, reset_pause
     from src.multi_agent.orchestrator import (
+        set_fix_pre_existing,
         set_model_config,
         set_story_ci_enabled,
         set_story_reviews_enabled,
@@ -616,6 +619,31 @@ def _run_rebuild_cli(
     if skip_story_ci or not ci_config.get("story_level", True):
         set_story_ci_enabled(False)
         print("  Story-level CI runs: DISABLED (commits proceed without CI gate)")
+
+    # Prompt for CI-fix scope behavior (greenfield default: fix everything).
+    # YAML value is the default; operator is prompted every run so the
+    # setting stays visible. Non-TTY runs skip the prompt and use YAML.
+    yaml_fix_default = bool(ci_config.get("fix_pre_existing_errors", True))
+    fix_pre_existing = yaml_fix_default
+    if sys.stdin.isatty():
+        default_char = "Y" if yaml_fix_default else "N"
+        other_char = "n" if yaml_fix_default else "y"
+        answer = input(
+            f"  Fix pre-existing errors found in CI "
+            f"(not just ones introduced by the current story/epic)? "
+            f"[{default_char}/{other_char}]: "
+        ).strip().lower()
+        if answer in ("y", "yes"):
+            fix_pre_existing = True
+        elif answer in ("n", "no"):
+            fix_pre_existing = False
+    set_fix_pre_existing(fix_pre_existing)
+    print(
+        f"  Fix pre-existing CI errors: "
+        f"{'YES (greenfield)' if fix_pre_existing else 'NO (brownfield scope-constrained)'}"
+    )
+    if fix_pre_existing != yaml_fix_default:
+        save_ci_fix_pre_existing(fix_pre_existing)
 
     ls_project = get_langsmith_project(config)
     if ls_project and not os.environ.get("LANGCHAIN_PROJECT"):

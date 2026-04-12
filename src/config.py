@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import yaml
@@ -87,6 +88,46 @@ def get_ci_config(config: dict[str, Any]) -> dict[str, bool]:
     if not isinstance(ci, dict):
         return {}
     return {k: bool(v) for k, v in ci.items()}
+
+
+def save_ci_fix_pre_existing(
+    enabled: bool,
+    path: str = _DEFAULT_CONFIG_PATH,
+) -> None:
+    """Persist ``ci.fix_pre_existing_errors`` to factory.yaml in place.
+
+    Rewrites only that single line so inline comments and surrounding
+    structure are preserved. If the key is missing, it is inserted
+    directly after the ``ci:`` block header.
+    """
+    if not os.path.isfile(path):
+        logger.warning("Cannot save fix_pre_existing_errors — %s missing", path)
+        return
+
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    value = "true" if enabled else "false"
+    key_re = re.compile(r"^(\s*)fix_pre_existing_errors:\s*\S+(.*)$")
+    ci_header_re = re.compile(r"^ci:\s*$")
+
+    for i, line in enumerate(lines):
+        m = key_re.match(line)
+        if m:
+            indent, trailing = m.group(1), m.group(2)
+            lines[i] = f"{indent}fix_pre_existing_errors: {value}{trailing}\n"
+            break
+    else:
+        for i, line in enumerate(lines):
+            if ci_header_re.match(line):
+                lines.insert(i + 1, f"  fix_pre_existing_errors: {value}\n")
+                break
+        else:
+            lines.append(f"\nci:\n  fix_pre_existing_errors: {value}\n")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    logger.info("Saved ci.fix_pre_existing_errors=%s to %s", value, path)
 
 
 def get_git_config(config: dict[str, Any]) -> dict[str, str]:
