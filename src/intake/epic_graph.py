@@ -107,6 +107,12 @@ CATEGORY_A_PLAN_FILENAME_TEMPLATE = "epic-{epic_num}-category-a-fix-plan.md"
 CATEGORY_B_REVIEW_FILENAME_TEMPLATE = "epic-{epic_num}-category-b-architect-review.md"
 CATEGORY_A_DONE_FILENAME_TEMPLATE = "epic-{epic_num}-category-a-fix-done.md"
 
+# Minimum size (in characters) for a review file to be considered a
+# real review rather than an empty stub or a preamble-only LLM failure.
+# Used by collect_epic_reviews_node to reject half-written reviews,
+# and by _run_review_sieve as its format-drift guard threshold.
+REVIEW_MIN_CONTENT_CHARS = 1000
+
 
 # ---------------------------------------------------------------------------
 # State Schema
@@ -814,21 +820,56 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
 
 
 def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
-    """Fan-in: validate both epic review files exist."""
+    """Fan-in: validate both epic review files are present and substantive.
+
+    The reviews phase is only marked complete (via phase checkpoint)
+    when BOTH reviewer outputs exist and contain real content. An
+    empty or near-empty file is a hard failure: re-saving the phase
+    checkpoint on top of garbage would cause every future resume to
+    skip past broken reviews into ``analyze_reviews``, which then
+    parses nothing and trips the LLM fallback — or worse, writes
+    fix plans from zero findings.
+
+    Raises :class:`RuntimeError` when validation fails. The exception
+    propagates up through ``run_epic_node`` in rebuild_graph, which
+    catches it, marks the epic failed, and leaves epic-phase.json
+    untouched so the next resume retries the reviews from scratch.
+    """
     working_dir = state.get("target_dir") or None
     epic_num = state.get("epic_num", "")
     review_paths = [
-        _epic_artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, epic_num, working_dir),
-        _epic_artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num, working_dir),
+        ("BMAD", _epic_artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, epic_num, working_dir)),
+        ("Claude", _epic_artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num, working_dir)),
     ]
     valid_paths: list[str] = []
+    problems: list[str] = []
 
-    for path in review_paths:
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            valid_paths.append(path)
-            logger.info("Epic review file validated: %s", path)
-        else:
-            logger.warning("Epic review file missing or empty: %s", path)
+    for reviewer, path in review_paths:
+        if not os.path.exists(path):
+            problems.append(f"{reviewer} review file missing: {path}")
+            continue
+        size = os.path.getsize(path)
+        if size < REVIEW_MIN_CONTENT_CHARS:
+            problems.append(
+                f"{reviewer} review file too short "
+                f"({size} bytes, need >= {REVIEW_MIN_CONTENT_CHARS}): {path}",
+            )
+            continue
+        valid_paths.append(path)
+        logger.info("Epic review file validated: %s (%d bytes)", path, size)
+
+    if problems:
+        message = (
+            f"Epic {epic_num} review collection failed — "
+            f"{len(problems)} reviewer(s) produced unusable output:\n  - "
+            + "\n  - ".join(problems)
+            + "\n\nThis usually means a reviewer LLM call aborted before "
+            "writing its report. The epic_reviews phase checkpoint will "
+            "NOT be saved; the next resume will re-run the reviews from "
+            "scratch."
+        )
+        logger.error(message)
+        raise RuntimeError(message)
 
     _save_epic_phase(state, "epic_reviews")
     return {"epic_review_file_paths": valid_paths}
@@ -927,17 +968,17 @@ def _run_review_sieve(
     # Fallback guard: if either reviewer's file is substantial but the
     # sieve parsed zero findings from it, the format probably drifted.
     # Return None so the caller falls back to the LLM agent — safer than
-    # proceeding with half-parsed results. A 1 KB threshold skips empty
-    # or placeholder files but catches any real review.
-    _SIEVE_MIN_CONTENT = 1000
-    if len(bmad_content.strip()) > _SIEVE_MIN_CONTENT and not result.bmad_findings:
+    # proceeding with half-parsed results. Threshold matches
+    # collect_epic_reviews_node's validation so both layers reason about
+    # "real review vs empty stub" the same way.
+    if len(bmad_content.strip()) > REVIEW_MIN_CONTENT_CHARS and not result.bmad_findings:
         logger.warning(
             "BMAD review is %d chars but sieve parsed 0 findings — "
             "format drift suspected, triggering LLM fallback",
             len(bmad_content),
         )
         return None
-    if len(claude_content.strip()) > _SIEVE_MIN_CONTENT and not result.claude_findings:
+    if len(claude_content.strip()) > REVIEW_MIN_CONTENT_CHARS and not result.claude_findings:
         logger.warning(
             "Claude review is %d chars but sieve parsed 0 findings — "
             "format drift suspected, triggering LLM fallback",

@@ -24,7 +24,12 @@ from src.intake.checkpoint import (
 )
 from src.intake.epic_graph import (
     _EPIC_RESUME_TARGETS,
+    REVIEW_BMAD_FILENAME_TEMPLATE,
+    REVIEW_CLAUDE_FILENAME_TEMPLATE,
+    REVIEW_MIN_CONTENT_CHARS,
+    _epic_artifact_path,
     build_epic_runner,
+    collect_epic_reviews_node,
     route_on_epic_entry,
 )
 from src.multi_agent.orchestrator import (
@@ -396,6 +401,114 @@ class TestEpicGraphResumeE2E:
         )
         assert "epic_git_commit" in called
         assert "epic_complete" in called
+
+    def _write_review(
+        self, target_dir: Path, template: str, epic_num: str, content: str,
+    ) -> Path:
+        path = Path(_epic_artifact_path(template, epic_num, str(target_dir)))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_collect_epic_reviews_saves_checkpoint_on_success(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both reviews full-size → phase checkpoint gets written."""
+        epic_num = "7"
+        self._write_review(
+            tmp_path, REVIEW_BMAD_FILENAME_TEMPLATE, epic_num,
+            "x" * (REVIEW_MIN_CONTENT_CHARS + 100),
+        )
+        self._write_review(
+            tmp_path, REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num,
+            "y" * (REVIEW_MIN_CONTENT_CHARS + 100),
+        )
+        state: dict = {
+            "session_id": "s1",
+            "target_dir": str(tmp_path),
+            "epic_num": epic_num,
+        }
+        result = collect_epic_reviews_node(state)  # type: ignore[arg-type]
+        assert len(result["epic_review_file_paths"]) == 2
+        # Phase checkpoint written → next resume would skip to analyze.
+        assert load_epic_phase_checkpoint(str(tmp_path)) is not None
+        assert (
+            load_epic_phase_checkpoint(str(tmp_path))["completed_phase"]
+            == "epic_reviews"
+        )
+
+    def test_collect_epic_reviews_raises_on_empty_claude_file(
+        self, tmp_path: Path,
+    ) -> None:
+        """The exact bug from the chat2bpmn run: 55-byte bmad + 0-byte
+        claude used to save ``epic_reviews`` as completed, causing the
+        next resume to skip straight into a broken analyze_reviews."""
+        epic_num = "6"
+        self._write_review(
+            tmp_path, REVIEW_BMAD_FILENAME_TEMPLATE, epic_num, "x" * 55,
+        )
+        self._write_review(
+            tmp_path, REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num, "",
+        )
+        state: dict = {
+            "session_id": "s1",
+            "target_dir": str(tmp_path),
+            "epic_num": epic_num,
+        }
+        with pytest.raises(RuntimeError) as exc:
+            collect_epic_reviews_node(state)  # type: ignore[arg-type]
+
+        msg = str(exc.value)
+        assert "BMAD" in msg
+        assert "Claude" in msg
+        assert "too short" in msg
+        # No checkpoint saved — next resume will re-run the reviews.
+        assert load_epic_phase_checkpoint(str(tmp_path)) is None
+
+    def test_collect_epic_reviews_raises_on_missing_files(
+        self, tmp_path: Path,
+    ) -> None:
+        state: dict = {
+            "session_id": "s1",
+            "target_dir": str(tmp_path),
+            "epic_num": "8",
+        }
+        with pytest.raises(RuntimeError, match="missing"):
+            collect_epic_reviews_node(state)  # type: ignore[arg-type]
+        assert load_epic_phase_checkpoint(str(tmp_path)) is None
+
+    def test_collect_epic_reviews_raises_on_single_too_short_file(
+        self, tmp_path: Path,
+    ) -> None:
+        """One reviewer produced a real review; the other wrote a
+        preamble-sized stub. Still a failure — we require both."""
+        epic_num = "9"
+        self._write_review(
+            tmp_path, REVIEW_BMAD_FILENAME_TEMPLATE, epic_num,
+            "x" * (REVIEW_MIN_CONTENT_CHARS + 500),
+        )
+        self._write_review(
+            tmp_path, REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num,
+            "tiny stub",
+        )
+        state: dict = {
+            "session_id": "s1",
+            "target_dir": str(tmp_path),
+            "epic_num": epic_num,
+        }
+        with pytest.raises(RuntimeError) as exc:
+            collect_epic_reviews_node(state)  # type: ignore[arg-type]
+        # Error mentions the reviewer that failed, not the one that
+        # produced a valid file.
+        assert "Claude review file too short" in str(exc.value)
+        assert "BMAD review file too short" not in str(exc.value)
+        assert load_epic_phase_checkpoint(str(tmp_path)) is None
+
+    def test_collect_epic_reviews_threshold_matches_sieve(self) -> None:
+        """Both layers must use the same "real review" threshold —
+        otherwise the sieve's format-drift fallback fires on reviews
+        collect_epic_reviews already accepted (or vice versa)."""
+        assert REVIEW_MIN_CONTENT_CHARS == 1000
 
     def test_no_hint_enters_story_loop(self) -> None:
         stubs = _stubs()
