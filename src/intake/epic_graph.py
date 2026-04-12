@@ -86,15 +86,19 @@ def _epic_model_for(node: str) -> str | None:
 
 # Epic-level review directories (separate from story-level)
 EPIC_REVIEWS_DIR = "epic-reviews"
-EPIC_FIX_PLAN_FILENAME_TEMPLATE = "epic-{epic_num}-fix-plan.md"
 
-# Review output filenames
-REVIEW_BMAD_FILENAME = "epic-review-bmad.md"
-REVIEW_CLAUDE_FILENAME = "epic-review-claude.md"
-ANALYSIS_FILENAME = "analysis.md"
-CATEGORY_A_PLAN_FILENAME = "category-a-fix-plan.md"
-CATEGORY_B_REVIEW_FILENAME = "category-b-architect-review.md"
-CATEGORY_A_DONE_FILENAME = "category-a-fix-done.md"
+# All epic-reviews/ artifacts are epic-numbered so multiple epics can
+# coexist in the directory without clobbering each other. When a later
+# epic needs to reference earlier epic's findings, or a re-run has to
+# recover work that was missed, the files are identified by epic number
+# in their name rather than by position in time.
+EPIC_FIX_PLAN_FILENAME_TEMPLATE = "epic-{epic_num}-fix-plan.md"
+REVIEW_BMAD_FILENAME_TEMPLATE = "epic-{epic_num}-review-bmad.md"
+REVIEW_CLAUDE_FILENAME_TEMPLATE = "epic-{epic_num}-review-claude.md"
+ANALYSIS_FILENAME_TEMPLATE = "epic-{epic_num}-analysis.md"
+CATEGORY_A_PLAN_FILENAME_TEMPLATE = "epic-{epic_num}-category-a-fix-plan.md"
+CATEGORY_B_REVIEW_FILENAME_TEMPLATE = "epic-{epic_num}-category-b-architect-review.md"
+CATEGORY_A_DONE_FILENAME_TEMPLATE = "epic-{epic_num}-category-a-fix-done.md"
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +172,7 @@ class EpicReviewNodeInput(TypedDict):
     reviewer_type: str  # "bmad" or "claude"
     task_id: str
     session_id: str
+    epic_num: str
     files_to_review: list[str]
     working_dir: str
 
@@ -520,17 +525,15 @@ def route_next_story(state: EpicState) -> str:
 
 
 def _ensure_epic_reviews_dir(working_dir: str | None = None) -> None:
-    """Ensure epic-reviews/ directory exists and is clean."""
+    """Ensure the epic-reviews/ directory exists.
+
+    Does NOT wipe existing contents — every artifact in this directory
+    is named with an epic number (see :func:`_epic_artifact_path`), so
+    running a later epic (or re-running an earlier one) cannot clobber
+    a prior epic's output. Wiping would destroy that history.
+    """
     reviews_dir = os.path.join(working_dir, EPIC_REVIEWS_DIR) if working_dir else EPIC_REVIEWS_DIR
-    if os.path.exists(reviews_dir):
-        for entry in os.listdir(reviews_dir):
-            if entry == ".gitkeep":
-                continue
-            entry_path = os.path.join(reviews_dir, entry)
-            if os.path.isfile(entry_path):
-                os.remove(entry_path)
-    else:
-        os.makedirs(reviews_dir, exist_ok=True)
+    os.makedirs(reviews_dir, exist_ok=True)
 
 
 def _reviews_path(filename: str, working_dir: str | None = None) -> str:
@@ -538,14 +541,24 @@ def _reviews_path(filename: str, working_dir: str | None = None) -> str:
     return os.path.join(reviews_dir, filename)
 
 
-def _epic_fix_plan_path(epic_num: str | int, working_dir: str | None = None) -> str:
-    """Absolute path to the fix plan for a specific epic.
+def _epic_artifact_path(
+    template: str,
+    epic_num: str | int,
+    working_dir: str | None = None,
+) -> str:
+    """Resolve a templated epic-reviews/ filename to an absolute path.
 
-    Embedding the epic number in the filename keeps plans from colliding
-    across runs and makes each artifact self-identifying on disk.
+    ``template`` must contain the ``{epic_num}`` placeholder — this is
+    how every artifact in ``epic-reviews/`` ties itself to its source
+    epic so a later epic's run can't overwrite it.
     """
-    filename = EPIC_FIX_PLAN_FILENAME_TEMPLATE.format(epic_num=epic_num)
+    filename = template.format(epic_num=epic_num)
     return _reviews_path(filename, working_dir=working_dir)
+
+
+def _epic_fix_plan_path(epic_num: str | int, working_dir: str | None = None) -> str:
+    """Absolute path to the fix plan for a specific epic."""
+    return _epic_artifact_path(EPIC_FIX_PLAN_FILENAME_TEMPLATE, epic_num, working_dir)
 
 
 def _parse_fix_plan(content: str) -> tuple[bool, int]:
@@ -657,6 +670,7 @@ def route_to_epic_reviewers(state: EpicState) -> list[Send]:
     shared: dict[str, Any] = {
         "task_id": task_id,
         "session_id": session_id,
+        "epic_num": epic_num,
         "files_to_review": unique_files,
         "working_dir": working_dir,
     }
@@ -675,6 +689,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
     """
     reviewer_type = state["reviewer_type"]
     task_id = state["task_id"]
+    epic_num = state.get("epic_num", "")
     files_to_review = state["files_to_review"]
     working_dir = state.get("working_dir") or None
 
@@ -708,7 +723,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         # Delegate to the bmad-code-review skill via the dev persona.
         # Intentionally minimal: don't pin workflow internals (step count,
         # layer names) — the skill evolves independently.
-        output_filename = REVIEW_BMAD_FILENAME
+        output_filename = REVIEW_BMAD_FILENAME_TEMPLATE.format(epic_num=epic_num)
         result = invoke_bmad_agent(
             bmad_agent="bmad-agent-dev",
             command=(
@@ -723,7 +738,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         )
     else:
         # Plain Claude review — integration, correctness, cross-story consistency
-        output_filename = REVIEW_CLAUDE_FILENAME
+        output_filename = REVIEW_CLAUDE_FILENAME_TEMPLATE.format(epic_num=epic_num)
         prompt = (
             f"You are an expert code reviewer. Review ALL code changes across "
             f"this entire epic for:\n"
@@ -761,9 +776,10 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
 def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     """Fan-in: validate both epic review files exist."""
     working_dir = state.get("target_dir") or None
+    epic_num = state.get("epic_num", "")
     review_paths = [
-        _reviews_path(REVIEW_BMAD_FILENAME, working_dir=working_dir),
-        _reviews_path(REVIEW_CLAUDE_FILENAME, working_dir=working_dir),
+        _epic_artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, epic_num, working_dir),
+        _epic_artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num, working_dir),
     ]
     valid_paths: list[str] = []
 
@@ -793,12 +809,12 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
     review_paths = state.get("epic_review_file_paths", [])
     epic_num = state.get("epic_num", "")
 
-    analysis_path = _reviews_path(ANALYSIS_FILENAME, working_dir=working_dir)
-    cat_a_path = _reviews_path(CATEGORY_A_PLAN_FILENAME, working_dir=working_dir)
-    cat_b_path = _reviews_path(CATEGORY_B_REVIEW_FILENAME, working_dir=working_dir)
+    analysis_path = _epic_artifact_path(ANALYSIS_FILENAME_TEMPLATE, epic_num, working_dir)
+    cat_a_path = _epic_artifact_path(CATEGORY_A_PLAN_FILENAME_TEMPLATE, epic_num, working_dir)
+    cat_b_path = _epic_artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, epic_num, working_dir)
 
-    bmad_path = _reviews_path(REVIEW_BMAD_FILENAME, working_dir=working_dir)
-    claude_path = _reviews_path(REVIEW_CLAUDE_FILENAME, working_dir=working_dir)
+    bmad_path = _epic_artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, epic_num, working_dir)
+    claude_path = _epic_artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num, working_dir)
 
     sieve_result = _run_review_sieve(
         bmad_path=bmad_path,
@@ -1011,15 +1027,16 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
     Category B file for architect review.
     """
     working_dir = state.get("target_dir") or None
+    epic_num = state.get("epic_num", "")
     cat_a_path = state.get(
         "category_a_fix_plan_path",
-        _reviews_path(CATEGORY_A_PLAN_FILENAME, working_dir=working_dir),
+        _epic_artifact_path(CATEGORY_A_PLAN_FILENAME_TEMPLATE, epic_num, working_dir),
     )
     cat_b_path = state.get(
         "category_b_review_path",
-        _reviews_path(CATEGORY_B_REVIEW_FILENAME, working_dir=working_dir),
+        _epic_artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, epic_num, working_dir),
     )
-    done_path = _reviews_path(CATEGORY_A_DONE_FILENAME, working_dir=working_dir)
+    done_path = _epic_artifact_path(CATEGORY_A_DONE_FILENAME_TEMPLATE, epic_num, working_dir)
 
     # Skip if no Category A plan exists or is empty
     if not os.path.exists(cat_a_path):
@@ -1097,7 +1114,9 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
     epic_name = state.get("epic_name", "")
     cat_b_path = state.get(
         "category_b_review_path",
-        _reviews_path(CATEGORY_B_REVIEW_FILENAME, state.get("target_dir")),
+        _epic_artifact_path(
+            CATEGORY_B_REVIEW_FILENAME_TEMPLATE, epic_num, state.get("target_dir"),
+        ),
     )
     epic_files = sorted(set(state.get("epic_files_modified", [])))
     working_dir = state.get("target_dir") or None
