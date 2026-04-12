@@ -72,21 +72,35 @@ TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite"
 TOOLS_CI_GENERATE = f"{_BASE_TOOLS},Skill"
 
 
+_MODEL_VERSION_RE = re.compile(r"(\d+)-(\d+)")
+
+
 def _model_families_match(requested: str, resolved: str) -> bool:
-    """Return True when requested and resolved models share a family.
+    """Return True when requested and resolved models are equivalent.
 
     The Claude CLI accepts short aliases (``opus``, ``sonnet``,
     ``haiku``) as well as full model IDs (``claude-opus-4-6``,
     ``claude-sonnet-4-6-20251201``). It then resolves whatever was
-    passed to a concrete model name in the session init event. Two
-    names match when they contain the same family keyword — or, when
-    neither contains a known family keyword, when they match literally.
+    passed to a concrete model name in the session init event. The
+    comparison is two-stage:
+
+    1. **Family check** — both names must share the same family
+       keyword (``opus`` / ``sonnet`` / ``haiku``). Names with no
+       recognized family fall back to literal case-insensitive match.
+    2. **Version check** — if the requested name carries an explicit
+       ``<major>-<minor>`` version (e.g. ``4-6``), the resolved name
+       must share that same version. Bare aliases like ``sonnet``
+       have no version and skip this stage. Dated variants like
+       ``claude-sonnet-4-6-20251201`` are tolerated because their
+       version prefix still matches.
 
     Examples:
-        ``opus`` matches ``claude-opus-4-6``         → True
-        ``claude-opus-4-6`` matches ``claude-opus-4-6`` → True
-        ``opus`` matches ``claude-sonnet-4-6``       → False
-        ``sonnet`` matches ``claude-sonnet-4-5-20251001`` → True
+        ``opus`` matches ``claude-opus-4-6``                 → True
+        ``claude-opus-4-6`` matches ``claude-opus-4-6``      → True
+        ``opus`` matches ``claude-sonnet-4-6``               → False
+        ``sonnet`` matches ``claude-sonnet-4-5-20251001``    → True
+        ``claude-sonnet-4-6`` matches ``claude-sonnet-4-6-20251201`` → True
+        ``claude-sonnet-4-6`` matches ``claude-sonnet-4-5``  → False
     """
     def family(name: str) -> str:
         lowered = name.lower()
@@ -95,7 +109,24 @@ def _model_families_match(requested: str, resolved: str) -> bool:
                 return fam
         return lowered
 
-    return family(requested) == family(resolved)
+    def version(name: str) -> tuple[str, str] | None:
+        match = _MODEL_VERSION_RE.search(name)
+        return (match.group(1), match.group(2)) if match else None
+
+    if family(requested) != family(resolved):
+        return False
+
+    req_version = version(requested)
+    if req_version is None:
+        # Bare alias (e.g. "sonnet") — family match is the contract.
+        return True
+
+    res_version = version(resolved)
+    if res_version is None:
+        # Resolved has no version in its name — trust the family match.
+        return True
+
+    return req_version == res_version
 
 
 def _print_stream_event(

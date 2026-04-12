@@ -17,7 +17,7 @@ from src.multi_agent.bmad_invoke import (
 
 
 class TestModelFamiliesMatch:
-    """_model_families_match normalizes requested vs resolved model names."""
+    """_model_families_match: family-first, then version when specified."""
 
     def test_alias_matches_full_id(self) -> None:
         assert _model_families_match("opus", "claude-opus-4-6") is True
@@ -55,6 +55,47 @@ class TestModelFamiliesMatch:
         # to literal case-insensitive comparison.
         assert _model_families_match("custom-model", "custom-model") is True
         assert _model_families_match("custom-model", "other-model") is False
+
+    def test_version_mismatch_within_same_family_is_flagged(self) -> None:
+        # The scenario that motivated this check: you asked for the
+        # newer sonnet, the CLI resolved to an older sonnet. Same
+        # family, different version — must NOT silently match.
+        assert _model_families_match(
+            "claude-sonnet-4-6", "claude-sonnet-4-5",
+        ) is False
+        assert _model_families_match(
+            "claude-sonnet-4-5", "claude-sonnet-4-6",
+        ) is False
+        assert _model_families_match(
+            "claude-opus-4-6", "claude-opus-4-5",
+        ) is False
+
+    def test_version_mismatch_with_dated_variant_is_flagged(self) -> None:
+        # Asked for 4-6, resolved to a dated variant of 4-5 — still a
+        # mismatch even though the date suffix makes the strings look
+        # superficially different.
+        assert _model_families_match(
+            "claude-sonnet-4-6", "claude-sonnet-4-5-20251001",
+        ) is False
+
+    def test_dated_variant_of_same_version_matches(self) -> None:
+        # Asked for 4-5, resolved to dated 4-5 — this is normal CLI
+        # resolution behavior and must not fire a mismatch.
+        assert _model_families_match(
+            "claude-sonnet-4-5", "claude-sonnet-4-5-20251001",
+        ) is True
+        assert _model_families_match(
+            "claude-opus-4-6", "claude-opus-4-6-20251215",
+        ) is True
+
+    def test_bare_alias_tolerates_any_version(self) -> None:
+        # "sonnet" with no version specified → any sonnet matches.
+        # Callers who want version-level checking must pass a versioned
+        # string like "claude-sonnet-4-6".
+        assert _model_families_match("sonnet", "claude-sonnet-4-5") is True
+        assert _model_families_match("sonnet", "claude-sonnet-4-6") is True
+        assert _model_families_match("opus", "claude-opus-4-5") is True
+        assert _model_families_match("opus", "claude-opus-4-6") is True
 
 
 class TestPrintStreamEventInitBranch:
