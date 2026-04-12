@@ -13,6 +13,7 @@ from src.intake.epic_graph import (
     EpicState,
     _files_changed_in_epic,
     advance_story_node,
+    analyze_reviews_node,
     build_epic_graph,
     epic_complete_node,
     epic_error_node,
@@ -25,6 +26,8 @@ from src.intake.epic_graph import (
     route_next_story,
     select_story_node,
 )
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "review_sieve"
 
 
 # ---------------------------------------------------------------------------
@@ -318,5 +321,147 @@ class TestPrepareEpicReviewsNode:
         result = prepare_epic_reviews_node(state)
         assert result["epic_review_file_paths"] == []
         assert result["epic_files_modified"] == [
-            "src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts",
+            "src/a.ts",
+            "src/b.ts",
+            "src/c.ts",
+            "src/d.ts",
         ]
+
+    def test_preserves_prior_epic_files_in_reviews_dir(
+        self, epic_repo: Path,
+    ) -> None:
+        """Per-epic filenames mean ``prepare_epic_reviews_node`` must NOT
+        wipe the directory — an earlier epic's outputs must survive."""
+        reviews_dir = epic_repo / "epic-reviews"
+        reviews_dir.mkdir()
+        # Simulate an Epic 2 artifact already on disk.
+        prior = reviews_dir / "epic-2-analysis.md"
+        prior.write_text("epic 2 analysis content", encoding="utf-8")
+
+        # Run prepare for Epic 3.
+        prepare_epic_reviews_node({
+            "target_dir": str(epic_repo),
+            "epic_num": "3",
+        })
+
+        # Epic 2's file is still there.
+        assert prior.exists()
+        assert prior.read_text(encoding="utf-8") == "epic 2 analysis content"
+
+
+# ---------------------------------------------------------------------------
+# analyze_reviews_node — end-to-end template resolution
+# ---------------------------------------------------------------------------
+
+
+def _seed_review_files(
+    target_dir: Path, epic_num: str, bmad: str, claude: str,
+) -> tuple[Path, Path]:
+    """Write BMAD and Claude review fixtures at the epic-numbered paths."""
+    reviews_dir = target_dir / "epic-reviews"
+    reviews_dir.mkdir(exist_ok=True)
+    bmad_path = reviews_dir / f"epic-{epic_num}-review-bmad.md"
+    claude_path = reviews_dir / f"epic-{epic_num}-review-claude.md"
+    bmad_path.write_text(bmad, encoding="utf-8")
+    claude_path.write_text(claude, encoding="utf-8")
+    return bmad_path, claude_path
+
+
+@pytest.fixture
+def epic3_bmad() -> str:
+    return (FIXTURES_DIR / "epic-3-review-bmad.md").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def epic3_claude() -> str:
+    return (FIXTURES_DIR / "epic-3-review-claude.md").read_text(encoding="utf-8")
+
+
+class TestAnalyzeReviewsNodeFilenameResolution:
+    """Exercise the full sieve write path with a real tmp directory.
+
+    The node reads two review files and writes three: analysis,
+    category-A, category-B. Every path must carry the epic number so
+    multiple epics can coexist under the same ``epic-reviews/`` dir.
+    """
+
+    def test_writes_epic_numbered_artifacts(
+        self, tmp_path: Path, epic3_bmad: str, epic3_claude: str,
+    ) -> None:
+        # Seed Epic 7's reviews with Epic 3's fixture content — it parses
+        # cleanly, so the sieve succeeds and we never hit the LLM fallback.
+        _seed_review_files(tmp_path, "7", epic3_bmad, epic3_claude)
+
+        result = analyze_reviews_node({
+            "target_dir": str(tmp_path),
+            "epic_num": "7",
+            "epic_review_file_paths": [],
+        })
+
+        reviews_dir = tmp_path / "epic-reviews"
+        expected_analysis = reviews_dir / "epic-7-analysis.md"
+        expected_cat_a = reviews_dir / "epic-7-category-a-fix-plan.md"
+        expected_cat_b = reviews_dir / "epic-7-category-b-architect-review.md"
+
+        # Files landed at the epic-numbered paths.
+        assert expected_analysis.exists()
+        assert expected_cat_a.exists()
+        assert expected_cat_b.exists()
+
+        # State reflects the same epic-numbered paths.
+        assert result["analysis_path"] == str(expected_analysis)
+        assert result["category_a_fix_plan_path"] == str(expected_cat_a)
+        assert result["category_b_review_path"] == str(expected_cat_b)
+        assert result["has_category_b_items"] is True  # Epic 3 fixture has 2
+
+        # Sieve analysis file references "Epic 7" in the title.
+        assert "Epic 7" in expected_analysis.read_text(encoding="utf-8")
+
+        # No unqualified filenames were created.
+        for legacy in (
+            "analysis.md",
+            "category-a-fix-plan.md",
+            "category-b-architect-review.md",
+            "epic-review-bmad.md",
+            "epic-review-claude.md",
+        ):
+            assert not (reviews_dir / legacy).exists(), (
+                f"unexpected legacy filename {legacy}"
+            )
+
+    def test_multiple_epics_coexist_without_clobber(
+        self, tmp_path: Path, epic3_bmad: str, epic3_claude: str,
+    ) -> None:
+        """Running analyze for Epic 4 then Epic 5 leaves both sets intact."""
+        _seed_review_files(tmp_path, "4", epic3_bmad, epic3_claude)
+        analyze_reviews_node({
+            "target_dir": str(tmp_path),
+            "epic_num": "4",
+            "epic_review_file_paths": [],
+        })
+
+        _seed_review_files(tmp_path, "5", epic3_bmad, epic3_claude)
+        analyze_reviews_node({
+            "target_dir": str(tmp_path),
+            "epic_num": "5",
+            "epic_review_file_paths": [],
+        })
+
+        reviews_dir = tmp_path / "epic-reviews"
+        for epic in ("4", "5"):
+            assert (reviews_dir / f"epic-{epic}-review-bmad.md").exists()
+            assert (reviews_dir / f"epic-{epic}-review-claude.md").exists()
+            assert (reviews_dir / f"epic-{epic}-analysis.md").exists()
+            assert (reviews_dir / f"epic-{epic}-category-a-fix-plan.md").exists()
+            assert (
+                reviews_dir / f"epic-{epic}-category-b-architect-review.md"
+            ).exists()
+
+        # Each epic's analysis file names its own epic, confirming no
+        # file was silently overwritten by the other epic's run.
+        assert "Epic 4" in (
+            reviews_dir / "epic-4-analysis.md"
+        ).read_text(encoding="utf-8")
+        assert "Epic 5" in (
+            reviews_dir / "epic-5-analysis.md"
+        ).read_text(encoding="utf-8")
