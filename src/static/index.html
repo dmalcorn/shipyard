@@ -302,36 +302,26 @@ header {
   min-height: 1.4em;
 }
 
-/* ── Stats Bar ── */
-.stats-bar {
+/* ── Progress Meta ── */
+.progress-meta {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 0.6rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
 }
 
-.stat-box {
-  background: var(--bg-input);
-  border: 1px solid var(--border-weld);
-  border-radius: var(--radius);
-  padding: 0.55rem 1rem;
-  text-align: center;
-  flex: 1;
-}
-
-.stat-value {
+.progress-meta .meta-count {
   font-family: var(--font-display);
-  font-weight: 900;
-  font-size: 1.4rem;
+  font-weight: 700;
   color: var(--text-primary);
-  line-height: 1;
 }
 
-.stat-label {
-  font-size: 0.55rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.progress-meta .meta-elapsed {
+  font-family: var(--font-mono);
   color: var(--text-dim);
-  margin-top: 0.2rem;
 }
 
 .progress-bar {
@@ -353,8 +343,7 @@ header {
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
-  .stats-bar { flex-wrap: wrap; }
-  .stat-box { min-width: 80px; }
+  .progress-meta { flex-wrap: wrap; gap: 0.4rem; }
 }
 </style>
 </head>
@@ -410,23 +399,9 @@ header {
     <div class="panel-body">
       <div class="progress-position" id="progressPosition">Waiting for pipeline...</div>
       <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
-      <div class="stats-bar">
-        <div class="stat-box">
-          <div class="stat-value" id="statCompleted">&mdash;</div>
-          <div class="stat-label">Completed</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value" id="statFailed">&mdash;</div>
-          <div class="stat-label">Failed</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value" id="statInterventions">&mdash;</div>
-          <div class="stat-label">Interventions</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value" id="statTotal">&mdash;</div>
-          <div class="stat-label">Total</div>
-        </div>
+      <div class="progress-meta">
+        <span class="meta-count" id="progressCount">&mdash;</span>
+        <span class="meta-elapsed" id="progressElapsed">&mdash;</span>
       </div>
     </div>
   </div>
@@ -442,6 +417,13 @@ let liveSessionId = null;
 let liveEventSource = null;
 let pollInterval = null;
 let lastEventId = 0;
+
+// Progress panel state — metadata is emitted in pieces across events
+// (total_stories in one, epic in another, story_index in a third), so we
+// merge everything into a single object and re-render from it.
+let progressState = {};
+let sessionStartMs = null;
+let elapsedTicker = null;
 
 // ── DOM refs ──
 const terminal = document.getElementById('terminal');
@@ -522,31 +504,90 @@ function parseEventData(raw) {
   return { text: raw, metadata: null };
 }
 
-// ── Stats & Progress ──
-function updateStats(metadata) {
-  if (!metadata) return;
-  if (metadata.completed !== undefined) document.getElementById('statCompleted').textContent = metadata.completed;
-  if (metadata.failed !== undefined) document.getElementById('statFailed').textContent = metadata.failed;
-  if (metadata.interventions !== undefined) document.getElementById('statInterventions').textContent = metadata.interventions;
-  if (metadata.total_stories !== undefined) document.getElementById('statTotal').textContent = metadata.total_stories;
-  if (metadata.total_stories > 0 && metadata.story_index !== undefined) {
-    const pct = (metadata.story_index / metadata.total_stories) * 100;
-    document.getElementById('rebuildProgress').style.width = pct + '%';
-  }
+// ── Progress panel ──
+function formatElapsed(ms) {
+  if (ms == null || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ' + (s % 60) + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+
+function renderProgress() {
+  // Position headline
   const parts = [];
-  if (metadata.epic) parts.push(escapeHtml(metadata.epic));
-  if (metadata.story) parts.push(escapeHtml(metadata.story));
+  if (progressState.epic) parts.push(escapeHtml(progressState.epic));
+  if (progressState.story) parts.push(escapeHtml(progressState.story));
   if (parts.length > 0) {
     progressPosition.innerHTML = parts.join(' &mdash; ');
+  } else {
+    progressPosition.textContent = currentMode === 'idle' ? 'Waiting for pipeline...' : 'Starting...';
+  }
+
+  // Progress bar — needs both total_stories and story_index, from the merged state
+  const total = progressState.total_stories;
+  const idx = progressState.story_index;
+  if (total > 0 && idx !== undefined) {
+    const pct = Math.min(100, (idx / total) * 100);
+    document.getElementById('rebuildProgress').style.width = pct + '%';
+  }
+
+  // "Story X of Y" counter
+  const countEl = document.getElementById('progressCount');
+  if (total > 0 && idx !== undefined) {
+    countEl.textContent = 'Story ' + (idx + 1) + ' of ' + total;
+  } else if (total > 0) {
+    countEl.textContent = total + ' stories';
+  } else {
+    countEl.innerHTML = '&mdash;';
+  }
+
+  // Elapsed time
+  const elapsedEl = document.getElementById('progressElapsed');
+  if (sessionStartMs) {
+    elapsedEl.textContent = formatElapsed(Date.now() - sessionStartMs);
+  } else {
+    elapsedEl.innerHTML = '&mdash;';
   }
 }
 
-function resetStats() {
-  ['statCompleted','statFailed','statInterventions','statTotal'].forEach(id => {
-    document.getElementById(id).innerHTML = '&mdash;';
-  });
+function updateProgress(metadata) {
+  if (!metadata) return;
+  // Merge incoming fields into the persistent progressState
+  for (const k of ['epic', 'story', 'story_index', 'total_stories', 'completed', 'failed', 'interventions']) {
+    if (metadata[k] !== undefined) progressState[k] = metadata[k];
+  }
+  renderProgress();
+}
+
+function resetProgress() {
+  progressState = {};
+  sessionStartMs = null;
+  stopElapsedTicker();
   document.getElementById('rebuildProgress').style.width = '0%';
+  document.getElementById('progressCount').innerHTML = '&mdash;';
+  document.getElementById('progressElapsed').innerHTML = '&mdash;';
   progressPosition.textContent = 'Waiting for pipeline...';
+}
+
+function startElapsedTicker(startIso) {
+  stopElapsedTicker();
+  if (startIso) {
+    const parsed = Date.parse(startIso);
+    if (!isNaN(parsed)) sessionStartMs = parsed;
+  }
+  if (!sessionStartMs) sessionStartMs = Date.now();
+  renderProgress();
+  elapsedTicker = setInterval(renderProgress, 1000);
+}
+
+function stopElapsedTicker() {
+  if (elapsedTicker) {
+    clearInterval(elapsedTicker);
+    elapsedTicker = null;
+  }
 }
 
 // ── Live Mode (SSE) ──
@@ -554,8 +595,19 @@ async function startLive(sessionId) {
   stopLive();
   liveSessionId = sessionId;
   clearTerminal();
-  resetStats();
+  resetProgress();
   setMode('live');
+
+  // Grab the session start time so the elapsed counter is accurate across
+  // reloads (rather than counting from when the tab opened).
+  try {
+    const ar = await fetch(API + '/api/active');
+    const ad = await ar.json();
+    const started = ad.active && ad.active.session_id === sessionId ? ad.active.started_at : null;
+    startElapsedTicker(started);
+  } catch {
+    startElapsedTicker(null);
+  }
 
   // Fetch recent tail for backfill instead of streaming all history
   try {
@@ -569,12 +621,12 @@ async function startLive(sessionId) {
       } else {
         appendLine(ev.text, ev.event_type);
       }
-      if (ev.metadata) updateStats(ev.metadata);
+      if (ev.metadata) updateProgress(ev.metadata);
       lastEventId = ev.id;
     }
     // Also scan all metadata events for stats (progress, counts)
     for (const ev of d.events) {
-      if (ev.metadata && Object.keys(ev.metadata).length > 0) updateStats(ev.metadata);
+      if (ev.metadata && Object.keys(ev.metadata).length > 0) updateProgress(ev.metadata);
       lastEventId = ev.id;
     }
   } catch (e) {
@@ -587,14 +639,14 @@ async function startLive(sessionId) {
   liveEventSource.addEventListener('log', function(e) {
     const d = parseEventData(e.data);
     appendLine(d.text, 'log');
-    if (d.metadata) updateStats(d.metadata);
+    if (d.metadata) updateProgress(d.metadata);
     if (e.lastEventId) lastEventId = parseInt(e.lastEventId, 10);
   });
 
   liveEventSource.addEventListener('stage', function(e) {
     const d = parseEventData(e.data);
     appendLine('>>> STAGE: ' + d.text, 'stage');
-    if (d.metadata) updateStats(d.metadata);
+    if (d.metadata) updateProgress(d.metadata);
     if (e.lastEventId) lastEventId = parseInt(e.lastEventId, 10);
   });
 
@@ -645,7 +697,7 @@ function startPolling(sessionId) {
         } else {
           appendLine(ev.text, ev.event_type);
         }
-        if (ev.metadata) updateStats(ev.metadata);
+        if (ev.metadata) updateProgress(ev.metadata);
       }
       if (d.latest_id > lastEventId) lastEventId = d.latest_id;
 
@@ -675,7 +727,7 @@ function stopPolling() {
 async function loadReplay(sessionId) {
   stopLive();
   clearTerminal();
-  resetStats();
+  resetProgress();
   setMode('replay');
   appendLine('Loading session: ' + sessionId + '...', 'stage');
 
@@ -696,7 +748,7 @@ async function loadReplay(sessionId) {
       } else {
         appendLine(ev.text, ev.event_type);
       }
-      if (ev.metadata) updateStats(ev.metadata);
+      if (ev.metadata) updateProgress(ev.metadata);
     }
   } catch (e) {
     appendLine('Failed to load session: ' + e.message, 'error');
@@ -732,7 +784,7 @@ sessionSelect.addEventListener('change', function() {
   if (!sessionId) {
     stopLive();
     clearTerminal();
-    resetStats();
+    resetProgress();
     setMode('idle');
     return;
   }
