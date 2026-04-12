@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -9,10 +11,12 @@ import pytest
 
 from src.intake.epic_graph import (
     EpicState,
+    _files_changed_in_epic,
     advance_story_node,
     build_epic_graph,
     epic_complete_node,
     epic_error_node,
+    prepare_epic_reviews_node,
     process_story_result_node,
     route_after_category_a,
     route_after_epic_architect,
@@ -232,3 +236,87 @@ class TestBuildEpicGraph:
             "epic_git_commit", "epic_error", "epic_complete",
         }
         assert expected.issubset(node_names), f"Missing: {expected - node_names}"
+
+
+# ---------------------------------------------------------------------------
+# _files_changed_in_epic — git-history derivation
+# ---------------------------------------------------------------------------
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    """Run a git command in ``cwd``, asserting success."""
+    subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+    )
+
+
+@pytest.fixture
+def epic_repo(tmp_path: Path) -> Path:
+    """Create a tiny git repo with commits that mimic the story-loop pattern."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.email", "t@t"], repo)
+    _git(["config", "user.name", "t"], repo)
+
+    def commit(message: str, files: list[str]) -> None:
+        for path in files:
+            p = repo / path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(f"// {message}\n", encoding="utf-8")
+        _git(["add", "-A"], repo)
+        _git(["commit", "-q", "-m", message], repo)
+
+    commit("chore: initial", ["README.md"])
+    commit("story 3-1 complete", ["src/a.ts", "src/b.ts"])
+    commit("chore: update rebuild status", ["rebuild-status.md"])
+    commit("story 3-2 complete", ["src/c.ts"])
+    commit("story 3-3 complete", ["src/a.ts", "src/d.ts"])  # re-touches a.ts
+    commit("story 4-1 complete", ["src/other.ts"])  # different epic
+    return repo
+
+
+class TestFilesChangedInEpic:
+    """_files_changed_in_epic derives the epic's file list from git history."""
+
+    def test_collects_all_story_files_for_epic(self, epic_repo: Path) -> None:
+        files = _files_changed_in_epic(str(epic_repo), "3")
+        assert files == ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]
+
+    def test_excludes_other_epics(self, epic_repo: Path) -> None:
+        files = _files_changed_in_epic(str(epic_repo), "3")
+        assert "src/other.ts" not in files
+
+    def test_excludes_non_story_commits(self, epic_repo: Path) -> None:
+        files = _files_changed_in_epic(str(epic_repo), "3")
+        assert "README.md" not in files
+        assert "rebuild-status.md" not in files
+
+    def test_dedups_files_touched_by_multiple_stories(
+        self, epic_repo: Path,
+    ) -> None:
+        files = _files_changed_in_epic(str(epic_repo), "3")
+        assert files.count("src/a.ts") == 1
+
+    def test_empty_epic_num_returns_empty_list(self, tmp_path: Path) -> None:
+        assert _files_changed_in_epic(str(tmp_path), "") == []
+
+    def test_missing_repo_returns_empty_list(self, tmp_path: Path) -> None:
+        # Not a git repo — helper should fail gracefully, not raise.
+        assert _files_changed_in_epic(str(tmp_path), "3") == []
+
+
+class TestPrepareEpicReviewsNode:
+    """prepare_epic_reviews_node populates epic_files_modified from git."""
+
+    def test_populates_files_from_git(self, epic_repo: Path) -> None:
+        (epic_repo / "epic-reviews").mkdir()
+        state: EpicState = {
+            "target_dir": str(epic_repo),
+            "epic_num": "3",
+        }
+        result = prepare_epic_reviews_node(state)
+        assert result["epic_review_file_paths"] == []
+        assert result["epic_files_modified"] == [
+            "src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts",
+        ]

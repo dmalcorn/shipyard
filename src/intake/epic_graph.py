@@ -589,11 +589,54 @@ def _parse_fix_plan(content: str) -> tuple[bool, int]:
     return flag, approved_count
 
 
+def _files_changed_in_epic(working_dir: str | None, epic_num: str) -> list[str]:
+    """Return all files touched by any story-commit in the given epic.
+
+    Uses the git log convention ``story {epic_num}-<story_id> complete``
+    (written by ``orchestrator.git_commit_node``) rather than trying to
+    accumulate file lists through the orchestrator's phase state, which
+    loses entries across the commit boundary between stories.
+    """
+    if not epic_num:
+        return []
+
+    cwd = working_dir or "."
+    ok, output = _run_bash(
+        [
+            "git",
+            "log",
+            f"--grep=^story {epic_num}-",
+            "--name-only",
+            "--format=",
+        ],
+        cwd=cwd,
+        timeout=15,
+    )
+    if not ok:
+        logger.warning("git log for epic %s file list failed: %s", epic_num, output[:200])
+        return []
+
+    files = {line.strip() for line in output.splitlines() if line.strip()}
+    return sorted(files)
+
+
 def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
-    """Clean epic-reviews/ directory before spawning epic-level reviewers."""
+    """Clean epic-reviews/ and compute the authoritative file list.
+
+    The file list is derived from git history rather than from whatever
+    accumulated in ``epic_files_modified`` during the story loop. The
+    loop-accumulated value was unreliable: each story ends with a git
+    commit, and the downstream detector (``git diff HEAD``) only sees
+    *uncommitted* files, so earlier stories' work was silently dropped.
+    """
     working_dir = state.get("target_dir") or None
+    epic_num = state.get("epic_num", "")
     _ensure_epic_reviews_dir(working_dir=working_dir)
-    return {"epic_review_file_paths": []}
+    files = _files_changed_in_epic(working_dir, epic_num)
+    logger.info(
+        "prepare_epic_reviews: epic=%s files_from_git=%d", epic_num, len(files),
+    )
+    return {"epic_review_file_paths": [], "epic_files_modified": files}
 
 
 def route_to_epic_reviewers(state: EpicState) -> list[Send]:
