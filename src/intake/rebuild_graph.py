@@ -76,6 +76,7 @@ class RebuildState(TypedDict, total=False):
     # Current epic output
     current_epic_status: str  # completed|failed|aborted
     current_epic_error: str
+    current_epic_failed: int  # failures from just this epic, not cumulative
 
     # Control
     pipeline_status: str  # running|completed|failed|aborted|paused
@@ -737,6 +738,7 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
     return {
         "current_epic_status": epic_status,
         "current_epic_error": result.get("error", ""),
+        "current_epic_failed": epic_failed,
         "all_story_results": story_results,
         "stories_completed": state.get("stories_completed", 0) + epic_completed,
         "stories_failed": state.get("stories_failed", 0) + epic_failed,
@@ -753,7 +755,7 @@ def tag_epic_node(state: RebuildState) -> dict[str, Any]:
     epic_index = state.get("epic_index", 0)
     epic_num = epics[epic_index]["epic_num"]
     epic_status = state.get("current_epic_status", "")
-    epic_failed = state.get("stories_failed", 0)
+    epic_failed = state.get("current_epic_failed", 0)
 
     # Only tag if the epic genuinely completed with no failures
     if epic_status not in ("completed", "running") or epic_failed > 0:

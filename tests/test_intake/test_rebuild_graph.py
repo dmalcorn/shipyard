@@ -153,7 +153,7 @@ class TestTagEpicNode:
             "epics": [{"epic_num": "1", "epic_name": "Authentication", "stories": []}],
             "epic_index": 0,
             "current_epic_status": "completed",
-            "stories_failed": 0,
+            "current_epic_failed": 0,
         }
         tag_epic_node(state)
 
@@ -164,6 +164,49 @@ class TestTagEpicNode:
             text=True,
         )
         assert "epic-1-complete" in result.stdout
+
+    def test_tags_even_when_prior_epics_had_failures(self, tmp_path: Path) -> None:
+        """Regression: cumulative stories_failed from earlier epics must not
+        block the current epic's tag. Only the current epic's failures should."""
+        import subprocess
+
+        target = str(tmp_path)
+        subprocess.run(["git", "init"], cwd=target, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=target, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=target, capture_output=True,
+        )
+        (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=target, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=target, capture_output=True,
+        )
+
+        state: RebuildState = {
+            "target_dir": target,
+            "epics": [
+                {"epic_num": "1", "epic_name": "First", "stories": []},
+                {"epic_num": "2", "epic_name": "Second", "stories": []},
+            ],
+            "epic_index": 1,
+            "current_epic_status": "completed",
+            "current_epic_failed": 0,
+            "stories_failed": 3,  # cumulative from earlier epics
+        }
+        tag_epic_node(state)
+
+        result = subprocess.run(
+            ["git", "tag", "-l"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+        )
+        assert "epic-2-complete" in result.stdout
 
 
 class TestWriteRebuildStatus:
