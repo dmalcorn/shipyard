@@ -72,16 +72,49 @@ TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite"
 TOOLS_CI_GENERATE = f"{_BASE_TOOLS},Skill"
 
 
+def _model_families_match(requested: str, resolved: str) -> bool:
+    """Return True when requested and resolved models share a family.
+
+    The Claude CLI accepts short aliases (``opus``, ``sonnet``,
+    ``haiku``) as well as full model IDs (``claude-opus-4-6``,
+    ``claude-sonnet-4-6-20251201``). It then resolves whatever was
+    passed to a concrete model name in the session init event. Two
+    names match when they contain the same family keyword — or, when
+    neither contains a known family keyword, when they match literally.
+
+    Examples:
+        ``opus`` matches ``claude-opus-4-6``         → True
+        ``claude-opus-4-6`` matches ``claude-opus-4-6`` → True
+        ``opus`` matches ``claude-sonnet-4-6``       → False
+        ``sonnet`` matches ``claude-sonnet-4-5-20251001`` → True
+    """
+    def family(name: str) -> str:
+        lowered = name.lower()
+        for fam in ("opus", "sonnet", "haiku"):
+            if fam in lowered:
+                return fam
+        return lowered
+
+    return family(requested) == family(resolved)
+
+
 def _print_stream_event(
     event: dict[str, Any],
     agent_name: str,
     start_time: float,
     output_chunks: list[str],
+    requested_model: str | None = None,
 ) -> None:
     """Parse a stream-json event and print meaningful content in real-time.
 
     Only prints actionable information: agent text output, tool usage,
     and final results. Silently skips noise (user messages, progress pings).
+
+    When ``requested_model`` is provided, the init-event handler prints
+    a ``MODEL MISMATCH`` warning if the CLI resolved to a different
+    model family than the caller asked for — catches silent fallbacks
+    (e.g. requesting opus but getting sonnet because the CLI couldn't
+    resolve the alias on this host).
     """
     elapsed = time.time() - start_time
     tag = f"[{agent_name} {elapsed:5.0f}s]"
@@ -91,8 +124,20 @@ def _print_stream_event(
 
     # --- Init: one-liner that agent session started ---
     if msg_type == "system" and subtype == "init":
-        model = event.get("model", "?")
-        print(f"      {tag} Session started (model={model})")
+        resolved = event.get("model", "?")
+        if requested_model:
+            if _model_families_match(requested_model, resolved):
+                print(
+                    f"      {tag} Session started "
+                    f"(requested={requested_model}, resolved={resolved})",
+                )
+            else:
+                print(
+                    f"      {tag} MODEL MISMATCH: requested={requested_model} "
+                    f"but CLI resolved to {resolved}",
+                )
+        else:
+            print(f"      {tag} Session started (model={resolved})")
         return
 
     # --- Final result: show summary and capture output ---
@@ -308,7 +353,10 @@ def invoke_bmad_agent(
             # Parse the stream-json event and print meaningful content
             try:
                 event = json.loads(raw_line)
-                _print_stream_event(event, bmad_agent, start_time, output_chunks)
+                _print_stream_event(
+                    event, bmad_agent, start_time, output_chunks,
+                    requested_model=model,
+                )
             except json.JSONDecodeError:
                 # Not JSON — print raw
                 print(f"      [bmad:raw] {raw_line[:500]}")
@@ -462,7 +510,10 @@ def invoke_claude_cli(
                 continue
             try:
                 event = json.loads(raw_line)
-                _print_stream_event(event, label, start_time, output_chunks)
+                _print_stream_event(
+                    event, label, start_time, output_chunks,
+                    requested_model=model,
+                )
             except json.JSONDecodeError:
                 print(f"      [{label}:raw] {raw_line[:500]}")
                 output_chunks.append(raw_line)
