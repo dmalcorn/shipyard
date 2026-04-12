@@ -72,7 +72,7 @@ def _epic_model_for(node: str) -> str | None:
 
 # Epic-level review directories (separate from story-level)
 EPIC_REVIEWS_DIR = "epic-reviews"
-EPIC_FIX_PLAN_PATH = "epic-fix-plan.md"
+EPIC_FIX_PLAN_FILENAME_TEMPLATE = "epic-{epic_num}-fix-plan.md"
 
 # Review output filenames
 REVIEW_BMAD_FILENAME = "epic-review-bmad.md"
@@ -524,6 +524,57 @@ def _reviews_path(filename: str, working_dir: str | None = None) -> str:
     return os.path.join(reviews_dir, filename)
 
 
+def _epic_fix_plan_path(epic_num: str | int, working_dir: str | None = None) -> str:
+    """Absolute path to the fix plan for a specific epic.
+
+    Embedding the epic number in the filename keeps plans from colliding
+    across runs and makes each artifact self-identifying on disk.
+    """
+    filename = EPIC_FIX_PLAN_FILENAME_TEMPLATE.format(epic_num=epic_num)
+    return _reviews_path(filename, working_dir=working_dir)
+
+
+def _parse_fix_plan(content: str) -> tuple[bool, int]:
+    """Parse an architect fix plan for the `fixes_needed` flag and the
+    number of approved fixes.
+
+    Returns (fixes_needed_flag, approved_fix_count). The flag defaults to
+    True when the front matter is missing or malformed — failing loud
+    rather than silently skipping fixes.
+    """
+    flag = True
+    lines = content.splitlines()
+
+    # YAML front matter: scan between the opening `---` and the next `---`.
+    if lines and lines[0].strip() == "---":
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            key, sep, value = line.partition(":")
+            if not sep:
+                continue
+            if key.strip().lower() == "fixes_needed":
+                v = value.strip().lower()
+                if v in ("false", "no", "0"):
+                    flag = False
+                elif v in ("true", "yes", "1"):
+                    flag = True
+                break
+
+    # Count `### Fix …` headings inside the `## Approved Fixes` section only.
+    approved_count = 0
+    in_approved = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_approved = stripped.lower().startswith("## approved fixes")
+            continue
+        if in_approved and stripped.lower().startswith("### fix"):
+            approved_count += 1
+
+    return flag, approved_count
+
+
 def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     """Clean epic-reviews/ directory before spawning epic-level reviewers."""
     working_dir = state.get("target_dir") or None
@@ -597,13 +648,16 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
     )
 
     if reviewer_type == "bmad":
-        # BMAD 3-layer adversarial review via dev agent's CR capability
+        # Delegate to the bmad-code-review skill via the dev persona.
+        # Intentionally minimal: don't pin workflow internals (step count,
+        # layer names) — the skill evolves independently.
         output_filename = REVIEW_BMAD_FILENAME
         result = invoke_bmad_agent(
             bmad_agent="bmad-agent-dev",
             command=(
-                f"CR — Review ALL code changes across this entire epic.\n\n"
-                f"Files to review:\n{files_list}\n\n{review_format}"
+                f"Run the bmad-code-review skill on ALL code changes "
+                f"across this entire epic.\n\n"
+                f"Files to review:\n{files_list}"
             ),
             tools=TOOLS_REVIEW_READONLY,
             working_dir=working_dir,
@@ -848,8 +902,7 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
     timestamp = datetime.now(UTC).isoformat()
 
     task_id = f"epic-{epic_num}-architect"
-    fix_plan_path = EPIC_FIX_PLAN_PATH
-    fix_plan_full = os.path.join(working_dir, fix_plan_path) if working_dir else fix_plan_path
+    fix_plan_full = _epic_fix_plan_path(epic_num, working_dir)
 
     prompt = (
         f"You are the architect for Epic {epic_num} ({epic_name}).\n\n"
@@ -860,7 +913,7 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
         f"2. Read the source files mentioned in findings\n"
         f"3. For each finding: decide **fix** (with specific instructions) or "
         f"**dismiss** (with rationale)\n"
-        f"4. Write a structured fix plan to `{fix_plan_path}` using this format:\n\n"
+        f"4. Write a structured fix plan to `{fix_plan_full}` using this format:\n\n"
         f"```\n"
         f"---\n"
         f"agent_role: architect\n"
@@ -908,19 +961,27 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
 
     logger.info("Epic Architect completed: success=%s", result.get("success"))
 
-    # Check if fixes are needed by reading the fix plan
+    # Decide whether the fix node should run. Skip only if BOTH signals
+    # agree there's nothing to do: the front-matter flag AND the approved
+    # fix count. Either signal saying "work remains" routes to fix_node.
     fixes_needed = True
     if os.path.exists(fix_plan_full):
         try:
             with open(fix_plan_full, encoding="utf-8") as f:
                 content = f.read()
-            if "fixes_needed: false" in content.lower():
-                fixes_needed = False
+            flag, approved_count = _parse_fix_plan(content)
+            fixes_needed = flag and approved_count > 0
+            logger.info(
+                "Epic %s fix plan parsed: flag=%s approved_fixes=%d -> fixes_needed=%s",
+                epic_num, flag, approved_count, fixes_needed,
+            )
         except Exception:
-            pass
+            logger.exception("Failed to parse fix plan at %s", fix_plan_full)
+    else:
+        logger.warning("Architect did not write fix plan at %s", fix_plan_full)
 
     return {
-        "epic_fix_plan_path": fix_plan_path,
+        "epic_fix_plan_path": fix_plan_full,
         "epic_fixes_needed": fixes_needed,
     }
 
@@ -935,10 +996,13 @@ def route_after_epic_architect(state: EpicState) -> str:
 def epic_fix_node(state: EpicState) -> dict[str, Any]:
     """Apply architect-approved fixes via dev agent (Claude CLI)."""
     epic_num = state.get("epic_num", "")
-    fix_plan_path = state.get("epic_fix_plan_path", EPIC_FIX_PLAN_PATH)
+    working_dir = state.get("target_dir") or None
+    fix_plan_path = (
+        state.get("epic_fix_plan_path")
+        or _epic_fix_plan_path(epic_num, working_dir)
+    )
     epic_fix_cycle = state.get("epic_fix_cycle", 0)
     last_output = state.get("epic_last_ci_output", "")
-    working_dir = state.get("target_dir") or None
 
     prompt = (
         f"You are a dev agent applying architect-approved fixes.\n\n"
