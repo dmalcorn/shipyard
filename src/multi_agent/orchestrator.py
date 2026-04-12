@@ -1175,6 +1175,18 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         logger.warning("Removing stale git index.lock")
         os.remove(lock_file)
 
+    # If the tree is already clean, the story's changes were committed by a
+    # prior run (e.g. resuming past dev_story with story-level reviews/CI
+    # disabled). Treat as success rather than halting on "nothing to commit".
+    _, status_out = _run_bash(["git", "status", "--porcelain"], cwd=cwd)
+    if not status_out.strip():
+        print(f"    [git_commit] Tree is clean — {task_id} already committed, skipping")
+        clear_phase_checkpoint(_get_working_dir(state) or ".")
+        return {
+            "pipeline_status": "completed",
+            "current_phase": "git_commit",
+        }
+
     # Auto-format and auto-fix before commit to avoid pre-commit hook
     # rejections from prettier/eslint. Both are non-blocking — if they
     # fail here, the hook may still catch genuine issues.
