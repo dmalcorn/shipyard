@@ -99,6 +99,24 @@ def set_story_reviews_enabled(enabled: bool) -> None:
     _STORY_REVIEWS_ENABLED = enabled
 
 
+# ---------------------------------------------------------------------------
+# Story-level CI toggle
+# ---------------------------------------------------------------------------
+
+_STORY_CI_ENABLED: bool = True
+
+
+def get_story_ci_enabled() -> bool:
+    """Return whether story-level CI runs are enabled."""
+    return _STORY_CI_ENABLED
+
+
+def set_story_ci_enabled(enabled: bool) -> None:
+    """Enable or disable story-level CI runs."""
+    global _STORY_CI_ENABLED  # noqa: PLW0603
+    _STORY_CI_ENABLED = enabled
+
+
 def _model_for(node: str) -> str | None:
     """Return the model override for a given node, or None for default."""
     return _MODEL_CONFIG.get(node)
@@ -1110,6 +1128,16 @@ def run_ci_node(state: OrchestratorState) -> dict[str, Any]:
     ci_cycle = state.get("ci_cycle_count", 0) + 1
     working_dir = _get_working_dir(state)
     task_id = state.get("task_id", "")
+
+    if not _STORY_CI_ENABLED:
+        print(f"\n>>> [run_ci] Skipped for {task_id} (story CI disabled)")
+        return {
+            "test_passed": True,
+            "ci_cycle_count": ci_cycle,
+            "last_ci_output": "",
+            "current_phase": "run_ci",
+        }
+
     print(f"\n>>> [run_ci] Running CI (cycle={ci_cycle})")
 
     _ensure_dependencies(working_dir)
@@ -1147,13 +1175,23 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         logger.warning("Removing stale git index.lock")
         os.remove(lock_file)
 
-    # Auto-format before commit to avoid CI churn from prettier failures
+    # Auto-format and auto-fix before commit to avoid pre-commit hook
+    # rejections from prettier/eslint. Both are non-blocking — if they
+    # fail here, the hook may still catch genuine issues.
     if _detect_project_type(cwd) == "node":
         fmt_ok, fmt_out = _run_bash(["npx", "prettier", "--write", "."], cwd=cwd, timeout=120)
         if fmt_ok:
             print("    [git_commit] prettier --write applied")
         else:
             logger.warning("prettier --write failed (non-blocking): %s", fmt_out[:200])
+
+        lint_ok, lint_out = _run_bash(
+            ["npx", "eslint", "--fix", "."], cwd=cwd, timeout=300,
+        )
+        if lint_ok:
+            print("    [git_commit] eslint --fix applied")
+        else:
+            logger.warning("eslint --fix failed (non-blocking): %s", lint_out[:200])
 
     commit_ok, commit_out = _run_bash(["git", "add", "-A"], cwd=cwd)
     if commit_ok:

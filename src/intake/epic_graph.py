@@ -117,6 +117,7 @@ class EpicState(TypedDict, total=False):
     # Current story output
     current_story_status: str  # completed|failed
     current_story_error: str
+    current_story_failed_phase: str  # orchestrator phase where the story failed
     current_story_retry_instruction: str  # set by intervention
 
     # Epic post-processing state
@@ -274,6 +275,7 @@ def run_story_node(state: EpicState) -> dict[str, Any]:
     return {
         "current_story_status": status,
         "current_story_error": result.get("error", ""),
+        "current_story_failed_phase": result.get("current_phase", ""),
         "epic_files_modified": files_modified,
     }
 
@@ -419,17 +421,61 @@ def epic_paused_node(state: EpicState) -> dict[str, Any]:
     return {"epic_status": "paused"}
 
 
+def epic_halt_node(state: EpicState) -> dict[str, Any]:
+    """Terminal node when a story fails in an unrecoverable phase.
+
+    Currently triggered by git_commit failures: the working tree is
+    dirty with uncommitted dev work and would contaminate every
+    subsequent story. Halt the epic and surface the reason so the
+    operator can fix the underlying issue (usually a pre-commit hook
+    rejection) and resume.
+    """
+    epic_num = state.get("epic_num", "?")
+    stories = state.get("stories", [])
+    story_index = state.get("story_index", 0)
+    failed_phase = state.get("current_story_failed_phase", "?")
+    error = state.get("current_story_error", "")
+
+    story_entry = stories[story_index] if story_index < len(stories) else {}
+    story_id = story_entry.get("story_id", "?")
+
+    message = (
+        f"Epic {epic_num} halted at story {story_id}: "
+        f"phase={failed_phase} failed with dirty working tree. "
+        f"Fix the underlying issue in the target repo and resume."
+    )
+    logger.error(message)
+    print(f"\n*** HALT: {message}")
+    if error:
+        print(f"    Error: {error[:500]}")
+
+    return {
+        "epic_status": "paused",
+        "error": message,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Story Loop Routing
 # ---------------------------------------------------------------------------
 
 
 def route_after_story_result(state: EpicState) -> str:
-    """Route after processing a story result: always advance to next story.
+    """Route after processing a story result.
 
-    Failed stories are recorded but never block the rest of the epic.
-    The pipeline keeps going — skipping is not an option.
+    By default, advance to the next story — failed stories are recorded
+    but never block the rest of the epic. The exception is a git_commit
+    failure: that leaves the working tree dirty (dev files uncommitted)
+    and would contaminate every subsequent story, so we halt the epic
+    and let the operator fix the underlying issue (typically a
+    pre-commit hook rejection) before resuming.
     """
+    status = state.get("current_story_status", "")
+    failed_phase = state.get("current_story_failed_phase", "")
+
+    if status == "failed" and failed_phase == "git_commit":
+        return "halt"
+
     return "next_story"
 
 
@@ -1074,6 +1120,7 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("process_result", process_story_result_node)
     graph.add_node("advance_story", advance_story_node)
     graph.add_node("epic_paused", epic_paused_node)
+    graph.add_node("epic_halt", epic_halt_node)
 
     # --- Epic post-processing nodes ---
     graph.add_node("prepare_epic_reviews", prepare_epic_reviews_node)
@@ -1096,8 +1143,9 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_conditional_edges(
         "process_result",
         route_after_story_result,
-        {"next_story": "advance_story"},
+        {"next_story": "advance_story", "halt": "epic_halt"},
     )
+    graph.add_edge("epic_halt", END)
 
     graph.add_conditional_edges(
         "advance_story",

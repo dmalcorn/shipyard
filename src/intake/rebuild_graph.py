@@ -34,7 +34,9 @@ from src.pipeline_tracker import update_story_progress
 from src.multi_agent.orchestrator import (
     _detect_project_type,
     generate_ci_script,
+    get_story_ci_enabled,
     get_story_reviews_enabled,
+    set_story_ci_enabled,
     set_story_reviews_enabled,
 )
 
@@ -280,13 +282,33 @@ def _prompt_story_reviews() -> None:
         return
     try:
         answer = input("\nRun story-level code reviews? [Y/n] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         answer = ""
     if answer in ("n", "no"):
         set_story_reviews_enabled(False)
         print("  Story-level code reviews: DISABLED (epic reviews still active)")
     else:
         print("  Story-level code reviews: ENABLED")
+
+
+def _prompt_story_ci() -> None:
+    """Ask the operator whether to run story-level CI.
+
+    Skips the prompt if CI was already disabled via --no-story-ci
+    or factory.yaml (the CLI sets the flag before the graph runs).
+    """
+    if not get_story_ci_enabled():
+        print("  Story-level CI runs: DISABLED (set by CLI/config)")
+        return
+    try:
+        answer = input("Run story-level CI? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt, OSError):
+        answer = ""
+    if answer in ("n", "no"):
+        set_story_ci_enabled(False)
+        print("  Story-level CI runs: DISABLED (commits proceed without CI gate)")
+    else:
+        print("  Story-level CI runs: ENABLED")
 
 
 def load_backlog_node(state: RebuildState) -> dict[str, Any]:
@@ -343,6 +365,7 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
         print(f"{'='*60}")
 
         _prompt_story_reviews()
+        _prompt_story_ci()
 
         update_story_progress(state.get("session_id", ""),
             total_stories=total_stories,
@@ -371,6 +394,7 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
     print(f"{'='*60}")
 
     _prompt_story_reviews()
+    _prompt_story_ci()
 
     update_story_progress(state.get("session_id", ""),
         total_stories=total_stories,
@@ -632,6 +656,7 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
         "epic_files_modified": [],
         "current_story_status": "",
         "current_story_error": "",
+        "current_story_failed_phase": "",
         "current_story_retry_instruction": "",
         "epic_review_file_paths": [],
         "epic_fix_plan_path": "",

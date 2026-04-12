@@ -76,6 +76,19 @@ def get_reviews_config(config: dict[str, Any]) -> dict[str, bool]:
     return {k: bool(v) for k, v in reviews.items()}
 
 
+def get_ci_config(config: dict[str, Any]) -> dict[str, bool]:
+    """Extract ci section from config.
+
+    Returns:
+        Dict with CI flags (e.g. ``{"story_level": True}``).
+        Missing keys default to True (CI enabled).
+    """
+    ci = config.get("ci", {})
+    if not isinstance(ci, dict):
+        return {}
+    return {k: bool(v) for k, v in ci.items()}
+
+
 def get_git_config(config: dict[str, Any]) -> dict[str, str]:
     """Extract git identity settings."""
     git = config.get("git", {})

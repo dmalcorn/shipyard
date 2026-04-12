@@ -102,8 +102,30 @@ class TestRouteAfterStoryResult:
     def test_completed(self) -> None:
         assert route_after_story_result({"current_story_status": "completed"}) == "next_story"
 
-    def test_failed_continues(self) -> None:
-        assert route_after_story_result({"current_story_status": "failed"}) == "next_story"
+    def test_failed_non_commit_continues(self) -> None:
+        # A failure in dev_story/code_review/run_ci still advances — only
+        # git_commit failures halt the epic.
+        state: EpicState = {
+            "current_story_status": "failed",
+            "current_story_failed_phase": "run_ci",
+        }
+        assert route_after_story_result(state) == "next_story"
+
+    def test_failed_git_commit_halts(self) -> None:
+        state: EpicState = {
+            "current_story_status": "failed",
+            "current_story_failed_phase": "git_commit",
+        }
+        assert route_after_story_result(state) == "halt"
+
+    def test_completed_story_never_halts(self) -> None:
+        # current_story_failed_phase may linger from prior state; a
+        # completed story should still advance regardless.
+        state: EpicState = {
+            "current_story_status": "completed",
+            "current_story_failed_phase": "git_commit",
+        }
+        assert route_after_story_result(state) == "next_story"
 
 
 class TestRouteNextStory:

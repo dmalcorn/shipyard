@@ -564,9 +564,11 @@ def _run_rebuild_cli(
     resume: bool = False,
     *,
     skip_story_reviews: bool = False,
+    skip_story_ci: bool = False,
 ) -> None:
     """Run the rebuild loop from CLI with interactive intervention."""
     from src.config import (
+        get_ci_config,
         get_langsmith_project,
         get_model_config,
         get_reviews_config,
@@ -577,6 +579,7 @@ def _run_rebuild_cli(
     from src.intake.pause import request_pause, reset_pause
     from src.multi_agent.orchestrator import (
         set_model_config,
+        set_story_ci_enabled,
         set_story_reviews_enabled,
     )
 
@@ -607,6 +610,12 @@ def _run_rebuild_cli(
     if skip_story_reviews or not reviews_config.get("story_level", True):
         set_story_reviews_enabled(False)
         print("  Story-level code reviews: DISABLED (epic reviews still active)")
+
+    # Apply CI configuration (CLI flag overrides factory.yaml)
+    ci_config = get_ci_config(config)
+    if skip_story_ci or not ci_config.get("story_level", True):
+        set_story_ci_enabled(False)
+        print("  Story-level CI runs: DISABLED (commits proceed without CI gate)")
 
     ls_project = get_langsmith_project(config)
     if ls_project and not os.environ.get("LANGCHAIN_PROJECT"):
@@ -758,6 +767,11 @@ def main() -> None:
         help="Skip story-level code reviews (epic reviews still run)",
     )
     parser.add_argument(
+        "--no-story-ci",
+        action="store_true",
+        help="Skip story-level CI runs (commits proceed without CI gate)",
+    )
+    parser.add_argument(
         "--target-dir",
         default="./target/",
         help="Target output directory (default: ./target/)",
@@ -768,7 +782,12 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.rebuild:
-        _run_rebuild_cli(args.rebuild, resume=args.resume, skip_story_reviews=args.no_story_reviews)
+        _run_rebuild_cli(
+            args.rebuild,
+            resume=args.resume,
+            skip_story_reviews=args.no_story_reviews,
+            skip_story_ci=args.no_story_ci,
+        )
     elif args.cli:
         _run_cli()
     else:

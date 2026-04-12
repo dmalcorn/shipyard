@@ -27,6 +27,12 @@ target:
 reviews:
   story_level: true
 
+# CI configuration.
+# Set story_level to false to skip per-story CI runs
+# (fix_ci retry loop is also skipped; commits still happen).
+ci:
+  story_level: true
+
 # Per-node model overrides.
 # Valid values: null (use CLI default), "haiku", "sonnet", "opus",
 # or full model IDs like "claude-sonnet-4-6".
