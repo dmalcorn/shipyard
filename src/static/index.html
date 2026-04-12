@@ -353,26 +353,21 @@ header {
   min-height: 1.4em;
 }
 
-/* ── Progress Meta ── */
-.progress-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-top: 0.6rem;
-  font-size: 0.7rem;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
-}
-
-.progress-meta .meta-count {
-  font-family: var(--font-display);
+.progress-position .progress-count-prefix {
+  color: var(--amber);
   font-weight: 700;
-  color: var(--text-primary);
+  margin-right: 0.4rem;
 }
 
-.progress-meta .meta-elapsed {
+/* Elapsed time lives in the progress panel header, right-aligned */
+.panel-header-elapsed {
   font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
   color: var(--text-dim);
+  text-transform: none;
+  flex-shrink: 0;
 }
 
 .progress-bar {
@@ -394,7 +389,7 @@ header {
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
-  .progress-meta { flex-wrap: wrap; gap: 0.4rem; }
+  .panel-header-elapsed { display: none; }
 }
 </style>
 </head>
@@ -428,14 +423,11 @@ header {
       Pipeline Progress
       <span class="tag tag-live">LIVE</span>
       <div class="spacer"></div>
+      <span class="panel-header-elapsed" id="progressElapsed">&mdash;</span>
     </div>
     <div class="panel-body">
       <div class="progress-position" id="progressPosition">Waiting for pipeline...</div>
       <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
-      <div class="progress-meta">
-        <span class="meta-count" id="progressCount">&mdash;</span>
-        <span class="meta-elapsed" id="progressElapsed">&mdash;</span>
-      </div>
     </div>
   </div>
 
@@ -569,39 +561,35 @@ function formatElapsed(ms) {
 }
 
 function renderProgress() {
-  // Position headline (full text) inside the progress panel
+  // Position headline inside the progress panel.
+  // Format: [(41/54)] Epic 6: Name — Story 6-3: Name
+  const total = progressState.total_stories;
+  const idx = progressState.story_index;
   const parts = [];
   if (progressState.epic) parts.push(escapeHtml(progressState.epic));
   if (progressState.story) parts.push(escapeHtml(progressState.story));
   if (parts.length > 0) {
-    progressPosition.innerHTML = parts.join(' &mdash; ');
+    let prefix = '';
+    if (total > 0 && idx !== undefined) {
+      prefix = '<span class="progress-count-prefix">('
+             + (idx + 1) + '/' + total
+             + ')</span> ';
+    }
+    progressPosition.innerHTML = prefix + parts.join(' &mdash; ');
   } else {
     progressPosition.textContent = currentMode === 'idle' ? 'Waiting for pipeline...' : 'Starting...';
   }
 
   // Header-centre status — compact version of the same info.
-  // Format: [EPIC 6]  6-3: Suggested Decomposition List & ...
   renderHeaderStatus();
 
-  // Progress bar — needs both total_stories and story_index, from the merged state
-  const total = progressState.total_stories;
-  const idx = progressState.story_index;
+  // Progress bar
   if (total > 0 && idx !== undefined) {
     const pct = Math.min(100, (idx / total) * 100);
     document.getElementById('rebuildProgress').style.width = pct + '%';
   }
 
-  // "Story X of Y" counter
-  const countEl = document.getElementById('progressCount');
-  if (total > 0 && idx !== undefined) {
-    countEl.textContent = 'Story ' + (idx + 1) + ' of ' + total;
-  } else if (total > 0) {
-    countEl.textContent = total + ' stories';
-  } else {
-    countEl.innerHTML = '&mdash;';
-  }
-
-  // Elapsed time
+  // Elapsed time (now lives in the panel header, right-aligned)
   const elapsedEl = document.getElementById('progressElapsed');
   if (sessionStartMs) {
     elapsedEl.textContent = formatElapsed(Date.now() - sessionStartMs);
@@ -669,7 +657,6 @@ function resetProgress() {
   sessionStartMs = null;
   stopElapsedTicker();
   document.getElementById('rebuildProgress').style.width = '0%';
-  document.getElementById('progressCount').innerHTML = '&mdash;';
   document.getElementById('progressElapsed').innerHTML = '&mdash;';
   progressPosition.textContent = 'Waiting for pipeline...';
   renderHeaderStatus();
