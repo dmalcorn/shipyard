@@ -1,7 +1,7 @@
 """Agent role definitions, tool subsets, and trace metadata helpers.
 
 Defines AgentRole dataclass and role constants (DEV_ROLE, TEST_ROLE, etc.)
-that map each agent to its model tier, tool permissions, and system prompt.
+that map each agent to its model ID, tool permissions, and system prompt.
 Also provides build_trace_config() for LangSmith observability (Pattern 6).
 """
 
@@ -13,7 +13,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 VALID_AGENT_ROLES = frozenset({"dev", "test", "reviewer", "architect", "fix_dev"})
-VALID_MODEL_TIERS = frozenset({"haiku", "sonnet", "opus"})
+VALID_MODEL_IDS = frozenset({"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"})
 VALID_PHASES = frozenset(
     {
         "test",
@@ -27,13 +27,6 @@ VALID_PHASES = frozenset(
     }
 )
 
-# Model IDs per tier
-MODEL_IDS: dict[str, str] = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-6",
-}
-
 
 @dataclass(frozen=True)
 class AgentRole:
@@ -41,14 +34,14 @@ class AgentRole:
 
     Attributes:
         name: Role identifier (dev, test, reviewer, architect, fix_dev).
-        model_tier: Model tier key (haiku, sonnet, opus).
+        model_id: Anthropic API model alias (e.g. "claude-sonnet-4-6").
         tools: Tuple of tool names this role can use.
         system_prompt_key: Key for get_prompt() in src.agent.prompts.
         write_restrictions: Tuple of allowed write path prefixes. Empty = unrestricted.
     """
 
     name: str
-    model_tier: str
+    model_id: str
     tools: tuple[str, ...] = ()
     system_prompt_key: str = ""
     write_restrictions: tuple[str, ...] = ()
@@ -56,7 +49,7 @@ class AgentRole:
 
 DEV_ROLE = AgentRole(
     name="dev",
-    model_tier="sonnet",
+    model_id="claude-sonnet-4-6",
     tools=("read_file", "edit_file", "write_file", "list_files", "search_files", "run_command"),
     system_prompt_key="dev",
     write_restrictions=(),  # unrestricted
@@ -64,7 +57,7 @@ DEV_ROLE = AgentRole(
 
 TEST_ROLE = AgentRole(
     name="test",
-    model_tier="sonnet",
+    model_id="claude-sonnet-4-6",
     tools=("read_file", "write_file", "list_files", "search_files", "run_command"),
     system_prompt_key="test",
     write_restrictions=("tests/",),
@@ -72,7 +65,7 @@ TEST_ROLE = AgentRole(
 
 REVIEWER_ROLE = AgentRole(
     name="reviewer",
-    model_tier="sonnet",
+    model_id="claude-sonnet-4-6",
     tools=("read_file", "list_files", "search_files", "write_file"),
     system_prompt_key="reviewer",
     write_restrictions=("reviews/",),
@@ -80,7 +73,7 @@ REVIEWER_ROLE = AgentRole(
 
 ARCHITECT_ROLE = AgentRole(
     name="architect",
-    model_tier="opus",
+    model_id="claude-opus-4-6",
     tools=("read_file", "list_files", "search_files", "write_file"),
     system_prompt_key="architect",
     write_restrictions=("reviews/", "fix-plan.md"),
@@ -88,7 +81,7 @@ ARCHITECT_ROLE = AgentRole(
 
 FIX_DEV_ROLE = AgentRole(
     name="fix_dev",
-    model_tier="sonnet",
+    model_id="claude-sonnet-4-6",
     tools=("read_file", "edit_file", "write_file", "list_files", "search_files", "run_command"),
     system_prompt_key="fix_dev",
     write_restrictions=(),  # unrestricted
@@ -190,7 +183,7 @@ def build_trace_config(
     session_id: str,
     agent_role: str,
     task_id: str,
-    model_tier: str,
+    model_id: str,
     phase: str,
     parent_session: str | None = None,
 ) -> dict[str, Any]:
@@ -200,7 +193,7 @@ def build_trace_config(
         session_id: Unique session identifier, used as thread_id for checkpointing.
         agent_role: One of dev, test, reviewer, architect, fix_dev.
         task_id: Task identifier (e.g. "story-42").
-        model_tier: One of haiku, sonnet, opus.
+        model_id: Anthropic API model alias (e.g. "claude-sonnet-4-6").
         phase: One of test, implementation, review, fix, ci.
         parent_session: Optional parent session ID for sub-agent linking.
 
@@ -208,13 +201,13 @@ def build_trace_config(
         Config dict with configurable.thread_id and metadata fields.
 
     Raises:
-        ValueError: If agent_role, model_tier, or phase is not in the allowed set.
+        ValueError: If agent_role, model_id, or phase is not in the allowed set.
     """
     if agent_role not in VALID_AGENT_ROLES:
         msg = f"agent_role must be one of {sorted(VALID_AGENT_ROLES)}, got {agent_role!r}"
         raise ValueError(msg)
-    if model_tier not in VALID_MODEL_TIERS:
-        msg = f"model_tier must be one of {sorted(VALID_MODEL_TIERS)}, got {model_tier!r}"
+    if model_id not in VALID_MODEL_IDS:
+        msg = f"model_id must be one of {sorted(VALID_MODEL_IDS)}, got {model_id!r}"
         raise ValueError(msg)
     if phase not in VALID_PHASES:
         msg = f"phase must be one of {sorted(VALID_PHASES)}, got {phase!r}"
@@ -223,7 +216,7 @@ def build_trace_config(
     metadata: dict[str, str] = {
         "agent_role": agent_role,
         "task_id": task_id,
-        "model_tier": model_tier,
+        "model_id": model_id,
         "phase": phase,
     }
     if parent_session:

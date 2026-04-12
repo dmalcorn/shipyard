@@ -10,7 +10,6 @@ from src.multi_agent.roles import (
     ARCHITECT_ROLE,
     DEV_ROLE,
     FIX_DEV_ROLE,
-    MODEL_IDS,
     REVIEWER_ROLE,
     ROLES,
     TEST_ROLE,
@@ -29,7 +28,7 @@ class TestBuildTraceConfig:
             session_id="sess-1",
             agent_role="dev",
             task_id="story-42",
-            model_tier="sonnet",
+            model_id="claude-sonnet-4-6",
             phase="implementation",
         )
         assert "configurable" in result
@@ -41,7 +40,7 @@ class TestBuildTraceConfig:
             session_id="sess-abc",
             agent_role="dev",
             task_id="task-1",
-            model_tier="haiku",
+            model_id="claude-haiku-4-5",
             phase="test",
         )
         assert result["configurable"]["thread_id"] == "sess-abc"
@@ -52,13 +51,13 @@ class TestBuildTraceConfig:
             session_id="sess-1",
             agent_role="reviewer",
             task_id="story-7",
-            model_tier="opus",
+            model_id="claude-opus-4-6",
             phase="review",
         )
         meta = result["metadata"]
         assert meta["agent_role"] == "reviewer"
         assert meta["task_id"] == "story-7"
-        assert meta["model_tier"] == "opus"
+        assert meta["model_id"] == "claude-opus-4-6"
         assert meta["phase"] == "review"
 
     def test_parent_session_omitted_by_default(self) -> None:
@@ -67,7 +66,7 @@ class TestBuildTraceConfig:
             session_id="sess-1",
             agent_role="dev",
             task_id="task-1",
-            model_tier="sonnet",
+            model_id="claude-sonnet-4-6",
             phase="implementation",
         )
         assert "parent_session" not in result["metadata"]
@@ -78,7 +77,7 @@ class TestBuildTraceConfig:
             session_id="child-sess",
             agent_role="test",
             task_id="task-2",
-            model_tier="haiku",
+            model_id="claude-haiku-4-5",
             phase="test",
             parent_session="parent-sess",
         )
@@ -91,18 +90,18 @@ class TestBuildTraceConfig:
                 session_id="s",
                 agent_role="invalid",
                 task_id="t",
-                model_tier="sonnet",
+                model_id="claude-sonnet-4-6",
                 phase="test",
             )
 
-    def test_invalid_model_tier_raises(self) -> None:
-        """Invalid model_tier raises ValueError."""
-        with pytest.raises(ValueError, match="model_tier"):
+    def test_invalid_model_id_raises(self) -> None:
+        """Invalid model_id raises ValueError."""
+        with pytest.raises(ValueError, match="model_id"):
             build_trace_config(
                 session_id="s",
                 agent_role="dev",
                 task_id="t",
-                model_tier="gpt4",
+                model_id="gpt4",
                 phase="test",
             )
 
@@ -113,7 +112,7 @@ class TestBuildTraceConfig:
                 session_id="s",
                 agent_role="dev",
                 task_id="t",
-                model_tier="sonnet",
+                model_id="claude-sonnet-4-6",
                 phase="deploy",
             )
 
@@ -124,22 +123,22 @@ class TestBuildTraceConfig:
                 session_id="s",
                 agent_role=role,
                 task_id="t",
-                model_tier="sonnet",
+                model_id="claude-sonnet-4-6",
                 phase="implementation",
             )
             assert result["metadata"]["agent_role"] == role
 
-    def test_all_valid_model_tiers(self) -> None:
-        """All defined model tiers are accepted."""
-        for tier in ("haiku", "sonnet", "opus"):
+    def test_all_valid_model_ids(self) -> None:
+        """All defined model IDs are accepted."""
+        for model_id in ("claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"):
             result = build_trace_config(
                 session_id="s",
                 agent_role="dev",
                 task_id="t",
-                model_tier=tier,
+                model_id=model_id,
                 phase="implementation",
             )
-            assert result["metadata"]["model_tier"] == tier
+            assert result["metadata"]["model_id"] == model_id
 
     def test_all_valid_phases(self) -> None:
         """All defined phases are accepted."""
@@ -157,7 +156,7 @@ class TestBuildTraceConfig:
                 session_id="s",
                 agent_role="dev",
                 task_id="t",
-                model_tier="sonnet",
+                model_id="claude-sonnet-4-6",
                 phase=phase,
             )
             assert result["metadata"]["phase"] == phase
@@ -166,25 +165,25 @@ class TestBuildTraceConfig:
 class TestAgentRoleDataclass:
     """Tests for AgentRole dataclass and role constants."""
 
-    def test_dev_role_model_tier(self) -> None:
+    def test_dev_role_model_id(self) -> None:
         """Dev Agent uses Sonnet."""
-        assert DEV_ROLE.model_tier == "sonnet"
+        assert DEV_ROLE.model_id == "claude-sonnet-4-6"
 
-    def test_test_role_model_tier(self) -> None:
+    def test_test_role_model_id(self) -> None:
         """Test Agent uses Sonnet."""
-        assert TEST_ROLE.model_tier == "sonnet"
+        assert TEST_ROLE.model_id == "claude-sonnet-4-6"
 
-    def test_reviewer_role_model_tier(self) -> None:
+    def test_reviewer_role_model_id(self) -> None:
         """Reviewer Agent uses Sonnet."""
-        assert REVIEWER_ROLE.model_tier == "sonnet"
+        assert REVIEWER_ROLE.model_id == "claude-sonnet-4-6"
 
-    def test_architect_role_model_tier(self) -> None:
+    def test_architect_role_model_id(self) -> None:
         """Architect Agent uses Opus."""
-        assert ARCHITECT_ROLE.model_tier == "opus"
+        assert ARCHITECT_ROLE.model_id == "claude-opus-4-6"
 
-    def test_fix_dev_role_model_tier(self) -> None:
+    def test_fix_dev_role_model_id(self) -> None:
         """Fix Dev Agent uses Sonnet."""
-        assert FIX_DEV_ROLE.model_tier == "sonnet"
+        assert FIX_DEV_ROLE.model_id == "claude-sonnet-4-6"
 
     def test_dev_role_has_all_tools(self) -> None:
         """Dev Agent has full tool access."""
@@ -241,11 +240,11 @@ class TestAgentRoleDataclass:
         with pytest.raises(AttributeError):
             DEV_ROLE.name = "hacked"  # type: ignore[misc]
 
-    def test_model_ids_mapping(self) -> None:
-        """MODEL_IDS maps tier keys to correct model strings."""
-        assert MODEL_IDS["sonnet"] == "claude-sonnet-4-6"
-        assert MODEL_IDS["opus"] == "claude-opus-4-6"
-        assert MODEL_IDS["haiku"] == "claude-haiku-4-5-20251001"
+    def test_role_model_ids_are_api_aliases(self) -> None:
+        """All role model IDs are valid Anthropic API aliases."""
+        valid = {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"}
+        for role in ROLES.values():
+            assert role.model_id in valid, f"{role.name} has invalid model_id {role.model_id!r}"
 
 
 class TestGetRole:

@@ -70,9 +70,9 @@ MAX_CI_CYCLES = 4
 # Default model overrides per node. None = use CLI default.
 # Override via set_model_config() (called from factory.yaml loader).
 _MODEL_CONFIG: dict[str, str | None] = {
-    "dev_story": "sonnet",
-    "code_review": "sonnet",
-    "fix_ci": "sonnet",
+    "dev_story": "claude-sonnet-4-6",
+    "code_review": "claude-sonnet-4-6",
+    "fix_ci": "claude-sonnet-4-6",
 }
 
 

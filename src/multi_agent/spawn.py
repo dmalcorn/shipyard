@@ -21,7 +21,7 @@ from langgraph.prebuilt import ToolNode
 
 from src.agent.state import AgentState
 from src.context.injection import build_system_prompt, inject_task_context
-from src.multi_agent.roles import MODEL_IDS, ROLES, build_trace_config, get_role, get_tools_for_role
+from src.multi_agent.roles import ROLES, build_trace_config, get_role, get_tools_for_role
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def create_agent_subgraph(
         Tuple of (compiled_graph, initial_state_dict, sqlite_connection).
     """
     role_config = get_role(role)
-    model_id = MODEL_IDS[role_config.model_tier]
+    model_id = role_config.model_id
     tools = get_tools_for_role(role, working_dir=working_dir)
 
     # Build LLM with role's tools bound
@@ -194,7 +194,7 @@ def run_sub_agent(
         session_id=sub_thread_id,
         agent_role=role,
         task_id=task_id,
-        model_tier=ROLES[role].model_tier,
+        model_id=ROLES[role].model_id,
         phase=current_phase,
         parent_session=parent_session_id,
     )

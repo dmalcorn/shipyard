@@ -53,11 +53,11 @@ MAX_EPIC_FIX_CYCLES = 2
 # ---------------------------------------------------------------------------
 
 _EPIC_MODEL_CONFIG: dict[str, str | None] = {
-    "epic_review": "sonnet",
-    "epic_analysis": "sonnet",
-    "epic_fix_cat_a": "sonnet",
-    "epic_architect": "opus",
-    "epic_fix_dev": "sonnet",
+    "epic_review": "claude-sonnet-4-6",
+    "epic_analysis": "claude-sonnet-4-6",
+    "epic_fix_cat_a": "claude-sonnet-4-6",
+    "epic_architect": "claude-opus-4-6",
+    "epic_fix_dev": "claude-sonnet-4-6",
 }
 
 

@@ -190,6 +190,7 @@ def _build_bmad_prompt(
         f"=== AGENT IDENTIFICATION ===\n"
         f"Agent: [Your agent type, e.g., DEV Agent]\n"
         f"Persona: [Your persona name from the agent file]\n"
+        f"Model: [What LLM are you? State your underlying model.]\n"
         f"Loaded files:\n"
         f"  - [exact path to each file you read during activation]\n"
         f"=== END IDENTIFICATION ==="

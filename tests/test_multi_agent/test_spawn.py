@@ -350,8 +350,8 @@ class TestRunSubAgent:
 
         assert "All done" in result["final_message"]
 
-    def test_model_tier_in_metadata(self, checkpoints_db: str) -> None:
-        """Config metadata includes correct model_tier for the role."""
+    def test_model_id_in_metadata(self, checkpoints_db: str) -> None:
+        """Config metadata includes correct model_id for the role."""
         captured_config: dict[str, Any] = {}
 
         def mock_invoke(
@@ -394,7 +394,7 @@ class TestRunSubAgent:
                 checkpoints_db=checkpoints_db,
             )
 
-        assert captured_config["metadata"]["model_tier"] == "opus"
+        assert captured_config["metadata"]["model_id"] == "claude-opus-4-6"
 
     def test_connection_closed_after_invoke(self, checkpoints_db: str) -> None:
         """SQLite connection is closed after sub-agent completes."""

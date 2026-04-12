@@ -43,25 +43,25 @@ class TestCreateTraceConfig:
         assert "metadata" in config
 
     def test_default_agent_role_and_phase(self) -> None:
-        """Defaults to agent_role=dev, model_tier=sonnet, phase=implementation."""
+        """Defaults to agent_role=dev, model_id=claude-sonnet-4-6, phase=implementation."""
         config = create_trace_config(session_id="s1", task_id="t1")
         meta = config["metadata"]
         assert meta["agent_role"] == "dev"
-        assert meta["model_tier"] == "sonnet"
+        assert meta["model_id"] == "claude-sonnet-4-6"
         assert meta["phase"] == "implementation"
 
     def test_custom_values_passed_through(self) -> None:
-        """Custom agent_role, model_tier, phase are passed through."""
+        """Custom agent_role, model_id, phase are passed through."""
         config = create_trace_config(
             session_id="s1",
             task_id="t1",
             agent_role="reviewer",
-            model_tier="opus",
+            model_id="claude-opus-4-6",
             phase="review",
         )
         meta = config["metadata"]
         assert meta["agent_role"] == "reviewer"
-        assert meta["model_tier"] == "opus"
+        assert meta["model_id"] == "claude-opus-4-6"
         assert meta["phase"] == "review"
 
     def test_parent_session_forwarded(self) -> None:

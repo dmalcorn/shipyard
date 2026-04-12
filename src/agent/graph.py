@@ -61,20 +61,20 @@ def create_trace_config(
     session_id: str,
     agent_role: str = "dev",
     task_id: str = "",
-    model_tier: str = "sonnet",
+    model_id: str = "claude-sonnet-4-6",
     phase: str = "implementation",
     parent_session: str | None = None,
 ) -> dict[str, Any]:
     """Build a LangGraph invocation config with LangSmith trace metadata.
 
     Convenience wrapper around build_trace_config with sensible defaults
-    for the single-agent MVP (role=dev, tier=sonnet, phase=implementation).
+    for the single-agent MVP (role=dev, model=claude-sonnet-4-6, phase=implementation).
 
     Args:
         session_id: Unique session identifier, used as thread_id.
         agent_role: One of dev, test, reviewer, architect, fix_dev.
         task_id: Task identifier (e.g. "story-42").
-        model_tier: One of haiku, sonnet, opus.
+        model_id: Anthropic API model alias (e.g. "claude-sonnet-4-6").
         phase: One of test, implementation, review, fix, ci.
         parent_session: Optional parent session ID for sub-agent linking.
 
@@ -85,7 +85,7 @@ def create_trace_config(
         session_id=session_id,
         agent_role=agent_role,
         task_id=task_id,
-        model_tier=model_tier,
+        model_id=model_id,
         phase=phase,
         parent_session=parent_session,
     )
