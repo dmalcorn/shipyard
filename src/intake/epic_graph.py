@@ -1433,14 +1433,35 @@ def route_on_epic_entry(state: EpicState) -> str:
     When run_epic_node loaded a matching epic-phase.json, it sets
     resume_from_epic_phase to the next phase to run. Jump directly
     to the corresponding node, bypassing the story loop and any
-    earlier post-processing phases. Fall through to select_story
-    for the normal story-loop entry when no hint is present.
+    earlier post-processing phases.
+
+    When no phase hint is present, check whether the incoming
+    story_index is already past the end of the stories list — the
+    save-side writes ``story_index + 1`` after every story, so a
+    session paused immediately after the last story of an epic
+    comes back with story_index == len(stories). Entering
+    select_story in that state crashes on ``stories[story_index]``
+    (IndexError). Route to prepare_epic_reviews instead: the story
+    loop is already complete, post-processing either never started
+    or wasn't saved, and re-running it is the correct recovery.
+
+    Fall through to select_story for the normal entry.
     """
     phase = state.get("resume_from_epic_phase", "")
     target = _EPIC_RESUME_TARGETS.get(phase)
     if target:
         print(f"\n>>> [route_on_epic_entry] Epic phase-resume: jumping to {target}")
         return target
+
+    stories = state.get("stories", [])
+    story_index = state.get("story_index", 0)
+    if stories and story_index >= len(stories):
+        print(
+            f"\n>>> [route_on_epic_entry] Story loop already complete "
+            f"({story_index}/{len(stories)}) — jumping to prepare_epic_reviews",
+        )
+        return "prepare_epic_reviews"
+
     return "select_story"
 
 
@@ -1525,12 +1546,18 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     # --- Story loop edges ---
     # Entry: if run_epic_node loaded a matching epic-phase.json, jump
     # directly to the next unfinished post-processing phase, skipping
-    # the story loop. Otherwise fall through to the normal story loop.
+    # the story loop. Or, if the incoming story_index is already past
+    # the end of the stories list (the save-side writes story_index+1
+    # after every story, so a session paused after the last story of
+    # an epic comes back with story_index == len(stories)), skip the
+    # loop and go straight to post-processing. Otherwise fall through
+    # to the normal story-loop entry.
     graph.add_conditional_edges(
         START,
         route_on_epic_entry,
         {
             "select_story": "select_story",
+            "prepare_epic_reviews": "prepare_epic_reviews",
             "analyze_reviews": "analyze_reviews",
             "fix_category_a": "fix_category_a",
             "epic_architect": "epic_architect",

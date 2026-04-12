@@ -90,6 +90,35 @@ class TestEpicRouter:
             == "select_story"
         )
 
+    def test_story_index_past_end_routes_to_prepare_epic_reviews(self) -> None:
+        # Repro for the bug where resume-after-last-story crashed at
+        # stories[story_index] in select_story_node. The save-side
+        # writes story_index+1 after every story, so a session paused
+        # right after the last story comes back with
+        # story_index == len(stories).
+        state = {
+            "stories": [{"story_id": "6-1"}, {"story_id": "6-2"}, {"story_id": "6-3"}],
+            "story_index": 3,
+        }
+        assert route_on_epic_entry(state) == "prepare_epic_reviews"
+
+    def test_phase_hint_beats_story_index_past_end(self) -> None:
+        # If both signals fire, the phase hint wins — it means
+        # post-processing actually made progress in the prior run.
+        state = {
+            "stories": [{"story_id": "6-1"}],
+            "story_index": 1,
+            "resume_from_epic_phase": "epic_ci",
+        }
+        assert route_on_epic_entry(state) == "epic_ci"
+
+    def test_empty_stories_list_does_not_short_circuit(self) -> None:
+        # An empty stories list with story_index=0 should NOT route
+        # to prepare_epic_reviews (we'd be skipping a non-existent
+        # story loop AND hitting a new branch with zero validation).
+        # Fall through to select_story for the normal error path.
+        assert route_on_epic_entry({"stories": [], "story_index": 0}) == "select_story"
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: phase resume actually skips upstream graph nodes
@@ -376,4 +405,35 @@ class TestEpicGraphResumeE2E:
         called = {n.replace("_node", "") for n, m in stubs.items() if m.called}
         assert "select_story" in called, (
             "normal entry must hit the story loop"
+        )
+
+    def test_story_index_past_end_skips_loop_and_runs_reviews(self) -> None:
+        """Resume-after-last-story regression: router must skip the
+        story loop entirely and start at prepare_epic_reviews. Before
+        this fix, select_story_node crashed at
+        ``stories[story_index]`` with IndexError."""
+        stubs = _stubs()
+        # Session was paused right after the last story (6-3) of a
+        # 3-story epic, so story_index == len(stories) == 3.
+        state = _epic_state("")
+        state["stories"] = [
+            {"story_id": "6-1", "story_name": "one",
+             "description": "", "acceptance_criteria": []},
+            {"story_id": "6-2", "story_name": "two",
+             "description": "", "acceptance_criteria": []},
+            {"story_id": "6-3", "story_name": "three",
+             "description": "", "acceptance_criteria": []},
+        ]
+        state["story_index"] = 3
+
+        with patch.multiple("src.intake.epic_graph", **stubs):
+            build_epic_runner().invoke(state)
+
+        called = {n.replace("_node", "") for n, m in stubs.items() if m.called}
+        assert "select_story" not in called, (
+            "must NOT enter select_story — would crash on stories[3]"
+        )
+        assert "run_story" not in called
+        assert "prepare_epic_reviews" in called, (
+            "must enter epic post-processing from the start"
         )

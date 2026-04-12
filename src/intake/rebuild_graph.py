@@ -714,7 +714,11 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
         result = compiled_epic.invoke(epic_input)
         result = dict(result)
     except Exception as e:
-        logger.exception("Epic graph failed for %s: %s", epic["name"], e)
+        logger.exception(
+            "Epic graph failed for epic %s: %s",
+            epic.get("epic_num", "?"),
+            e,
+        )
         result = {
             "epic_status": "failed",
             "error": str(e),
