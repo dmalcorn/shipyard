@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Software Factory — Command Bridge</title>
+<title>Factory Relay — Command Bridge</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
@@ -87,10 +87,61 @@ header {
   transform: rotate(-5deg);
 }
 
+.header-status {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0 1.5rem;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.header-status.empty { color: var(--text-dim); font-style: italic; }
+
+.header-status .epic-tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.2rem 0.55rem;
+  border-radius: 3px;
+  background: var(--amber-glow);
+  color: var(--amber);
+  border: 1px solid var(--amber-dim);
+  flex-shrink: 0;
+}
+
+.header-status .story-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.header-status .story-text .story-id {
+  color: var(--amber);
+  font-weight: 700;
+  margin-right: 0.4rem;
+}
+
+@media (max-width: 900px) {
+  .header-status { display: none; }
+}
+
 .header-controls {
   display: flex;
   align-items: center;
   gap: 1rem;
+  flex-shrink: 0;
 }
 
 .health-badge {
@@ -353,8 +404,9 @@ header {
 <header>
   <div class="logo">
     <div class="logo-icon">&#9875;</div>
-    Software Factory
+    Factory Relay
   </div>
+  <div class="header-status empty" id="headerStatus">No active pipeline</div>
   <div class="header-controls">
     <div class="live-badge" id="liveBadge">
       <div class="live-dot"></div>
@@ -369,6 +421,23 @@ header {
 
 <!-- Main Content -->
 <div class="bridge">
+
+  <!-- Pipeline Progress -->
+  <div class="panel panel-progress">
+    <div class="panel-header">
+      Pipeline Progress
+      <span class="tag tag-live">LIVE</span>
+      <div class="spacer"></div>
+    </div>
+    <div class="panel-body">
+      <div class="progress-position" id="progressPosition">Waiting for pipeline...</div>
+      <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
+      <div class="progress-meta">
+        <span class="meta-count" id="progressCount">&mdash;</span>
+        <span class="meta-elapsed" id="progressElapsed">&mdash;</span>
+      </div>
+    </div>
+  </div>
 
   <!-- Terminal Panel -->
   <div class="panel">
@@ -385,23 +454,6 @@ header {
     <div class="panel-body" style="padding:0;">
       <div class="terminal" id="terminal">
         <div class="terminal-empty" id="terminalEmpty">No active pipeline. Select a past session to replay.</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Pipeline Progress -->
-  <div class="panel panel-progress">
-    <div class="panel-header">
-      Pipeline Progress
-      <span class="tag tag-live">LIVE</span>
-      <div class="spacer"></div>
-    </div>
-    <div class="panel-body">
-      <div class="progress-position" id="progressPosition">Waiting for pipeline...</div>
-      <div class="progress-bar"><div class="progress-fill" id="rebuildProgress"></div></div>
-      <div class="progress-meta">
-        <span class="meta-count" id="progressCount">&mdash;</span>
-        <span class="meta-elapsed" id="progressElapsed">&mdash;</span>
       </div>
     </div>
   </div>
@@ -432,6 +484,7 @@ const sessionSelect = document.getElementById('sessionSelect');
 const liveBadge = document.getElementById('liveBadge');
 const modeTag = document.getElementById('modeTag');
 const progressPosition = document.getElementById('progressPosition');
+const headerStatus = document.getElementById('headerStatus');
 
 // ── Helpers ──
 function escapeHtml(s) {
@@ -516,7 +569,7 @@ function formatElapsed(ms) {
 }
 
 function renderProgress() {
-  // Position headline
+  // Position headline (full text) inside the progress panel
   const parts = [];
   if (progressState.epic) parts.push(escapeHtml(progressState.epic));
   if (progressState.story) parts.push(escapeHtml(progressState.story));
@@ -525,6 +578,10 @@ function renderProgress() {
   } else {
     progressPosition.textContent = currentMode === 'idle' ? 'Waiting for pipeline...' : 'Starting...';
   }
+
+  // Header-centre status — compact version of the same info.
+  // Format: [EPIC 6]  6-3: Suggested Decomposition List & ...
+  renderHeaderStatus();
 
   // Progress bar — needs both total_stories and story_index, from the merged state
   const total = progressState.total_stories;
@@ -553,6 +610,51 @@ function renderProgress() {
   }
 }
 
+function renderHeaderStatus() {
+  // Parse "Epic 6: Name" and "Story 6-3: Name" strings out of progressState
+  // into a compact two-part header pill.
+  const epicStr = progressState.epic || '';
+  const storyStr = progressState.story || '';
+  if (!epicStr && !storyStr) {
+    headerStatus.className = 'header-status empty';
+    headerStatus.textContent = currentMode === 'idle'
+      ? 'No active pipeline'
+      : 'Starting...';
+    return;
+  }
+  headerStatus.className = 'header-status';
+
+  // Epic tag: strip trailing ":" and name, keep "Epic N"
+  let epicTag = '';
+  const epicMatch = epicStr.match(/^(Epic\s+\d+)/i);
+  if (epicMatch) epicTag = epicMatch[1].toUpperCase();
+
+  // Story text: "X-Y: Name" (drop the leading "Story " prefix)
+  let storyId = '';
+  let storyName = '';
+  const storyMatch = storyStr.match(/^Story\s+([\w-]+):\s*(.*)$/i);
+  if (storyMatch) {
+    storyId = storyMatch[1];
+    storyName = storyMatch[2];
+  } else {
+    storyName = storyStr;
+  }
+
+  const pieces = [];
+  if (epicTag) {
+    pieces.push('<span class="epic-tag">' + escapeHtml(epicTag) + '</span>');
+  }
+  if (storyId || storyName) {
+    const idSpan = storyId
+      ? '<span class="story-id">' + escapeHtml(storyId) + '</span>'
+      : '';
+    pieces.push(
+      '<span class="story-text">' + idSpan + escapeHtml(storyName) + '</span>',
+    );
+  }
+  headerStatus.innerHTML = pieces.join('');
+}
+
 function updateProgress(metadata) {
   if (!metadata) return;
   // Merge incoming fields into the persistent progressState
@@ -570,6 +672,7 @@ function resetProgress() {
   document.getElementById('progressCount').innerHTML = '&mdash;';
   document.getElementById('progressElapsed').innerHTML = '&mdash;';
   progressPosition.textContent = 'Waiting for pipeline...';
+  renderHeaderStatus();
 }
 
 function startElapsedTicker(startIso) {
