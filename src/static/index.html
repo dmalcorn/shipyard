@@ -662,6 +662,9 @@ async function startLive(sessionId) {
     liveEventSource = null;
     setMode('idle');
     loadSessionList();
+    // If a new pipeline has already started (common on Ctrl+C / --resume),
+    // auto-switch to it instead of leaving the old session frozen on screen.
+    setTimeout(checkForLiveSession, 3000);
   });
 
   liveEventSource.onerror = function() {
@@ -709,6 +712,7 @@ function startPolling(sessionId) {
         stopPolling();
         setMode('idle');
         loadSessionList();
+        setTimeout(checkForLiveSession, 3000);
       }
     } catch (e) {
       // Network error, retry on next tick
@@ -773,6 +777,18 @@ async function loadSessionList() {
       opt.textContent = date + ' (' + s.pipeline_type + ')' + status + ' — ' + s.event_count + ' events';
       if (s.session_id === current) opt.selected = true;
       sessionSelect.appendChild(opt);
+    }
+
+    // When we're idle, auto-pick-up any newly-started live session.
+    // This covers the Ctrl+C / restart flow where the old SSE closes before
+    // the new run has registered — the first checkForLiveSession call may
+    // miss it, but this runs every 15s so it'll catch up within one tick.
+    if (currentMode === 'idle') {
+      const liveSession = sessions.find(s => s.status === 'running');
+      if (liveSession) {
+        sessionSelect.value = liveSession.session_id;
+        startLive(liveSession.session_id);
+      }
     }
   } catch (e) {
     // Silently fail — sessions list is non-critical
