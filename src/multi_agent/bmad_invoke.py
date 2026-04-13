@@ -61,6 +61,18 @@ _BASH_BUILD = ",".join([
     "Bash(make *)",
 ])
 
+# Read-only filesystem inspection. Agents reach for these naturally when
+# diagnosing file state; without them they fall into tool-discovery loops
+# trying to work around silent denials.
+_BASH_INSPECT = ",".join([
+    "Bash(cat *)",
+    "Bash(ls *)", "Bash(ls)",
+    "Bash(head *)", "Bash(tail *)",
+    "Bash(wc *)",
+    "Bash(find *)",
+    "Bash(file *)",
+])
+
 # Read-only git: inspection only — no staging, commit, push, reset,
 # checkout, merge, rebase, stash, or rm. Safe for a CI-fix agent that
 # needs to inspect history and working-tree state without mutating it.
@@ -79,10 +91,11 @@ _BASE_TOOLS = "Read,Edit,Write,Glob,Grep,Task,TodoWrite"
 
 TOOLS_TEA = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
 TOOLS_TEA_FIX = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
-TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},Bash(git *),Skill"
-TOOLS_CODE_REVIEW = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
+TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},Bash(git *),Skill"
+TOOLS_CODE_REVIEW = f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},Skill"
 TOOLS_CI_FIX = (
-    f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_GIT_READONLY},Bash(bash *),Skill"
+    f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},"
+    f"{_BASH_GIT_READONLY},Bash(bash *),Skill"
 )
 TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite"
 TOOLS_CI_GENERATE = f"{_BASE_TOOLS},Skill"
