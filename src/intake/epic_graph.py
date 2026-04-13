@@ -1127,7 +1127,10 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
         f"3. If any fix CANNOT be applied cleanly (ambiguous, file changed, "
         f"multiple valid approaches), DO NOT attempt it — instead append it "
         f"to `{cat_b_path}` for architect review\n"
-        f"4. Run quick verification using the project's test runner on relevant test files\n"
+        f"4. Verify by running ONLY the specific test files you changed "
+        f"(e.g. `npx vitest run src/path/to/file.test.ts`). Do NOT run "
+        f"the full test suite — the pipeline runs full CI separately. "
+        f"If a test times out, report it and move on.\n"
         f"5. Write an execution log to `{done_path}` listing each fix "
         f"attempted and its outcome (applied/skipped)\n"
     )
@@ -1307,6 +1310,10 @@ def epic_fix_node(state: EpicState) -> dict[str, Any]:
         f"1. Read the fix plan at `{fix_plan_path}`\n"
         f"2. For each approved fix: read the target file, make the surgical edit, verify\n"
         f"3. Do NOT attempt any fixes not in the plan — scope discipline is critical\n"
+        f"4. Verify by running ONLY the specific test files you changed "
+        f"(e.g. `npx vitest run src/path/to/file.test.ts`). Do NOT run "
+        f"the full test suite — the pipeline runs full CI separately. "
+        f"If a test times out, report it and move on.\n"
     )
 
     if epic_fix_cycle > 0 and last_output:

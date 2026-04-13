@@ -56,11 +56,12 @@ _BMAD_ITEM_TAG_WHOLE_BOLD = re.compile(
 # Matches the Epic 5 BMAD deferred/dismissed-section format:
 #   - **F19** — `getDivergentStepIds` called twice per render ...
 #   - **D-01**: `getDivergenceBadgeLabel` cross-module import ...  (Epic 7)
-# The ident is bolded on its own, followed by an em-dash or colon
-# separator and the rest of the line as plain text. Appears as a
-# markdown bullet.
+#   - **[D-1]** `usePanZoom` stale closure ...                      (Epic 9)
+# The ident is bolded on its own (optionally wrapped in square
+# brackets), followed by an em-dash, colon, or space separator, and
+# the rest of the line as plain text. Appears as a markdown bullet.
 _BMAD_ITEM_TAG_BULLET = re.compile(
-    rf"^\s*[-*+]\s+\*\*({_BMAD_IDENT})\*\*\s*[\u2014\u2013\-:]?\s*(.*)$",
+    rf"^\s*[-*+]\s+\*\*\[?({_BMAD_IDENT})\]?\*\*\s*[\u2014\u2013\-:]?\s*(.*)$",
 )
 
 # Matches the Epic 8 BMAD format where findings are H3 headings with
@@ -72,6 +73,17 @@ _BMAD_ITEM_TAG_BULLET = re.compile(
 # section headings.
 _BMAD_ITEM_TAG_H3 = re.compile(
     rf"^###\s+\[({_BMAD_IDENT})\]\s+(.+?)\s*$",
+)
+
+# Matches the Epic 9 BMAD format where the whole "ident + title" span
+# is inside a single bold, with the ident in square brackets:
+#   **[P-1] `handleSynthSvgClick` can false-positive on step ID substrings**
+#   **[D-2] Pre-existing type duplication**
+# Distinct from `_BMAD_ITEM_TAG_WHOLE_BOLD` (Epic 5) which requires a
+# dash separator. Distinct from `_BMAD_ITEM_TAG` (Epic 3) which has
+# the closing `**` right after the ident, not at end of line.
+_BMAD_ITEM_TAG_BRACKET_BOLD = re.compile(
+    rf"^\s*\*\*\[({_BMAD_IDENT})\]\s+(.+)\*\*\s*$",
 )
 
 # Matches a markdown table row from the Epic 7 format:
@@ -351,6 +363,23 @@ def parse_bmad_review(content: str) -> list[Finding]:
         # bold with a required dash separator inside the span — the
         # most specific pattern).
         tag_match = _BMAD_ITEM_TAG_WHOLE_BOLD.match(raw)
+        if tag_match:
+            flush()
+            ident, rest = tag_match.group(1), tag_match.group(2).strip()
+            inline_category = _extract_inline_bmad_category(rest)
+            category = inline_category or current_category or ""
+            pending = Finding(
+                source="bmad",
+                ident=ident,
+                title=rest,
+                category=category,
+            )
+            continue
+
+        # Epic 9 format: whole-line bold with bracketed ident, space
+        # separator (no dash required):
+        #   **[P-1] `handleSynthSvgClick` can false-positive on substrings**
+        tag_match = _BMAD_ITEM_TAG_BRACKET_BOLD.match(raw)
         if tag_match:
             flush()
             ident, rest = tag_match.group(1), tag_match.group(2).strip()

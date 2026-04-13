@@ -42,6 +42,8 @@ BMAD_FIXTURE_E7 = FIXTURES_DIR / "epic-7-review-bmad.md"
 CLAUDE_FIXTURE_E7 = FIXTURES_DIR / "epic-7-review-claude.md"
 BMAD_FIXTURE_E8 = FIXTURES_DIR / "epic-8-review-bmad.md"
 CLAUDE_FIXTURE_E8 = FIXTURES_DIR / "epic-8-review-claude.md"
+BMAD_FIXTURE_E9 = FIXTURES_DIR / "epic-9-review-bmad.md"
+CLAUDE_FIXTURE_E9 = FIXTURES_DIR / "epic-9-review-claude.md"
 
 
 @pytest.fixture
@@ -92,6 +94,16 @@ def bmad_content_e8() -> str:
 @pytest.fixture
 def claude_content_e8() -> str:
     return CLAUDE_FIXTURE_E8.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def bmad_content_e9() -> str:
+    return BMAD_FIXTURE_E9.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def claude_content_e9() -> str:
+    return CLAUDE_FIXTURE_E9.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -993,3 +1005,94 @@ class TestEpic7And8SyntheticEdgeCases:
         assert len(findings) == 1
         assert findings[0].ident == "P1"
         assert findings[0].category == "patch"
+
+
+# ---------------------------------------------------------------------------
+# Epic 9 — whole-line bold with bracketed ident
+# ---------------------------------------------------------------------------
+
+
+class TestParseBmadReviewEpic9Format:
+    """Epic 9 emitted findings as whole-line bold spans with bracketed idents.
+
+    ``### PATCH FINDINGS (must fix)`` heading, followed by items like
+    ``**[P-1] `handleSynthSvgClick` can false-positive...**`` — the
+    closing ``**`` is at end of line, not right after the ident.
+    Deferred items use the bullet form ``- **[D-1]** title`` which
+    also needed the bullet regex relaxed to accept bracketed idents.
+
+    Before the Epic 9 parser additions, the sieve extracted zero
+    BMAD findings from this file.
+    """
+
+    def test_extracts_all_patch_findings(self, bmad_content_e9: str) -> None:
+        findings = parse_bmad_review(bmad_content_e9)
+        patches = [f for f in findings if f.category == "patch"]
+        assert {f.ident for f in patches} == {f"P-{i}" for i in range(1, 9)}
+
+    def test_extracts_all_defer_findings(self, bmad_content_e9: str) -> None:
+        findings = parse_bmad_review(bmad_content_e9)
+        defers = [f for f in findings if f.category == "defer"]
+        assert {f.ident for f in defers} == {f"D-{i}" for i in range(1, 8)}
+
+    def test_bracket_bold_title_preserves_backticks(
+        self, bmad_content_e9: str,
+    ) -> None:
+        findings = parse_bmad_review(bmad_content_e9)
+        by_ident = {f.ident: f for f in findings}
+        # P-1's title contains a backticked function name.
+        assert "handleSynthSvgClick" in by_ident["P-1"].title
+
+    def test_duplicated_content_still_dedups(self, bmad_content_e9: str) -> None:
+        assert bmad_content_e9.count("### PATCH FINDINGS") == 2
+        findings = parse_bmad_review(bmad_content_e9)
+        idents = [(f.category, f.ident) for f in findings]
+        assert len(idents) == len(set(idents))
+
+    def test_sieve_routes_epic_9_correctly(
+        self, bmad_content_e9: str, claude_content_e9: str,
+    ) -> None:
+        result = sieve_reviews(bmad_content_e9, claude_content_e9)
+        bmad_cat_a = [f for f in result.cat_a if f.source == "bmad"]
+        bmad_defer = [f for f in result.defer if f.source == "bmad"]
+        assert len(bmad_cat_a) == 8   # P-1..P-8
+        assert len(bmad_defer) == 7   # D-1..D-7
+
+
+class TestEpic9SyntheticEdgeCases:
+    """Small targeted tests for the whole-line bracket-bold format."""
+
+    def test_bracket_bold_entire_line_becomes_item(self) -> None:
+        content = (
+            "### PATCH FINDINGS\n\n"
+            "**[P-1] `handleClick` has a bug**\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].ident == "P-1"
+        assert findings[0].category == "patch"
+        assert "handleClick" in findings[0].title
+
+    def test_bracket_bold_bullet_defer_item(self) -> None:
+        # - **[D-1]** title — Epic 9 defer format (bracketed ident in bullet)
+        content = (
+            "### DEFER FINDINGS\n\n"
+            "- **[D-1]** stale closure in usePanZoom\n"
+            "- **[D-2]** scoped query missing\n"
+        )
+        findings = parse_bmad_review(content)
+        assert {f.ident for f in findings} == {"D-1", "D-2"}
+        assert all(f.category == "defer" for f in findings)
+
+    def test_bracket_bold_does_not_collide_with_epic_3_format(self) -> None:
+        # Epic 3: `**[P1]** rest` — closing `**` right after `]`, then
+        # unbolded description. Must NOT be captured by the new
+        # bracket-bold regex (which requires closing `**` at EOL).
+        content = (
+            "### PATCH Findings\n\n"
+            "**[P1]** this is a plain description after the bold\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].ident == "P1"
+        assert findings[0].title.startswith("this is a plain description")
