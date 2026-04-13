@@ -38,6 +38,10 @@ BMAD_FIXTURE_E4 = FIXTURES_DIR / "epic-4-review-bmad.md"
 CLAUDE_FIXTURE_E4 = FIXTURES_DIR / "epic-4-review-claude.md"
 BMAD_FIXTURE_E5 = FIXTURES_DIR / "epic-5-review-bmad.md"
 CLAUDE_FIXTURE_E5 = FIXTURES_DIR / "epic-5-review-claude.md"
+BMAD_FIXTURE_E7 = FIXTURES_DIR / "epic-7-review-bmad.md"
+CLAUDE_FIXTURE_E7 = FIXTURES_DIR / "epic-7-review-claude.md"
+BMAD_FIXTURE_E8 = FIXTURES_DIR / "epic-8-review-bmad.md"
+CLAUDE_FIXTURE_E8 = FIXTURES_DIR / "epic-8-review-claude.md"
 
 
 @pytest.fixture
@@ -68,6 +72,26 @@ def bmad_content_e5() -> str:
 @pytest.fixture
 def claude_content_e5() -> str:
     return CLAUDE_FIXTURE_E5.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def bmad_content_e7() -> str:
+    return BMAD_FIXTURE_E7.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def claude_content_e7() -> str:
+    return CLAUDE_FIXTURE_E7.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def bmad_content_e8() -> str:
+    return BMAD_FIXTURE_E8.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def claude_content_e8() -> str:
+    return CLAUDE_FIXTURE_E8.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -710,3 +734,262 @@ class TestEpic5SyntheticEdgeCases:
         assert _extract_first_backticked_path(
             "`src/a/b/c.tsx:10`"
         ) == "src/a/b/c.tsx:10"
+
+
+# ---------------------------------------------------------------------------
+# Epic 7 — markdown-table format with hyphenated idents
+# ---------------------------------------------------------------------------
+
+
+class TestParseBmadReviewEpic7Format:
+    """Epic 7 emitted findings in a markdown table with hyphenated idents.
+
+    ``### Patch Findings by Priority`` heading, followed by a table
+    with columns ``| Priority | ID | Finding | File |``. The ID column
+    holds plain (non-bolded) values like ``P-01``, ``P-02``. Deferred
+    items came as bullets in an adjacent ``### Deferred`` section
+    using the same hyphenated ident style (``- **D-01**: ...``).
+
+    Before the Epic 7 parser additions, the sieve extracted zero
+    BMAD findings from this file.
+    """
+
+    def test_extracts_all_patch_findings(self, bmad_content_e7: str) -> None:
+        findings = parse_bmad_review(bmad_content_e7)
+        patches = [f for f in findings if f.category == "patch"]
+        # Summary line claims 11 patch findings (P-01..P-11).
+        assert len(patches) == 11
+        assert {f.ident for f in patches} == {f"P-{i:02d}" for i in range(1, 12)}
+
+    def test_extracts_all_defer_findings(self, bmad_content_e7: str) -> None:
+        findings = parse_bmad_review(bmad_content_e7)
+        defers = [f for f in findings if f.category == "defer"]
+        assert {f.ident for f in defers} == {"D-01", "D-02", "D-03"}
+
+    def test_table_row_title_preserves_bold_markup(
+        self, bmad_content_e7: str,
+    ) -> None:
+        findings = parse_bmad_review(bmad_content_e7)
+        by_ident = {f.ident: f for f in findings}
+        # P-01's title starts with the bolded "Zoom buttons" phrase.
+        assert "Zoom buttons" in by_ident["P-01"].title
+
+    def test_table_row_extracts_file_from_last_column(
+        self, bmad_content_e7: str,
+    ) -> None:
+        findings = parse_bmad_review(bmad_content_e7)
+        by_ident = {f.ident: f for f in findings}
+        # P-01 → `bpmn-chart.tsx:75-101` in the file column.
+        assert "bpmn-chart.tsx" in by_ident["P-01"].file
+
+    def test_duplicated_content_still_dedups(self, bmad_content_e7: str) -> None:
+        # Like Epic 3, the BMAD skill emitted the report twice in the
+        # same file. Dedup by (category, ident) must collapse to one
+        # copy per finding.
+        assert bmad_content_e7.count("### Patch Findings by Priority") == 2
+        findings = parse_bmad_review(bmad_content_e7)
+        idents = [(f.category, f.ident) for f in findings]
+        assert len(idents) == len(set(idents))
+
+    def test_sieve_routes_epic_7_correctly(
+        self, bmad_content_e7: str, claude_content_e7: str,
+    ) -> None:
+        result = sieve_reviews(bmad_content_e7, claude_content_e7)
+        # BMAD alone: 11 patch → cat_a, 3 defer → defer, 0 dismiss.
+        bmad_cat_a = [f for f in result.cat_a if f.source == "bmad"]
+        bmad_defer = [f for f in result.defer if f.source == "bmad"]
+        assert len(bmad_cat_a) == 11
+        assert len(bmad_defer) == 3
+
+
+# ---------------------------------------------------------------------------
+# Epic 8 — H3-ident headings with MUST FIX / SHOULD FIX / MONITOR vocabulary
+# ---------------------------------------------------------------------------
+
+
+class TestParseBmadReviewEpic8Format:
+    """Epic 8 emitted findings as H3 headings with bracketed idents.
+
+    ``## MUST FIX — CRITICAL / HIGH`` / ``## SHOULD FIX`` /
+    ``## MONITOR (Low Severity)`` sections, each containing items like
+    ``### [M1] IDOR: ...``, ``### [S1] ...``, ``### [L1] ...``. None
+    of the BMAD triage vocabulary (patch/defer/dismiss/decision-needed)
+    appears anywhere in the file — the sieve's classifier must map the
+    drift vocabulary to the right buckets.
+
+    Before the Epic 8 parser additions, the sieve extracted zero
+    BMAD findings from this file.
+    """
+
+    def test_must_fix_items_are_patches(self, bmad_content_e8: str) -> None:
+        findings = parse_bmad_review(bmad_content_e8)
+        must_fix = [f for f in findings if f.ident.startswith("M")]
+        assert {f.ident for f in must_fix} == {f"M{i}" for i in range(1, 8)}
+        assert all(f.category == "patch" for f in must_fix)
+
+    def test_should_fix_items_are_patches(self, bmad_content_e8: str) -> None:
+        findings = parse_bmad_review(bmad_content_e8)
+        should_fix = [f for f in findings if f.ident.startswith("S")]
+        assert {f.ident for f in should_fix} == {f"S{i}" for i in range(1, 8)}
+        assert all(f.category == "patch" for f in should_fix)
+
+    def test_monitor_items_are_deferred(self, bmad_content_e8: str) -> None:
+        findings = parse_bmad_review(bmad_content_e8)
+        monitored = [f for f in findings if f.ident.startswith("L")]
+        assert {f.ident for f in monitored} == {f"L{i}" for i in range(1, 5)}
+        assert all(f.category == "defer" for f in monitored)
+
+    def test_h3_item_heading_preserves_title(self, bmad_content_e8: str) -> None:
+        findings = parse_bmad_review(bmad_content_e8)
+        by_ident = {f.ident: f for f in findings}
+        # M1 title starts with "IDOR:"
+        assert by_ident["M1"].title.startswith("IDOR")
+
+    def test_duplicated_report_still_dedups(self, bmad_content_e8: str) -> None:
+        # Epic 8's BMAD file also contains the full report twice.
+        assert bmad_content_e8.count("## MUST FIX") == 2
+        findings = parse_bmad_review(bmad_content_e8)
+        idents = [(f.category, f.ident) for f in findings]
+        assert len(idents) == len(set(idents))
+
+    def test_sieve_routes_epic_8_correctly(
+        self, bmad_content_e8: str, claude_content_e8: str,
+    ) -> None:
+        result = sieve_reviews(bmad_content_e8, claude_content_e8)
+        bmad_cat_a = [f for f in result.cat_a if f.source == "bmad"]
+        bmad_defer = [f for f in result.defer if f.source == "bmad"]
+        # 7 MUST FIX + 7 SHOULD FIX = 14 patch → cat_a
+        assert len(bmad_cat_a) == 14
+        # 4 MONITOR items → defer bucket (not dropped, not cat_b)
+        assert len(bmad_defer) == 4
+
+
+# ---------------------------------------------------------------------------
+# Targeted synthetic tests for Epic 7 / Epic 8 drift additions
+# ---------------------------------------------------------------------------
+
+
+class TestEpic7And8SyntheticEdgeCases:
+    """Small targeted tests for the new regexes and classifier entries."""
+
+    def test_hyphenated_ident_parses_in_bullet(self) -> None:
+        content = (
+            "### Deferred\n\n"
+            "- **D-01**: cross-module import to extract\n"
+            "- **D-02**: UUID validation duplicated\n"
+        )
+        findings = parse_bmad_review(content)
+        assert {f.ident for f in findings} == {"D-01", "D-02"}
+        assert all(f.category == "defer" for f in findings)
+
+    def test_markdown_table_row_becomes_finding(self) -> None:
+        content = (
+            "### Patch Findings by Priority\n\n"
+            "| Priority | ID | Finding | File |\n"
+            "|----------|----|---------|------|\n"
+            "| 🔴 Critical | P-01 | **Broken thing** — details | `src/a.ts:10` |\n"
+            "| 🟠 Major    | P-02 | **Another issue** — more    | `src/b.ts:5`  |\n"
+        )
+        findings = parse_bmad_review(content)
+        assert {f.ident for f in findings} == {"P-01", "P-02"}
+        assert all(f.category == "patch" for f in findings)
+        by_ident = {f.ident: f for f in findings}
+        assert "Broken thing" in by_ident["P-01"].title
+        assert by_ident["P-01"].file == "src/a.ts:10"
+
+    def test_table_separator_row_is_ignored(self) -> None:
+        # Separator row |---|---|---| must not be parsed as an item.
+        content = (
+            "### Patch Findings\n\n"
+            "| A | B | C |\n"
+            "|---|---|---|\n"
+        )
+        assert parse_bmad_review(content) == []
+
+    def test_table_header_row_without_ident_is_ignored(self) -> None:
+        # Header row has no cell matching the ident pattern.
+        content = (
+            "### Patch Findings\n\n"
+            "| Priority | ID | Finding | File |\n"
+        )
+        assert parse_bmad_review(content) == []
+
+    def test_table_row_outside_classified_section_dropped(self) -> None:
+        # Random table in an unclassified "## Summary" section must not
+        # produce orphan findings.
+        content = (
+            "## Summary\n\n"
+            "| Metric | Count |\n"
+            "|--------|-------|\n"
+            "| P-01   | 5     |\n"
+        )
+        assert parse_bmad_review(content) == []
+
+    def test_h3_bracketed_ident_becomes_item(self) -> None:
+        content = (
+            "## MUST FIX — CRITICAL / HIGH\n\n"
+            "### [M1] IDOR in approve route\n\n"
+            "**Severity:** CRITICAL\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].ident == "M1"
+        assert findings[0].category == "patch"
+        assert findings[0].title == "IDOR in approve route"
+
+    def test_must_fix_heading_classifies_as_patch(self) -> None:
+        content = (
+            "## MUST FIX\n\n"
+            "### [M1] thing\n"
+        )
+        findings = parse_bmad_review(content)
+        assert findings and findings[0].category == "patch"
+
+    def test_should_fix_heading_classifies_as_patch(self) -> None:
+        content = (
+            "## SHOULD FIX\n\n"
+            "### [S1] another thing\n"
+        )
+        findings = parse_bmad_review(content)
+        assert findings and findings[0].category == "patch"
+
+    def test_monitor_heading_classifies_as_defer(self) -> None:
+        content = (
+            "## MONITOR (Low Severity)\n\n"
+            "### [L1] low-priority thing\n"
+        )
+        findings = parse_bmad_review(content)
+        assert findings and findings[0].category == "defer"
+
+    def test_positive_findings_heading_does_not_classify(self) -> None:
+        # Section must not pull items into any bucket — agents should
+        # never route "positive findings" as fixes.
+        content = (
+            "## POSITIVE FINDINGS (What Works Well)\n\n"
+            "### [G1] good thing that works\n"
+        )
+        findings = parse_bmad_review(content)
+        # "positive" contains no drift keyword → no category → dropped.
+        assert findings == []
+
+    def test_prioritized_fix_list_heading_does_not_classify(self) -> None:
+        # "PRIORITIZED FIX LIST" contains "fix" but is a summary section,
+        # not a triage bucket. Must NOT classify as patch.
+        content = (
+            "## PRIORITIZED FIX LIST\n\n"
+            "### [X1] summary item — not a real finding\n"
+        )
+        findings = parse_bmad_review(content)
+        assert findings == []
+
+    def test_h3_section_heading_without_bracketed_ident_still_works(self) -> None:
+        # `### PATCH Findings` must NOT be captured as an item by the
+        # new H3-ident regex — it has no `[...]` at the start.
+        content = (
+            "### PATCH Findings\n\n"
+            "**[P1]** a real finding\n"
+        )
+        findings = parse_bmad_review(content)
+        assert len(findings) == 1
+        assert findings[0].ident == "P1"
+        assert findings[0].category == "patch"
