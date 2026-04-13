@@ -715,8 +715,13 @@ def _run_rebuild_cli(
             print("\n*** Force-quitting — killing all subprocesses...")
             from src.intake.pause import request_force_quit
             from src.multi_agent.proc_registry import kill_all
+            from src.web_relay import stop_relay
             request_force_quit()
             kill_all()
+            # Mark the relay session as paused BEFORE exiting —
+            # without this the session stays "running" in Postgres
+            # and the dashboard cycles endlessly trying to reconnect.
+            stop_relay("paused")
             raise SystemExit(1)
 
     original_sigint = signal.getsignal(signal.SIGINT)
