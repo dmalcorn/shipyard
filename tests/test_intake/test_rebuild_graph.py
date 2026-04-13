@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.intake.rebuild_graph import (
     RebuildState,
@@ -214,8 +210,14 @@ class TestWriteRebuildStatus:
 
     def test_writes_status(self, tmp_path: Path) -> None:
         results: list[dict[str, Any]] = [
-            {"epic": "1", "story": "1-1", "story_name": "Login", "status": "completed", "interventions": 0},
-            {"epic": "1", "story": "1-2", "story_name": "Register", "status": "failed", "interventions": 1},
+            {
+                "epic": "1", "story": "1-1", "story_name": "Login",
+                "status": "completed", "interventions": 0,
+            },
+            {
+                "epic": "1", "story": "1-2", "story_name": "Register",
+                "status": "failed", "interventions": 1,
+            },
         ]
         _write_rebuild_status(
             target_dir=str(tmp_path),

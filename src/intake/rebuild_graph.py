@@ -34,7 +34,6 @@ from src.intake.checkpoint import (
 from src.intake.cost_tracker import get_invocation_count, get_total_cost
 from src.intake.epic_graph import EpicState, build_epic_runner
 from src.intake.pause import is_pause_requested
-from src.pipeline_tracker import update_story_progress
 from src.multi_agent.orchestrator import (
     _detect_project_type,
     generate_ci_script,
@@ -43,6 +42,7 @@ from src.multi_agent.orchestrator import (
     set_story_ci_enabled,
     set_story_reviews_enabled,
 )
+from src.pipeline_tracker import update_story_progress
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,7 @@ def _auto_install_python_deps(target_dir: str, tools: list[str]) -> list[str]:
             capture_output=True, text=True, timeout=120,
         )
         if install_result.returncode == 0:
-            print(f"  OK:   pip install succeeded")
+            print("  OK:   pip install succeeded")
         else:
             print(f"  WARN: pip install failed: {install_result.stderr[:200]}")
     else:
@@ -261,7 +261,7 @@ def preflight_check_node(state: RebuildState) -> dict[str, Any]:
                 has_any = True
         if not has_any:
             errors.append("No recognized runtime found on PATH")
-            print(f"  FAIL: no recognized runtime (python, node, rustc, go)")
+            print("  FAIL: no recognized runtime (python, node, rustc, go)")
 
     if errors:
         msg = "Preflight failed:\n" + "\n".join(f"  - {e}" for e in errors)
@@ -329,9 +329,9 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
 
     if not epics_candidates:
         print(f"\n*** ABORT: No epics file found in {planning_dir}")
-        print(f"    BMAD agents require an epics file at:")
+        print("    BMAD agents require an epics file at:")
         print(f"    {planning_dir}/epics.md")
-        print(f"    Place your epics file there and re-run.")
+        print("    Place your epics file there and re-run.")
         return {
             "pipeline_status": "failed",
             "error": f"No epics file in {planning_dir}. BMAD agents cannot operate without it.",
@@ -541,7 +541,7 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
 
     # Generate CI script from approved tech stack (architect-powered)
     try:
-        ci_path = generate_ci_script(target_dir)
+        generate_ci_script(target_dir)
         # Only commit if the CI script was newly generated (not pre-existing)
         add_result = subprocess.run(
             ["git", "add", "scripts/ci.sh"],

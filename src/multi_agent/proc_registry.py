@@ -7,6 +7,7 @@ threading primitives — fully cross-platform (Windows, Linux, macOS).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 import threading
@@ -42,10 +43,8 @@ def kill_all() -> None:
         _active.clear()
 
     for proc in procs:
-        try:
+        with contextlib.suppress(OSError):
             proc.terminate()
-        except OSError:
-            pass
 
     # Give processes a brief moment to respond to terminate
     for proc in procs:

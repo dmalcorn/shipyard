@@ -43,12 +43,12 @@ from langgraph.graph.state import CompiledStateGraph
 from src.audit_log.audit import get_logger
 from src.intake.checkpoint import clear_phase_checkpoint, save_phase_checkpoint
 from src.multi_agent.bmad_invoke import (
+    TIMEOUT_LONG,
+    TIMEOUT_MEDIUM,
     TOOLS_CI_FIX,
     TOOLS_CI_GENERATE,
     TOOLS_CODE_REVIEW,
     TOOLS_DEV,
-    TIMEOUT_LONG,
-    TIMEOUT_MEDIUM,
     invoke_bmad_agent,
 )
 
@@ -529,30 +529,36 @@ def _ensure_dependencies(working_dir: str | None) -> None:
             os.path.isfile(os.path.join(base, "package.json"))
             and not os.path.isdir(os.path.join(base, "node_modules"))
         ):
-            print(f"    [deps] node_modules missing — running npm install")
+            print("    [deps] node_modules missing — running npm install")
             _run_bash(["npm", "install"], cwd=working_dir)
 
     elif project_type == "python":
         req_file = os.path.join(base, "requirements.txt")
         req_dev = os.path.join(base, "requirements-dev.txt")
         if os.path.isfile(req_dev):
-            print(f"    [deps] Installing from requirements-dev.txt")
-            _run_bash(["python", "-m", "pip", "install", "-r", req_dev, "--quiet"], cwd=working_dir)
+            print("    [deps] Installing from requirements-dev.txt")
+            _run_bash(
+                ["python", "-m", "pip", "install", "-r", req_dev, "--quiet"],
+                cwd=working_dir,
+            )
         elif os.path.isfile(req_file):
-            print(f"    [deps] Installing from requirements.txt")
-            _run_bash(["python", "-m", "pip", "install", "-r", req_file, "--quiet"], cwd=working_dir)
+            print("    [deps] Installing from requirements.txt")
+            _run_bash(
+                ["python", "-m", "pip", "install", "-r", req_file, "--quiet"],
+                cwd=working_dir,
+            )
 
     elif project_type == "rust":
         # cargo build/test auto-downloads deps, but fetch is faster for pre-warming
         cargo_lock = os.path.join(base, "Cargo.lock")
         if os.path.isfile(os.path.join(base, "Cargo.toml")) and not os.path.isfile(cargo_lock):
-            print(f"    [deps] Cargo.lock missing — running cargo fetch")
+            print("    [deps] Cargo.lock missing — running cargo fetch")
             _run_bash(["cargo", "fetch"], cwd=working_dir)
 
     elif project_type == "go":
         go_sum = os.path.join(base, "go.sum")
         if os.path.isfile(os.path.join(base, "go.mod")) and not os.path.isfile(go_sum):
-            print(f"    [deps] go.sum missing — running go mod download")
+            print("    [deps] go.sum missing — running go mod download")
             _run_bash(["go", "mod", "download"], cwd=working_dir)
 
 
@@ -620,14 +626,14 @@ def _ensure_migrations(working_dir: str | None) -> None:
             if passed:
                 print(f"    [migrations] {label} migrations up to date")
             else:
-                print(f"    [migrations] Pending migrations — auto-generating...")
+                print("    [migrations] Pending migrations — auto-generating...")
                 gen_passed, gen_output = _run_bash(generate_cmd, cwd=search_dir)
                 if gen_passed:
                     print(f"    [migrations] {label} migrations generated")
                     # Stage the generated migration files
                     _run_bash(["git", "add", "-A"], cwd=search_dir)
                 else:
-                    print(f"    [migrations] WARNING: auto-generate failed")
+                    print("    [migrations] WARNING: auto-generate failed")
                     logger.warning(
                         "Migration auto-generate failed for %s in %s: %s",
                         label, search_dir, gen_output[:500],
@@ -843,7 +849,8 @@ echo "=== tests ==="
 if [ -n "$STORY_FILTER" ]; then
     PATTERN=$(echo "$STORY_FILTER" | tr '-' '_')
     # Attempt story-scoped tests; fall back to full suite if no matches
-    MATCHED=$(go test ./... -list "Story${PATTERN}|Test.*${PATTERN}" 2>/dev/null | grep -c "^Test" || true)
+    MATCHED=$(go test ./... -list "Story${PATTERN}|Test.*${PATTERN}" 2>/dev/null \
+        | grep -c "^Test" || true)
     if [ "$MATCHED" -gt 0 ]; then
         echo "  Running $MATCHED story-scoped test(s)..."
         go test ./... -run "Story${PATTERN}|Test.*${PATTERN}" -v
@@ -1004,7 +1011,7 @@ def generate_ci_script(working_dir: str | None) -> str:
     os.chmod(ci_path, 0o755)
 
     logger.info("Generated CI script at %s via bmad-agent-architect", ci_path)
-    print(f"    [ci] Generated scripts/ci.sh via bmad-agent-architect")
+    print("    [ci] Generated scripts/ci.sh via bmad-agent-architect")
     return ci_path
 
 
@@ -1143,7 +1150,7 @@ def check_review_node(state: OrchestratorState) -> dict[str, Any]:
     working_dir = _get_working_dir(state)
 
     # Try to find the most recent review file
-    print(f"\n>>> [check_review] Scanning for review files...")
+    print("\n>>> [check_review] Scanning for review files...")
     review_path = _find_review_file(working_dir)
     if not review_path:
         logger.info("check_review: no review file found — skipping fix")

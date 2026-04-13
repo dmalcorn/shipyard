@@ -345,10 +345,10 @@ def invoke_bmad_agent(
     print(f"      [bmad] Command: {command}")
     print(f"      [bmad] Tools: {tools}")
     print(f"      [bmad] Timeout: {timeout}s | CWD: {cwd}")
-    print(f"      [bmad] --- PROMPT ---")
+    print("      [bmad] --- PROMPT ---")
     for line in prompt.splitlines():
         print(f"      [bmad]   {line}")
-    print(f"      [bmad] --- END PROMPT ---")
+    print("      [bmad] --- END PROMPT ---")
     model_label = f" (model={model})" if model else ""
     print(f"      [bmad] Streaming via claude --print --output-format stream-json{model_label} ...")
     start_time = time.time()
@@ -457,15 +457,18 @@ def invoke_bmad_agent(
     # Detect modified files via git
     files_modified = _detect_modified_files(cwd)
 
-    print(f"      [bmad] Complete: exit={exit_code} files_modified={len(files_modified)} output_len={len(output)}")
+    print(
+        f"      [bmad] Complete: exit={exit_code} "
+        f"files_modified={len(files_modified)} output_len={len(output)}"
+    )
 
     # Empty-output sanity: on exit=0 with zero output, the subprocess was
     # pause-killed or crashed silently — treat as failure so the calling
     # node routes to its error path instead of saving a bogus "success".
     if success and len(output.strip()) == 0:
         print(
-            f"      [bmad] WARNING: exit=0 but output_len=0 — "
-            f"treating as failure (likely pause-kill or silent crash)",
+            "      [bmad] WARNING: exit=0 but output_len=0 — "
+            "treating as failure (likely pause-kill or silent crash)",
         )
         success = False
 
@@ -475,7 +478,7 @@ def invoke_bmad_agent(
         print(f"\n      --- AGENT IDENTIFICATION: {bmad_agent} ---")
         for line in ident.splitlines():
             print(f"      {line}")
-        print(f"      --- END IDENTIFICATION ---\n")
+        print("      --- END IDENTIFICATION ---\n")
     else:
         print(f"      [bmad] WARNING: No agent identification block found in {bmad_agent} output")
 
@@ -621,7 +624,10 @@ def invoke_claude_cli(
     print(f"\n      [{label}] Finished in {elapsed:.1f}s (exit={exit_code})")
 
     files_modified = _detect_modified_files(cwd)
-    print(f"      [{label}] Complete: exit={exit_code} files_modified={len(files_modified)} output_len={len(output)}")
+    print(
+        f"      [{label}] Complete: exit={exit_code} "
+        f"files_modified={len(files_modified)} output_len={len(output)}"
+    )
 
     # Empty-output sanity: exit=0 with zero output means the subprocess
     # was pause-killed or crashed silently. Downgrade to failure.

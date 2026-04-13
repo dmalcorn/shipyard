@@ -4,9 +4,6 @@ Iterates through all stories in a single epic, invoking the TDD
 orchestrator for each story. After all stories complete, runs
 epic-level post-processing: code review across all stories,
 architect decision, fix cycle, regression tests, and full CI.
-
-Uses LangGraph interrupt() for human-in-the-loop intervention
-when a story pipeline fails.
 """
 
 from __future__ import annotations
@@ -26,7 +23,6 @@ from src.audit_log.audit import get_logger
 from src.intake.checkpoint import (
     clear_epic_phase_checkpoint,
     clear_phase_checkpoint,
-    load_epic_phase_checkpoint,
     load_phase_checkpoint,
     save_epic_phase_checkpoint,
 )
@@ -376,10 +372,15 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
 
     global_completed = state.get("rebuild_prior_completed", 0) + stories_completed
     global_failed = state.get("rebuild_prior_failed", 0) + stories_failed
-    update_story_progress(state.get("session_id", ""),
+    total_interventions = (
+        state.get("rebuild_prior_interventions", 0)
+        + state.get("total_interventions", 0)
+    )
+    update_story_progress(
+        state.get("session_id", ""),
         completed=global_completed,
         failed=global_failed,
-        interventions=state.get("rebuild_prior_interventions", 0) + state.get("total_interventions", 0),
+        interventions=total_interventions,
         story_index=state.get("rebuild_prior_completed", 0) + story_index + 1,
     )
 
@@ -420,49 +421,6 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
             json.dump(resume_state, f, indent=2)
 
     return updates
-
-
-def handle_intervention_node(state: EpicState) -> dict[str, Any]:
-    """Pause execution for human intervention using LangGraph interrupt().
-
-    The graph checkpoints its state here. When resumed, the human's
-    response determines whether to retry, skip, or abort.
-    """
-    epic_num = state.get("epic_num", "")
-    stories = state.get("stories", [])
-    story_index = state.get("story_index", 0)
-    error = state.get("current_story_error", "Unknown failure")
-
-    story_entry = stories[story_index]
-    story_id = story_entry.get("story_id", "")
-
-    # interrupt() pauses the graph and surfaces this data to the caller
-    fix_instruction = interrupt({
-        "type": "intervention_needed",
-        "epic": epic_num,
-        "story": story_id,
-        "error": error,
-    })
-
-    total_interventions = state.get("total_interventions", 0) + 1
-
-    # Process the human's response
-    if fix_instruction is None:
-        return {
-            "epic_status": "aborted",
-            "total_interventions": total_interventions,
-        }
-
-    if isinstance(fix_instruction, str) and fix_instruction.lower() == "skip":
-        return {
-            "total_interventions": total_interventions,
-        }
-
-    # Retry with fix instruction
-    return {
-        "current_story_retry_instruction": str(fix_instruction),
-        "total_interventions": total_interventions,
-    }
 
 
 def advance_story_node(state: EpicState) -> dict[str, Any]:
@@ -814,7 +772,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
             working_dir=working_dir,
             timeout=TIMEOUT_MEDIUM,
             model=_epic_model_for("epic_review"),
-            label=f"claude-review",
+            label="claude-review",
         )
 
     # Write the review file from captured output (agent is read-only)
@@ -1227,7 +1185,6 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
             CATEGORY_B_REVIEW_FILENAME_TEMPLATE, epic_num, state.get("target_dir"),
         ),
     )
-    epic_files = sorted(set(state.get("epic_files_modified", [])))
     working_dir = state.get("target_dir") or None
     timestamp = datetime.now(UTC).isoformat()
 
@@ -1421,7 +1378,6 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
 def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
     """Git add + commit for the completed epic."""
     epic_num = state.get("epic_num", "")
-    epic_name = state.get("epic_name", "")
     working_dir = state.get("target_dir") or None
     session_id = state.get("session_id", "")
     message = f"epic {epic_num} code review fixes"

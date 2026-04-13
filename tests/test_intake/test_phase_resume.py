@@ -9,7 +9,6 @@ epic.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -37,7 +36,6 @@ from src.multi_agent.orchestrator import (
     build_orchestrator_graph,
     route_on_entry,
 )
-
 
 # ---------------------------------------------------------------------------
 # Router unit tests
