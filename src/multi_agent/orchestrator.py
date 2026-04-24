@@ -1333,6 +1333,51 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
             "current_phase": "git_commit",
         }
 
+    # Auto-generate a Drizzle migration when the story modified schema.ts
+    # but didn't produce a matching drizzle/*.sql file. Without this, the
+    # dev agent can silently introduce columns/tables that exist in
+    # schema.ts (and in app code) but not in any migration — queries work
+    # locally against a pushed DB but fail in prod because migrate-db.ts
+    # has nothing to apply. Hit this twice on the chat2diagram run
+    # (enabled_skill_packs, comparison_jobs + comparison_results).
+    cwd_str = cwd or "."
+    if _detect_project_type(cwd) == "node":
+        drizzle_cfg_exists = any(
+            os.path.isfile(os.path.join(cwd_str, f))
+            for f in ("drizzle.config.ts", "drizzle.config.js", "drizzle.config.mjs")
+        )
+        if drizzle_cfg_exists:
+            _, diff_out = _run_bash(
+                ["git", "diff", "--name-only", "HEAD"], cwd=cwd,
+            )
+            changed = [ln.strip() for ln in diff_out.splitlines() if ln.strip()]
+            schema_touched = any(
+                f.endswith("schema.ts") and f.startswith("src/") for f in changed
+            )
+            # Only generate if the story touched schema AND didn't already
+            # add a new migration .sql file (some stories do it properly).
+            new_migration_added = any(
+                f.startswith("drizzle/") and f.endswith(".sql") for f in changed
+            )
+            if schema_touched and not new_migration_added:
+                safe_name = re.sub(r"[^a-z0-9_]+", "_", f"story_{task_id}".lower()).strip("_")
+                print(
+                    f"    [git_commit] schema.ts modified with no new migration — "
+                    f"running drizzle-kit generate --name={safe_name}"
+                )
+                gen_ok, gen_out = _run_bash(
+                    ["bash", "-c", f"npx drizzle-kit generate --name={shlex.quote(safe_name)}"],
+                    cwd=cwd,
+                    timeout=180,
+                )
+                if gen_ok:
+                    print("    [git_commit] drizzle-kit generate succeeded")
+                else:
+                    logger.warning(
+                        "drizzle-kit generate failed (non-blocking): %s",
+                        gen_out[:500],
+                    )
+
     # Auto-format and auto-fix before commit to avoid pre-commit hook
     # rejections from prettier/eslint. Both are non-blocking — if they
     # fail here, the hook may still catch genuine issues.
