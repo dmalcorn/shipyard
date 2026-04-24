@@ -8,8 +8,8 @@ operator:
 
 github:
   username: "dmalcorn"
-  target_repo: "chat2bpmn"
-  target_remote_url: "https://github.com/dmalcorn/chat2bpmn.git"
+  target_repo: "chat2diagram"
+  target_remote_url: "https://github.com/dmalcorn/chat2diagram.git"
 
 git:
   author_name: "Diane Alcorn"
@@ -19,7 +19,7 @@ langsmith:
   project: "chat2bpmn"
 
 target:
-  dir: "C:\\alcorn\\Gauntlet\\8-Capstone\\chat2bpmn"
+  dir: "C:\\alcorn\\Gauntlet\\8-Capstone\\chat2diagram"
 
 # Review configuration.
 # Set story_level to false to skip per-story code reviews
@@ -35,7 +35,7 @@ reviews:
 # Operator is prompted at startup; this value is the default shown.
 ci:
   story_level: true
-  fix_pre_existing_errors: true
+  fix_pre_existing_errors: false
 
 # Per-node model overrides.
 # Valid values: null (use CLI default), or Anthropic API model aliases:
