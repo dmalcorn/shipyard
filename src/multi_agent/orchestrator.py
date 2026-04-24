@@ -33,6 +33,7 @@ import logging
 import operator
 import os
 import re
+import shlex
 import subprocess
 from collections.abc import Mapping
 from typing import Annotated, Any, TypedDict
@@ -221,9 +222,14 @@ def _run_bash(command: list[str], timeout: int = 300, cwd: str | None = None) ->
             timeout=timeout,
             cwd=cwd,
         )
-        output = result.stdout
-        if result.stderr:
-            output += "\n" + result.stderr
+        # subprocess.run can leave stdout/stderr as None in rare Windows
+        # edge cases (large output + encoding path). Coerce to "" so the
+        # len() check below never raises TypeError and bubbles up as a
+        # misleading "Command execution failed" string to downstream
+        # fix_ci agents.
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        output = stdout + ("\n" + stderr if stderr else "")
         if len(output) > 5000:
             total = len(output)
             marker = f"[truncated: showing last 5000 of {total} chars]\n"
@@ -1224,7 +1230,41 @@ def run_ci_node(state: OrchestratorState) -> dict[str, Any]:
     # Pass task_id as story_id for per-story scoping
     ci_cmd = resolve_ci_command(working_dir, story_id=task_id or None)
     print(f"    Running: {' '.join(ci_cmd)}")
-    passed, output = _run_bash(ci_cmd, cwd=working_dir)
+
+    # Tee CI output to a durable log file. If subprocess stdout capture
+    # ever returns None (rare Windows edge case with large output),
+    # the file still contains the full run so we can feed real errors
+    # to fix_ci instead of a misleading "NoneType has no len" message.
+    log_dir_abs = os.path.join(working_dir or ".", "checkpoints")
+    os.makedirs(log_dir_abs, exist_ok=True)
+    # Relative path (cwd=working_dir, forward slashes for bash on Windows)
+    log_rel = f"checkpoints/ci-{task_id}-cycle-{ci_cycle}.log"
+    log_abs = os.path.join(working_dir or ".", log_rel.replace("/", os.sep))
+    inner = " ".join(shlex.quote(c) for c in ci_cmd)
+    tee_cmd = [
+        "bash", "-c",
+        f"set -o pipefail; {inner} 2>&1 | tee {shlex.quote(log_rel)}",
+    ]
+    passed, output = _run_bash(tee_cmd, cwd=working_dir)
+
+    # Fall back to the log file if capture returned empty or the
+    # "Command execution failed: object of type 'NoneType'..." guard
+    # message, so fix_ci always sees real CI output.
+    needs_file_fallback = (
+        not output.strip()
+        or "object of type 'NoneType'" in output
+    )
+    if needs_file_fallback and os.path.isfile(log_abs):
+        try:
+            with open(log_abs, encoding="utf-8", errors="replace") as f:
+                file_output = f.read()
+            if file_output.strip():
+                if len(file_output) > 5000:
+                    marker = f"[truncated: last 5000 of {len(file_output)} chars]\n"
+                    file_output = marker + file_output[-(5000 - len(marker)):]
+                output = file_output
+        except OSError:
+            pass
 
     _log_bash_to_audit(session_id, "ci", "PASS" if passed else "FAIL")
 
