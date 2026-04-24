@@ -731,12 +731,27 @@ def invoke_ci_with_fix(
             scope_constraint = ""
             if scope_hint and not fix_pre_existing:
                 scope_constraint = (
-                    f"\n\nIMPORTANT SCOPE CONSTRAINT: Only fix failures "
-                    f"that are related to {scope_hint}. Do NOT fix "
-                    f"pre-existing failures, broken tests, or issues in "
-                    f"code that was not modified as part of {scope_hint}. "
-                    f"If a test was already failing before {scope_hint}, "
-                    f"leave it alone."
+                    f"\n\nIMPORTANT SCOPE CONSTRAINT: Fix every failure "
+                    f"caused by {scope_hint}. This includes:\n"
+                    f"  - Failures in files you created or modified for "
+                    f"this work.\n"
+                    f"  - Failures in OTHER files (tests, route handlers, "
+                    f"queries) that became broken because of a "
+                    f"type/schema/signature change introduced by "
+                    f"{scope_hint}. These are downstream effects of "
+                    f"your work — IN SCOPE — fix them even when the "
+                    f"failing file lives outside the primary area.\n\n"
+                    f"Do NOT fix failures unrelated to {scope_hint}'s "
+                    f"changes — a test that was already failing before "
+                    f"this work started, in code you did not touch, with "
+                    f"errors unrelated to your type or schema changes.\n\n"
+                    f"Rule of thumb: if the error message mentions a "
+                    f"field, column, type, interface, or function that "
+                    f"YOU added or modified in {scope_hint}, it IS in "
+                    f"scope — fix it. Global typechecks like "
+                    f"`tsc --noEmit` surface errors in every mock that "
+                    f"constructs a type you changed; all of those are "
+                    f"yours to fix."
                 )
 
             # Write CI output to file so the LLM reads on demand

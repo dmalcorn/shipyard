@@ -471,12 +471,30 @@ def fix_ci_node(state: OrchestratorState) -> dict[str, Any]:
         )
         if not _FIX_PRE_EXISTING:
             extra += (
-                f"\n\nIMPORTANT SCOPE CONSTRAINT: Only fix failures "
-                f"that are related to story {task_id}. Do NOT fix "
-                f"pre-existing failures, broken tests, or issues in "
-                f"code that was not modified as part of story {task_id}. "
-                f"If a test was already failing before story {task_id}, "
-                f"leave it alone."
+                f"\n\nIMPORTANT SCOPE CONSTRAINT: Fix every failure "
+                f"caused by story {task_id}. This includes:\n"
+                f"  - Failures in files you created or modified for "
+                f"this story.\n"
+                f"  - Failures in OTHER files (tests, route handlers, "
+                f"queries) that became broken because of a "
+                f"type/schema/signature change introduced by "
+                f"story {task_id}. These are downstream effects of "
+                f"your work — they are IN SCOPE and you must fix "
+                f"them, even when the failing file lives outside the "
+                f"story's primary area.\n\n"
+                f"Do NOT fix failures that are unrelated to story "
+                f"{task_id}'s changes — a test that was already "
+                f"failing before this story started, in code you did "
+                f"not touch, with errors unrelated to your type or "
+                f"schema changes.\n\n"
+                f"Rule of thumb: if the error message mentions a "
+                f"field, column, type, interface, or function that "
+                f"YOU added or modified in story {task_id}, it IS in "
+                f"scope — fix it. A typecheck run like `tsc --noEmit` "
+                f"is global: adding a required column to a shared "
+                f"type will surface errors in every test mock that "
+                f"constructs an object of that type. All of those "
+                f"are yours to fix."
             )
 
     result = invoke_bmad_agent(
@@ -530,7 +548,7 @@ def _ensure_dependencies(working_dir: str | None) -> None:
             and not os.path.isdir(os.path.join(base, "node_modules"))
         ):
             print("    [deps] node_modules missing — running npm install")
-            _run_bash(["npm", "install"], cwd=working_dir)
+            _run_bash(["bash", "-c", "npm install"], cwd=working_dir)
 
     elif project_type == "python":
         req_file = os.path.join(base, "requirements.txt")
@@ -1278,15 +1296,20 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
     # Auto-format and auto-fix before commit to avoid pre-commit hook
     # rejections from prettier/eslint. Both are non-blocking — if they
     # fail here, the hook may still catch genuine issues.
+    # On Windows, `npx` is a .cmd shim that subprocess.run can't resolve
+    # without a shell, so route through `bash -c` (same runtime used for
+    # scripts/ci.sh elsewhere in the pipeline).
     if _detect_project_type(cwd) == "node":
-        fmt_ok, fmt_out = _run_bash(["npx", "prettier", "--write", "."], cwd=cwd, timeout=120)
+        fmt_ok, fmt_out = _run_bash(
+            ["bash", "-c", "npx prettier --write ."], cwd=cwd, timeout=120,
+        )
         if fmt_ok:
             print("    [git_commit] prettier --write applied")
         else:
             logger.warning("prettier --write failed (non-blocking): %s", fmt_out[:200])
 
         lint_ok, lint_out = _run_bash(
-            ["npx", "eslint", "--fix", "."], cwd=cwd, timeout=300,
+            ["bash", "-c", "npx eslint --fix ."], cwd=cwd, timeout=300,
         )
         if lint_ok:
             print("    [git_commit] eslint --fix applied")
