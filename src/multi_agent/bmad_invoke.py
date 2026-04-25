@@ -480,6 +480,39 @@ def invoke_bmad_agent(
         )
         success = False
 
+    # Auth/rate-limit halt: when the claude CLI surfaces an org-access
+    # or 5-hour-window message, every subsequent agent invocation will
+    # return in 1 turn / $0.00 and the pipeline cascades through every
+    # remaining story marking each "failed" — even though the failures
+    # are not real. Halt the pipeline immediately so resumption after
+    # the limit window lifts is clean. Hit twice on the chat2diagram
+    # run (subscription expired, then 5-hour rate window).
+    _AUTH_HALT_PATTERNS = (
+        "does not have access to Claude",
+        "You've hit your limit",
+        "Please login again or contact your administrator",
+    )
+    if any(p in output for p in _AUTH_HALT_PATTERNS):
+        match = next((p for p in _AUTH_HALT_PATTERNS if p in output), "")
+        print(
+            f"\n      [bmad] *** HALT: Anthropic auth/rate-limit signal "
+            f"detected: '{match}'",
+        )
+        print(
+            "      [bmad] *** Force-quitting the pipeline. "
+            "Resume after the auth window lifts.",
+        )
+        try:
+            from src.intake.pause import request_force_quit
+            from src.multi_agent.proc_registry import kill_all
+            from src.web_relay import stop_relay
+            request_force_quit()
+            kill_all()
+            stop_relay("paused")
+        except Exception:
+            pass
+        raise SystemExit(2)
+
     # Extract and display agent identification if present
     ident = _extract_agent_identification(output)
     if ident:
