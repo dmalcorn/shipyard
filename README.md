@@ -209,6 +209,15 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 | [git-remote-setup-guide.md](gauntlet_docs/git-remote-setup-guide.md) | Configuring target-repo remotes for Docker and host-mode runs |
 | [How-to-extract-db-logs.md](gauntlet_docs/How-to-extract-db-logs.md) | Pulling pipeline logs off the Railway relay for forensic analysis |
 
+### Target templates (copy into target's `_bmad-output/planning-artifacts/`)
+
+| Document | Description |
+|---|---|
+| [target-templates/README.md](gauntlet_docs/target-templates/README.md) | Why these templates exist and how to use them |
+| [target-templates/ci-script-specification.md](gauntlet_docs/target-templates/ci-script-specification.md) | CI behavior the factory expects: required CLI flags, phases, story-scoping, doc-only short-circuit, multi-stack patterns, anti-patterns |
+| [target-templates/story-and-epic-writing-guide.md](gauntlet_docs/target-templates/story-and-epic-writing-guide.md) | Vertical-slice principle, story anatomy with Cross-cutting Considerations, multi-component conventions, anti-patterns from chat2diagram |
+| [target-templates/test-structure-guide.md](gauntlet_docs/target-templates/test-structure-guide.md) | Five eval categories applied greenfield, story-tagging conventions, central mock factories (the schema-drift fix), test pyramid for factory builds |
+
 ### Architecture references
 
 | Document | Description |
