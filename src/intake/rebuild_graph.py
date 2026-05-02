@@ -610,9 +610,26 @@ def init_project_node(state: RebuildState) -> dict[str, Any]:
 
 
 def select_epic_node(state: RebuildState) -> dict[str, Any]:
-    """Prepare state for the current epic."""
+    """Prepare state for the current epic.
+
+    If `epic_index` is already past the last epic (e.g. the user
+    re-runs --resume against a session whose final state advanced
+    past the last epic on completion), short-circuit cleanly via
+    `current_epic_status='all_done'` so route_after_epic ends the
+    run instead of `epics[N]` raising IndexError.
+    """
     epics = state.get("epics", [])
     epic_index = state.get("epic_index", 0)
+
+    if epic_index >= len(epics):
+        print(f"\n{'='*60}")
+        print(f"All {len(epics)} epics already complete — nothing to do.")
+        print(f"{'='*60}")
+        return {
+            "current_epic_status": "all_done",
+            "current_epic_error": "",
+        }
+
     epic = epics[epic_index]
 
     print(f"\n{'='*60}")
@@ -639,6 +656,13 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
     target_dir = state.get("target_dir", "")
     epics = state.get("epics", [])
     epic_index = state.get("epic_index", 0)
+
+    # Sibling guard to select_epic_node: if select_epic_node short-
+    # circuited because epic_index is past the end, skip cleanly here
+    # too so route_after_epic can end the run.
+    if epic_index >= len(epics):
+        return {}
+
     epic = epics[epic_index]
 
     # Determine starting story index — non-zero when resuming mid-epic
