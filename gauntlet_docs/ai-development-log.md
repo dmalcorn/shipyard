@@ -13,7 +13,7 @@
 **Key development phases:**
 
 1. **Epic 1 — Core Agent Framework** (Day 1): Scaffold, 6 tools, ReAct agent loop, context injection, CLI entry point
-2. **Epic 2 — Observability** (Day 1-2): LangSmith tracing, audit logger, trace links, CODEAGENT.md MVP sections
+2. **Epic 2 — Observability** (Day 1-2): LangSmith tracing, audit logger, trace links
 3. **Epic 3 — Multi-Agent Orchestration** (Day 2-3): 5 agent roles, role-based tool permissions, spawn/subgraph factory, orchestrator pipeline
 4. **Epic 4 — Rebuild Pipeline** (Day 3-4): Intake pipeline, backlog parser, three-level LangGraph rebuild architecture, BMAD agent invocation via Claude CLI
 5. **Infrastructure Hardening** (Day 4-5): Docker rebuild container, public monitoring dashboard with Postgres log relay, graceful pause/resume, cost tracking, epic-level Category A/B review redesign, bug fixes from integration testing

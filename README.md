@@ -213,7 +213,6 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 
 | Document | Description |
 |---|---|
-| [CODEAGENT.md](CODEAGENT.md) | Agent architecture, file editing strategy, multi-agent design, trace links |
 | [LangGraph Diagrams](gauntlet_docs/langgraph-diagrams.md) | Mermaid visualizations of all 5 pipeline graphs |
 | [system-flow.png](gauntlet_docs/system-flow.png) / [system-flow.mmd](gauntlet_docs/system-flow.mmd) | High-level flow diagram |
 | [orchestrator-redesign-rationale.md](gauntlet_docs/orchestrator-redesign-rationale.md) / [orchestrator-redesign-graph.md](gauntlet_docs/orchestrator-redesign-graph.md) | Architecture decision records for the multi-graph orchestrator |
