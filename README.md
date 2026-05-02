@@ -2,7 +2,9 @@
 
 A software factory powered by LangGraph that autonomously implements software projects from planning artifacts. Shipyard orchestrates specialized AI agents (dev, test architect, reviewer, architect) through a structured TDD pipeline to produce working, tested, committed code — epic by epic, story by story.
 
-**Factory run:** 40/40 stories, 9/9 epics, 28h 35m, $495.36, zero failed invocations.
+**Latest build:** [chat2diagram](https://github.com/dmalcorn/chat2diagram) — 101/101 stories, 17/17 epics, ~30h, all epic-N-complete tags applied. See [factory-lessons-from-chat2diagram.md](gauntlet_docs/factory-lessons-from-chat2diagram.md) for the retrospective and [factory-replication-guide.md](gauntlet_docs/factory-replication-guide.md) for how to reproduce against a new target. Reference state for v2 work is tagged [`v1-chat2diagram-baseline`](https://github.com/dmalcorn/shipyard/tree/v1-chat2diagram-baseline).
+
+Earlier proof-of-concept: [Ship rebuild](https://github.com/dmalcorn/shiprebuild) — 40/40 stories, 9/9 epics, 28h 35m, $495.36, zero failed invocations.
 
 ## What It Does
 
@@ -197,32 +199,31 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 
 ## Key Documentation
 
+### Operating the factory
+
+| Document | Description |
+|---|---|
+| [factory-replication-guide.md](gauntlet_docs/factory-replication-guide.md) | Setup from zero: prerequisites, the four authentications, the host-vs-Docker question, first run, common gotchas |
+| [factory-lessons-from-chat2diagram.md](gauntlet_docs/factory-lessons-from-chat2diagram.md) | Retrospective on the chat2diagram build: architectural patterns that worked, recovery patterns, factory hardenings shipped during the run |
+| [User's Guide](gauntlet_docs/users-guide.md) | Comprehensive usage documentation |
+| [git-remote-setup-guide.md](gauntlet_docs/git-remote-setup-guide.md) | Configuring target-repo remotes for Docker and host-mode runs |
+| [How-to-extract-db-logs.md](gauntlet_docs/How-to-extract-db-logs.md) | Pulling pipeline logs off the Railway relay for forensic analysis |
+
+### Architecture references
+
 | Document | Description |
 |---|---|
 | [CODEAGENT.md](CODEAGENT.md) | Agent architecture, file editing strategy, multi-agent design, trace links |
-| [User's Guide](gauntlet_docs/users-guide.md) | Comprehensive usage documentation |
 | [LangGraph Diagrams](gauntlet_docs/langgraph-diagrams.md) | Mermaid visualizations of all 5 pipeline graphs |
-| [Comparative Analysis](gauntlet_docs/comparative-analysis.md) | 7-section analysis of Ship vs ShipRebuild |
-| [AI Cost Analysis](gauntlet_docs/cost-analysis.md) | Development spend, rebuild costs, production projections |
-| [AI Development Log](gauntlet_docs/ai-development-log.md) | Tools, prompts, code analysis, learnings |
+| [system-flow.png](gauntlet_docs/system-flow.png) / [system-flow.mmd](gauntlet_docs/system-flow.mmd) | High-level flow diagram |
+| [orchestrator-redesign-rationale.md](gauntlet_docs/orchestrator-redesign-rationale.md) / [orchestrator-redesign-graph.md](gauntlet_docs/orchestrator-redesign-graph.md) | Architecture decision records for the multi-graph orchestrator |
+| [epic-review-redesign.md](gauntlet_docs/epic-review-redesign.md) | ADR for the per-epic dual-review subgraph |
+| [bmad-skill-setup-guide.md](gauntlet_docs/bmad-skill-setup-guide.md) | Guide for adapting BMAD skills to autonomous pipelines |
 | [Coding Standards](coding-standards.md) | Conventions enforced across all agent-generated code |
-| [Requirements Map](gauntlet_docs/FINAL-requirements-map.md) | PRD requirements mapped to implementation status |
-| [BMAD Skill Setup](gauntlet_docs/bmad-skill-setup-guide.md) | Guide for adapting BMAD skills to autonomous pipelines |
 
-## Ship App Rebuild Results
+### Operating costs
 
-Shipyard rebuilt [Ship](https://github.com/dmalcorn/shiprebuild) — a government-grade project management platform — from planning artifacts:
-
-| Metric | Value |
+| Document | Description |
 |---|---|
-| Stories | 40/40 (100%) |
-| Epics | 9/9 (100%) |
-| Pipeline time | 28h 35m |
-| API cost | $495.36 |
-| Agent invocations | 225 |
-| Failed invocations | 0 |
-| Human interventions | 1 (credit card exhaustion, not code) |
-| Go backend | ~49,500 LOC |
-| React frontend | ~14,700 LOC |
-| Database | PostgreSQL, 18 migrations, 42 seed documents |
-| Deployed | [shiprebuild-production.up.railway.app](https://shiprebuild-production.up.railway.app/) |
+| [cost-analysis.md](gauntlet_docs/cost-analysis.md) | Cost methodology and per-node tier selection (numbers will be refreshed with chat2diagram run data in v2) |
+| [ai-development-log.md](gauntlet_docs/ai-development-log.md) | Tools, prompts, workflow notes |

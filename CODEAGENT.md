@@ -436,7 +436,7 @@ The pipeline resumed at story 2-7 and ran the remaining 28 stories to completion
 
 ## Comparative Analysis (Final Submission)
 
-This section compares the agent-built ShipRebuild against the original Ship application. The full analysis with detailed evidence is in [comparative-analysis.md](gauntlet_docs/comparative-analysis.md).
+This section compares the agent-built ShipRebuild against the original Ship application.
 
 ### 1. Executive Summary
 
