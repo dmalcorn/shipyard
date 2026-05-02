@@ -214,9 +214,10 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 | Document | Description |
 |---|---|
 | [target-templates/README.md](gauntlet_docs/target-templates/README.md) | Why these templates exist and how to use them |
-| [target-templates/ci-script-specification.md](gauntlet_docs/target-templates/ci-script-specification.md) | CI behavior the factory expects: required CLI flags, phases, story-scoping, doc-only short-circuit, multi-stack patterns, anti-patterns |
+| [target-templates/ci-script-specification.md](gauntlet_docs/target-templates/ci-script-specification.md) | CI behavior the factory expects: required CLI flags, phases, story-scoping, doc-only short-circuit, multi-stack patterns, pre-commit hook coordination, anti-patterns |
 | [target-templates/story-and-epic-writing-guide.md](gauntlet_docs/target-templates/story-and-epic-writing-guide.md) | Vertical-slice principle, story anatomy with Cross-cutting Considerations, multi-component conventions, anti-patterns from chat2diagram |
 | [target-templates/test-structure-guide.md](gauntlet_docs/target-templates/test-structure-guide.md) | Five eval categories applied greenfield, story-tagging conventions, central mock factories (the schema-drift fix), test pyramid for factory builds |
+| [target-templates/email-testing-guide.md](gauntlet_docs/target-templates/email-testing-guide.md) | Mailpit-based end-to-end pattern for email-touching features (password reset, verification, magic-link). Catches the failure mode where mock-based tests pass but production email is broken |
 
 ### Architecture references
 

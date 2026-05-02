@@ -113,6 +113,12 @@ describe("[RUBRIC] Synthesis output quality (story_4_5)", () => {
 
 If your project doesn't generate AI output, this category is N/A. Skip it and document why in `epics.md`.
 
+### 4b. Special-case category: Email integration tests
+
+Email-touching features deserve their own treatment because mock-based tests for them have a particularly bad track record of passing while the real flow is broken in production. The pattern (real SMTP send → Mailpit captures → test queries the captured email → test clicks the link → assertions on post-link state) catches an entire class of bugs that pure mocks miss.
+
+See **[email-testing-guide.md](email-testing-guide.md)** for the full pattern, the docker-compose setup, and the Playwright-plus-Mailpit-API test template. Any project with email-based auth, password reset, magic-link login, or transactional notifications should adopt this guide on day one.
+
 ### 5. Experiments / Configuration Comparison
 
 **What it is here:** Infrastructure for swapping a config (model, prompt, retrieval threshold) and measuring the difference. Most projects don't need this from day one — defer until you have a stable golden set + rubrics.
