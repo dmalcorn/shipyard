@@ -218,6 +218,7 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 | [target-templates/story-and-epic-writing-guide.md](gauntlet_docs/target-templates/story-and-epic-writing-guide.md) | Vertical-slice principle, story anatomy with Cross-cutting Considerations, multi-component conventions, anti-patterns from chat2diagram |
 | [target-templates/test-structure-guide.md](gauntlet_docs/target-templates/test-structure-guide.md) | Five eval categories applied greenfield, story-tagging conventions, central mock factories (the schema-drift fix), test pyramid for factory builds |
 | [target-templates/email-testing-guide.md](gauntlet_docs/target-templates/email-testing-guide.md) | Mailpit-based end-to-end pattern for email-touching features (password reset, verification, magic-link). Catches the failure mode where mock-based tests pass but production email is broken |
+| [target-templates/lessons-learned-protocol.md](gauntlet_docs/target-templates/lessons-learned-protocol.md) | Two-tier system for capturing build lessons: forensic `lessons-learned/NNN-*.md` files (Tier 1, auto-distilled by factory after multi-cycle CI) and prescriptive `## Agent Coding Rules` in target `CLAUDE.md` (Tier 2, promoted by architect at epic review) |
 
 ### Architecture references
 
@@ -227,7 +228,6 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 | [system-flow.png](gauntlet_docs/system-flow.png) / [system-flow.mmd](gauntlet_docs/system-flow.mmd) | High-level flow diagram |
 | [orchestrator-redesign-rationale.md](gauntlet_docs/orchestrator-redesign-rationale.md) / [orchestrator-redesign-graph.md](gauntlet_docs/orchestrator-redesign-graph.md) | Architecture decision records for the multi-graph orchestrator |
 | [epic-review-redesign.md](gauntlet_docs/epic-review-redesign.md) | ADR for the per-epic dual-review subgraph |
-| [bmad-skill-setup-guide.md](gauntlet_docs/bmad-skill-setup-guide.md) | Guide for adapting BMAD skills to autonomous pipelines |
 | [Coding Standards](coding-standards.md) | Conventions enforced across all agent-generated code |
 
 ### Operating costs

@@ -4,7 +4,6 @@ How to stand up a Shipyard-style factory against a new target project from scrat
 
 Sister documents:
 - [git-remote-setup-guide.md](git-remote-setup-guide.md) — branch/PAT setup for the target repo's remotes
-- [bmad-skill-setup-guide.md](bmad-skill-setup-guide.md) — adapting BMAD agents for autonomous use
 - [How-to-extract-db-logs.md](How-to-extract-db-logs.md) — pulling pipeline logs off Railway for forensics
 - [factory-lessons-from-chat2diagram.md](factory-lessons-from-chat2diagram.md) — what went wrong and how we learned
 

@@ -241,6 +241,155 @@ def _run_bash(command: list[str], timeout: int = 300, cwd: str | None = None) ->
         return False, f"Command execution failed: {e}"
 
 
+def _next_lesson_number(lessons_dir: str) -> str:
+    """Scan lessons-learned/ for existing NNN-*.md files; return the next NNN.
+
+    Format: zero-padded three digits, "001"..."999". Used by
+    _maybe_distill_lesson when auto-writing post-fix-cycle lesson entries.
+    """
+    max_n = 0
+    if os.path.isdir(lessons_dir):
+        for fname in os.listdir(lessons_dir):
+            m = re.match(r"^(\d{3})-.+\.md$", fname)
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+    return f"{max_n + 1:03d}"
+
+
+def _maybe_distill_lesson(
+    state: Mapping[str, Any], cwd: str, task_id: str,
+) -> None:
+    """Auto-write a lessons-learned/NNN-*.md entry on multi-cycle fix_ci success.
+
+    Triggered from git_commit_node when state["ci_cycle_count"] > 1, meaning
+    fix_ci had to run at least once before CI passed. Reads the per-cycle CI
+    log files written by run_ci_node (checkpoints/ci-<task>-cycle-<N>.log)
+    plus the current uncommitted git diff, then invokes Claude CLI with an
+    inline prompt to distill the failure pattern into a new lessons-learned
+    file. The new file is staged automatically by the upcoming git add -A.
+
+    No BMAD skill is involved — fully factory-internal so target repos
+    don't need to install or maintain a custom skill file.
+
+    Single-cycle CI passes don't trigger this — those mean the agent got
+    it right first time and there's no lesson worth distilling.
+    """
+    cycle_count = state.get("ci_cycle_count", 0)
+    if cycle_count <= 1:
+        return
+
+    lessons_dir = os.path.join(cwd, "lessons-learned")
+    os.makedirs(lessons_dir, exist_ok=True)
+    next_num = _next_lesson_number(lessons_dir)
+
+    # Read each cycle's CI log; truncate per-cycle so the prompt fits in context
+    cycle_blocks: list[str] = []
+    for n in range(1, cycle_count + 1):
+        log_path = os.path.join(cwd, "checkpoints", f"ci-{task_id}-cycle-{n}.log")
+        if not os.path.isfile(log_path):
+            continue
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            continue
+        if len(content) > 3000:
+            content = "[truncated head]\n" + content[-3000:]
+        cycle_blocks.append(f"\nCycle {n}:\n```\n{content}\n```")
+    if not cycle_blocks:
+        # No log files (older runs, or factory crashed); skip distillation
+        return
+
+    # Get the current git diff (HEAD vs staged + unstaged)
+    _, diff_out = _run_bash(["git", "diff", "HEAD"], cwd=cwd, timeout=30)
+    if len(diff_out) > 5000:
+        diff_out = "[truncated head]\n" + diff_out[-5000:]
+
+    cycles_text = "\n".join(cycle_blocks)
+    prompt = (
+        "You are a software pipeline lessons-learned distillation agent. "
+        "A story just passed CI after multiple fix_ci cycles. Your job is "
+        "to write ONE lessons-learned file documenting what went wrong "
+        "and how future stories can avoid repeating the mistake.\n\n"
+        "AUTOMATED PIPELINE MODE — non-interactive execution. Never display "
+        "menus or prompts; do not wait for input; complete the task in one "
+        "pass and exit.\n\n"
+        "## CONTEXT\n\n"
+        f"- Task ID: {task_id}\n"
+        f"- CI cycles to pass: {cycle_count}\n"
+        f"- Working directory: {cwd}\n"
+        f"- Lesson number to use: {next_num}\n\n"
+        "## CI CYCLE OUTPUT\n"
+        f"{cycles_text}\n\n"
+        "## CURRENT GIT DIFF (changes between first failing CI and passing CI)\n\n"
+        "```diff\n"
+        f"{diff_out}\n"
+        "```\n\n"
+        "## YOUR TASK\n\n"
+        f"Write ONE new file: `lessons-learned/{next_num}-<short-slug>.md`\n\n"
+        "Choose a kebab-case slug (3-6 words) describing the lesson, e.g. "
+        "`schema-drift-mock-cascade`, `parsejsonbody-route-migration`, "
+        "`error-handler-status-mapping-drift`.\n\n"
+        "## REQUIRED FORMAT\n\n"
+        "```markdown\n"
+        "# Lesson Learned: <one-line title>\n\n"
+        "**Date:** <current UTC time as YYYY-MM-DD HH:MM UTC>\n"
+        f"**Epic/Story:** {task_id}\n"
+        "**Severity:** <High|Medium|Low>\n"
+        "**Discovery:** <how the issue was surfaced — usually CI failure>\n\n"
+        "---\n\n"
+        "## What Happened\n\n"
+        "<2-4 sentences: the specific failure pattern>\n\n"
+        "## Root Cause Analysis\n\n"
+        "<2-4 sentences: WHY it happened — the process or structural reason, "
+        "not just the surface-level bug>\n\n"
+        "## What Was Fixed\n\n"
+        "<2-4 sentences: the correction applied; cite specific files from the diff>\n\n"
+        "## Prevention Rules\n\n"
+        "- <one short prescriptive sentence — actionable, self-contained>\n"
+        "- <another prescriptive sentence>\n"
+        "- <2-5 bullets total>\n"
+        "```\n\n"
+        "## CRITICAL CONSTRAINTS\n\n"
+        "1. Pick a slug that is short (3-6 words), kebab-case.\n"
+        "2. Severity: High = global build-breaker; Medium = bit several "
+        "files; Low = isolated.\n"
+        "3. \"What Was Fixed\" must reference SPECIFIC files from the diff above.\n"
+        "4. \"Prevention Rules\" should be 2-5 short prescriptive sentences. "
+        "Each one should be self-contained and actionable. The architect will "
+        "later review these and may promote some to CLAUDE.md's `## Agent "
+        "Coding Rules` section, so write each as if it could stand alone.\n"
+        "5. Do NOT modify any other files. Only write the new lessons-learned file.\n"
+        "6. Do NOT add anything to CLAUDE.md — that is the architect's job at "
+        "epic review time.\n\n"
+        f"When done, print: `DONE: wrote lessons-learned/{next_num}-<slug>.md`"
+    )
+
+    print(
+        f"    [distill_lesson] CI took {cycle_count} cycles for {task_id} — "
+        f"distilling lesson {next_num}",
+    )
+    try:
+        from src.multi_agent.bmad_invoke import invoke_claude_cli
+        result = invoke_claude_cli(
+            prompt=prompt,
+            tools="Read,Write,Edit,Glob,Grep",
+            working_dir=cwd,
+            timeout=300,
+            model=_model_for("distill_lesson"),
+            label="distill-lesson",
+        )
+        if result.get("success"):
+            print(f"    [distill_lesson] lesson {next_num} captured")
+        else:
+            logger.warning(
+                "distill_lesson did not succeed (non-blocking) — %s",
+                result.get("output", "")[:200],
+            )
+    except Exception as e:  # noqa: BLE001 — non-blocking helper
+        logger.warning("distill_lesson failed (non-blocking): %s", e)
+
+
 def _validate_review_file(file_path: str) -> bool:
     """Check that a review file exists and has YAML frontmatter."""
     if not os.path.exists(file_path):
@@ -1351,6 +1500,13 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
             ),
             "current_phase": "git_commit",
         }
+
+    # Auto-capture a lessons-learned/NNN-*.md entry when CI took >1 cycle.
+    # Triggered before stack adapters so the new file is part of the same
+    # commit as the story's code. No-op for single-cycle stories — those
+    # mean the agent got it right first time, no lesson to distill.
+    cwd_for_lesson = cwd or "."
+    _maybe_distill_lesson(state, cwd_for_lesson, task_id)
 
     # Stack-specific pre-commit work — dispatched through stack adapters
     # loaded from factory.yaml's target.stacks. Single-stack projects
