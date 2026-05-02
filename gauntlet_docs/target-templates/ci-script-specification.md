@@ -186,6 +186,69 @@ echo "=== Phase 3: integration ==="
 
 Note the `( … )` subshells — `cd backend` should not leak into the frontend phase.
 
+## Pre-commit hooks (target-managed, factory-affecting)
+
+Pre-commit hooks live in the target repo, not in the factory. For Node/TypeScript projects this is `husky` + `lint-staged` configured in `package.json`. For Python/Django it's the `pre-commit` framework configured in `.pre-commit-config.yaml`. The factory does NOT generate or manage these — but every commit the factory makes runs through them, so getting them right is part of running the factory successfully.
+
+### Why pre-commit hooks belong in this spec even though they live in the target
+
+Three reasons:
+
+1. **Factory commits trigger the hooks.** When `git_commit_node` runs `git commit`, husky / pre-commit fires just like a developer's local commit. Hook failure = commit failure = factory marks the story failed. We hit this on the chat2diagram run mid-session: husky's pre-commit hook tried to invoke `prettier` but `node_modules\.bin\` had been wiped at some point and the binary couldn't resolve, so the hook errored, and the commit failed.
+
+2. **Pre-commit hooks duplicate the factory's autoformat step** if not coordinated. The factory's `git_commit_node` already runs `prettier --write` / `eslint --fix` (or `black .` / `ruff check --fix .` for Django) BEFORE staging via the stack adapters. If pre-commit hooks ALSO run those same tools on staged files, that's double work; if the hook runs `--check` mode while the factory runs `--write`, they can fight each other.
+
+3. **Hook tooling must be on `PATH` at factory runtime.** The factory subprocess inherits the operator's PATH. If the hook calls `prettier` (a node-modules-local binary on Windows requiring `.cmd` shim resolution) instead of `npx prettier`, the binary must resolve from the operator's environment when the factory's commit fires.
+
+### Coordination with the factory's autoformat step
+
+Two valid coordination patterns:
+
+**Option A: hooks delegate to the factory.** Configure pre-commit hooks to do nothing the factory's adapter already does. Hooks can still do *other* things — e.g., reject commits whose message format is wrong, or scan for accidentally committed secrets — but format/lint is owned entirely by the factory's `git_commit_node`. This is the simpler arrangement.
+
+**Option B: factory delegates to hooks.** Disable the factory's auto-format adapter calls (set `format_via_adapter: false` in `factory.yaml`, once that flag exists in v2 work) and let pre-commit do all format/lint via lint-staged on the staged file set. Faster (lint-staged only touches changed files) but ties the factory more tightly to the target's tooling. Less recommended.
+
+The chat2diagram run used Option A implicitly: husky + lint-staged ran `prettier --write` on staged files; the factory's `git_commit_node` separately ran `prettier --write` on the whole tree. Pure overhead — the factory pass was redundant once the hook ran. Resolved by accepting the redundancy as low cost. For a new target, choose explicitly.
+
+### Required behaviors
+
+Whatever path you pick, hooks MUST satisfy:
+
+1. **Exit non-zero on failure.** No swallowed exit codes. The factory's commit fails fast.
+2. **No interactive prompts.** stdin is closed in the factory's subprocess; any prompt-and-wait will hang until timeout.
+3. **Complete in <30 seconds per commit.** The factory commits dozens of times per build. Slow hooks compound.
+4. **Tolerate "no staged files of type X" gracefully.** A doc-only commit shouldn't fail the prettier hook because there are no `*.ts` files staged.
+5. **Tolerate `node_modules/.bin/` repopulation.** Don't depend on global installs of `prettier` / `eslint` / `black` etc. — call them via `npx` (Node) or python module form (Python) so they resolve from the project's locked dependencies.
+
+### Tooling on PATH — the chat2diagram lesson
+
+Hook scripts that invoke `prettier` directly (rather than `npx prettier`) silently break when `node_modules/.bin/` is missing or stale. This happened twice during our run — once after a Docker session evicted the host-side bin shims, once after a `git clean` removed them. Resolution was always `npm install` to repopulate `.bin/`, but that's a recoverable-only-by-operator failure mode that's better avoided.
+
+**Recommendation:** in lint-staged config, always call tools via `npx`:
+
+```json
+{
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,json,css}": ["npx prettier --write", "npx eslint --fix"]
+  }
+}
+```
+
+For pre-commit-framework (Python projects), use the `repo: local` form and `entry: "python -m black"` rather than bare `entry: "black"`:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: black
+        name: black
+        entry: python -m black
+        language: system
+        types: [python]
+```
+
+This keeps the tool resolution path consistent between local dev, factory runs, and CI.
+
 ## Output and logging hygiene
 
 - **MUST**: write all output to stdout/stderr unbuffered. The factory captures via `subprocess.run`. Buffered output makes failures look hung.
@@ -204,6 +267,8 @@ Note the `( … )` subshells — `cd backend` should not leak into the frontend 
 | Hard-coded `--story N-N` filter that matches `numTotalTests` instead of `numPassedTests + numFailedTests` | Skipped tests inflated the count, fallback never triggered, bogus passes | Use passed+failed sum |
 | Running full project CI for a doc-only story | 5+ min for a markdown edit, occasional timeouts | Phase 0 short-circuit |
 | `git diff` in subshells without `2>/dev/null || true` | Unset variables / missing repo failed Phase 0 entirely, broke all CI | Defensive defaults on every git invocation in detection logic |
+| Pre-commit hook calls bare `prettier` / `eslint` / `black` | Failed silently when `node_modules/.bin/` was wiped (Docker churn, manual `git clean`); operator had to `npm install` and retry | Always invoke via `npx prettier`, `npx eslint`, or `python -m black` so tools resolve from project-local installs |
+| Pre-commit hook duplicates the factory's autoformat step in the same mode (both `--write`, or one `--write` + one `--check`) | Double work, or hooks fight the factory's edits | Pick coordination pattern explicitly: hooks delegate to factory (Option A) OR factory delegates to hooks (Option B) — not both running the same tool |
 
 ## How the bmad-architect should use this document
 
