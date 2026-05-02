@@ -544,7 +544,26 @@ def _ensure_dependencies(working_dir: str | None) -> None:
     Runs the appropriate package-manager install command if dependency
     artifacts are missing (e.g. node_modules, .venv). Safe to call
     multiple times — each check is idempotent.
+
+    Two paths:
+    - Marker-file dispatch at the working_dir root (the original
+      behavior; handles single-stack projects).
+    - Adapter dispatch through factory.yaml's target.stacks (handles
+      multi-stack monorepos; each adapter installs into its subdir).
+
+    Both run; adapters are no-ops in single-stack projects where the
+    marker-file path already installed.
     """
+    # Adapter dispatch — multi-stack-aware. No-op for adapters whose
+    # owned subdir already has installed dependencies.
+    try:
+        from src.adapters import load_adapters
+        from src.config import load_factory_config
+        for adapter in load_adapters(working_dir or ".", load_factory_config()):
+            adapter.install_dependencies_if_missing()
+    except Exception as e:  # noqa: BLE001 — install errors are non-blocking
+        logger.warning("Adapter-driven dependency install failed: %s", e)
+
     base = working_dir or "."
     project_type = _detect_project_type(working_dir)
 
@@ -1333,73 +1352,67 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
             "current_phase": "git_commit",
         }
 
-    # Auto-generate a Drizzle migration when the story modified schema.ts
-    # but didn't produce a matching drizzle/*.sql file. Without this, the
-    # dev agent can silently introduce columns/tables that exist in
-    # schema.ts (and in app code) but not in any migration — queries work
-    # locally against a pushed DB but fail in prod because migrate-db.ts
-    # has nothing to apply. Hit this twice on the chat2diagram run
-    # (enabled_skill_packs, comparison_jobs + comparison_results).
-    cwd_str = cwd or "."
-    if _detect_project_type(cwd) == "node":
-        drizzle_cfg_exists = any(
-            os.path.isfile(os.path.join(cwd_str, f))
-            for f in ("drizzle.config.ts", "drizzle.config.js", "drizzle.config.mjs")
-        )
-        if drizzle_cfg_exists:
-            _, diff_out = _run_bash(
-                ["git", "diff", "--name-only", "HEAD"], cwd=cwd,
-            )
-            changed = [ln.strip() for ln in diff_out.splitlines() if ln.strip()]
-            schema_touched = any(
-                f.endswith("schema.ts") and f.startswith("src/") for f in changed
-            )
-            # Only generate if the story touched schema AND didn't already
-            # add a new migration .sql file (some stories do it properly).
-            new_migration_added = any(
-                f.startswith("drizzle/") and f.endswith(".sql") for f in changed
-            )
-            if schema_touched and not new_migration_added:
-                safe_name = re.sub(r"[^a-z0-9_]+", "_", f"story_{task_id}".lower()).strip("_")
-                print(
-                    f"    [git_commit] schema.ts modified with no new migration — "
-                    f"running drizzle-kit generate --name={safe_name}"
-                )
-                gen_ok, gen_out = _run_bash(
-                    ["bash", "-c", f"npx drizzle-kit generate --name={shlex.quote(safe_name)}"],
-                    cwd=cwd,
-                    timeout=180,
-                )
-                if gen_ok:
-                    print("    [git_commit] drizzle-kit generate succeeded")
-                else:
-                    logger.warning(
-                        "drizzle-kit generate failed (non-blocking): %s",
-                        gen_out[:500],
-                    )
+    # Stack-specific pre-commit work — dispatched through stack adapters
+    # loaded from factory.yaml's target.stacks. Single-stack projects
+    # (e.g. chat2diagram with stacks: [node_drizzle]) get one iteration;
+    # multi-stack projects (e.g. Django backend + Next.js frontend) get
+    # one iteration per declared stack with each adapter's cwd scoped to
+    # its owned subdirectory.
+    #
+    # The behaviors here previously lived inline as `if
+    # _detect_project_type(cwd) == "node": ...` blocks. See
+    # src/adapters/ for the extracted implementations and
+    # gauntlet_docs/factory-replication-guide.md for the multi-stack
+    # configuration story.
+    from src.adapters import load_adapters
+    from src.config import load_factory_config
 
-    # Auto-format and auto-fix before commit to avoid pre-commit hook
-    # rejections from prettier/eslint. Both are non-blocking — if they
-    # fail here, the hook may still catch genuine issues.
-    # On Windows, `npx` is a .cmd shim that subprocess.run can't resolve
-    # without a shell, so route through `bash -c` (same runtime used for
-    # scripts/ci.sh elsewhere in the pipeline).
-    if _detect_project_type(cwd) == "node":
-        fmt_ok, fmt_out = _run_bash(
-            ["bash", "-c", "npx prettier --write ."], cwd=cwd, timeout=120,
-        )
-        if fmt_ok:
-            print("    [git_commit] prettier --write applied")
-        else:
-            logger.warning("prettier --write failed (non-blocking): %s", fmt_out[:200])
+    factory_cfg = load_factory_config()
+    adapters = load_adapters(cwd_str := (cwd or "."), factory_cfg)
 
-        lint_ok, lint_out = _run_bash(
-            ["bash", "-c", "npx eslint --fix ."], cwd=cwd, timeout=300,
+    # Get diff once, pass to each adapter's schema-drift check.
+    _, diff_out = _run_bash(["git", "diff", "--name-only", "HEAD"], cwd=cwd_str)
+    changed_files = [ln.strip() for ln in diff_out.splitlines() if ln.strip()]
+    new_migration_added = any(
+        # Generic: a new SQL migration anywhere indicates the dev
+        # agent already produced one; adapters skip their own auto-gen.
+        (f.endswith(".sql") and "/migrations/" in f) or
+        (f.startswith("drizzle/") and f.endswith(".sql"))
+        for f in changed_files
+    )
+
+    # Auto-generate a missing migration (per stack)
+    for adapter in adapters:
+        ok, out = adapter.autogen_migration_if_schema_touched(
+            task_id, changed_files, new_migration_added,
         )
-        if lint_ok:
-            print("    [git_commit] eslint --fix applied")
+        if not ok:
+            logger.warning(
+                "[%s] autogen_migration failed (non-blocking): %s",
+                adapter.name, out[:400],
+            )
+
+    # Auto-format (per stack)
+    for adapter in adapters:
+        ok, out = adapter.autoformat()
+        if ok:
+            print(f"    [git_commit] [{adapter.name}] autoformat applied")
         else:
-            logger.warning("eslint --fix failed (non-blocking): %s", lint_out[:200])
+            logger.warning(
+                "[%s] autoformat failed (non-blocking): %s",
+                adapter.name, out[:200],
+            )
+
+    # Auto-lint-fix (per stack)
+    for adapter in adapters:
+        ok, out = adapter.lint_fix()
+        if ok:
+            print(f"    [git_commit] [{adapter.name}] lint_fix applied")
+        else:
+            logger.warning(
+                "[%s] lint_fix failed (non-blocking): %s",
+                adapter.name, out[:200],
+            )
 
     commit_ok, commit_out = _run_bash(["git", "add", "-A"], cwd=cwd)
     if commit_ok:
