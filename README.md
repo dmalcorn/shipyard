@@ -207,6 +207,7 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 | [factory-lessons-from-chat2diagram.md](gauntlet_docs/factory-lessons-from-chat2diagram.md) | Retrospective on the chat2diagram build: architectural patterns that worked, recovery patterns, factory hardenings shipped during the run |
 | [User's Guide](gauntlet_docs/users-guide.md) | Comprehensive usage documentation |
 | [git-remote-setup-guide.md](gauntlet_docs/git-remote-setup-guide.md) | Configuring target-repo remotes for Docker and host-mode runs |
+| [railway-setup-guide.md](gauntlet_docs/railway-setup-guide.md) | Pre-build provisioning of a target's Railway project (Postgres, Mailpit, app service) via the Railway CLI. Includes the single-attempt-then-verify protocol that prevents duplicate-service creation |
 | [How-to-extract-db-logs.md](gauntlet_docs/How-to-extract-db-logs.md) | Pulling pipeline logs off the Railway relay for forensic analysis |
 
 ### Target templates (copy into target's `_bmad-output/planning-artifacts/`)

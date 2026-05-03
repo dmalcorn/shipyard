@@ -101,11 +101,13 @@ The `trap` ensures Mailpit + the test DB shut down even if tests fail. `--wait` 
 
 ## Railway setup — Mailpit as a service
 
-For the integration-test environment on Railway:
+> **Pre-build setup, driven by Claude.** Mailpit on Railway is provisioned by Claude (via the Railway CLI) **before** the factory rebuild kicks off, the same way Postgres is. Mailpit lives in the **same Railway project** as the target app and Postgres so reference variables (`${{ServiceName.VAR}}`) work across services. See [railway-setup-guide.md](../railway-setup-guide.md) for the canonical command sequence and the **single-attempt-then-verify** rule that prevents duplicate-service creation. The summary below documents the resulting configuration; it is not the procedure for setting it up.
 
-1. **Add a new Railway service** in your project: "Deploy from Docker Image" → `axllent/mailpit:latest`
-2. **Expose port 8025** publicly so you can browse captured emails (the SMTP port stays internal — only your app needs to reach it)
-3. **In your app's Railway service env vars**:
+For the integration-test (Railway staging) environment:
+
+1. **Mailpit service** deployed from `axllent/mailpit:latest` in the same Railway project as the target app and Postgres
+2. **Port 8025 exposed publicly** so the operator can browse captured emails during UAT (the SMTP port `1025` stays on Railway's private network — only the app reaches it via `mailpit.railway.internal`)
+3. **App service env vars**:
    ```
    EMAIL_HOST=mailpit.railway.internal
    EMAIL_PORT=1025
@@ -113,10 +115,11 @@ For the integration-test environment on Railway:
    EMAIL_HOST_USER=
    EMAIL_HOST_PASSWORD=
    DEFAULT_FROM_EMAIL=test@yourdomain.example
+   MAILPIT_WEB_URL=https://<mailpit-railway-domain>   # for operator UAT and E2E tests
    ```
-4. **Verify by deploying**, hitting your password-reset / verification endpoint, then opening the Mailpit web UI on Railway. The email should appear within 1-2 seconds.
+4. **Verification:** open the Mailpit public domain in a browser → empty inbox. Trigger a password-reset / verification flow on the deployed app → email lands in Mailpit within 1–2 seconds with the correct From, Subject, body, and link.
 
-The `mailpit.railway.internal` hostname uses Railway's private network so traffic doesn't leave the project. No public-internet exposure of the SMTP port.
+The `mailpit.railway.internal` hostname uses Railway's private network — no public-internet exposure of the SMTP port. Only the web UI (`8025`) is publicly reachable.
 
 ## End-to-end test pattern (Playwright + Mailpit API)
 
