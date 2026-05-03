@@ -145,9 +145,30 @@ print('post:', cur.fetchone()[0])
 
 **6. Windows console can't print Unicode by default.** `print(' → ')` blows up with `UnicodeEncodeError: 'charmap' codec can't encode character '→'`. Stay ASCII-only in print statements run from the Bash/PowerShell terminal — `->` instead of `→`, `OK` instead of `✓`.
 
+**7. The Railway CLI link drifts between commands.** `railway link` sets the active project for subsequent commands, but the link state is shared across all shells on the host AND can be silently mutated by other operations (e.g., the operator linking to a different project in another VS Code window, or apparently certain CLI commands that re-link as a side effect). We hit this twice in one session — first while converting `DATABASE_URL` to a reference variable (`Service "shipyard" not found` after a successful unrelated command), and again mid-script during password rotation (between Postgres env-var update and shipyard redeploy).
+
+**Fix:** before every multi-step operation against the relay, run `railway link --project clever-freedom` explicitly as the first step. Treat link state as untrusted — never assume it's still pointed where you set it three commands ago. Multi-step scripts should re-link at the start, even if you "just linked" a minute ago.
+
+**8. Python subprocess can't invoke `railway` directly on Windows.** The `railway` command is a `.cmd` shim. `subprocess.run(["railway", ...])` from a Python script fails with `FileNotFoundError: [WinError 2] The system cannot find the file specified` because Windows subprocess resolution doesn't search for `.cmd` extensions automatically. Symptom: a Python rotation script aborts at the first CLI call.
+
+**Fix:** drive the CLI from Bash directly, and use Python only for the SQL part (psycopg2). Pass values between the two via env vars rather than command-line args:
+
+```bash
+NEW_PW=$(python -c "...generate...")
+NEW_PW="$NEW_PW" OLD_URL="$OLD_URL" python <<'PYEOF'
+import os, psycopg2
+# ...use os.environ['NEW_PW'] / os.environ['OLD_URL']
+PYEOF
+railway variables --service Postgres --set "POSTGRES_PASSWORD=$NEW_PW"
+```
+
 After working through these, the end-to-end TRUNCATE recipe that worked is:
 
 ```bash
+# Step 0: always link first (state drifts between commands)
+railway link --project clever-freedom
+
+# Step 1: extract URL, run psycopg2 query in ONE connection, verify via REST API
 DB_URL=$(railway variables --service Postgres --kv 2>/dev/null | grep "^DATABASE_PUBLIC_URL=" | cut -d= -f2-)
 DATABASE_URL="$DB_URL" python -c "
 import os, psycopg2
@@ -170,18 +191,86 @@ curl -sf "https://shipyard-production-29ae.up.railway.app/api/sessions" | python
 
 ### Rotating the Postgres password
 
-Railway's dashboard does **not** have a "regenerate" button. The "Generate" button on a variable opens a *Variable Generator* dialog that produces a generator function (`${{ secret(32, "abc...XYZ") }}`) intended to populate new environments cloned from the current one. It doesn't replace the *current* environment's value — it just shows you a fresh random string at the top of the dialog you can copy.
+**Why Railway has no "rotate password" button.** Railway's Postgres template uses `POSTGRES_PASSWORD` for the initial `initdb` only. Once the container has run that, the actual database role password lives in PostgreSQL's `pg_authid` table, independent of the env var. **Editing `POSTGRES_PASSWORD` on a running Postgres service does NOT change the database role password** — it only affects what would happen on a fresh initdb (which won't run as long as the data volume persists). The "Generate" button next to a variable opens a Variable Generator dialog that produces a generator function (`${{ secret(32, "abc...XYZ") }}`) intended to populate *new* environments cloned from the current one — it shows you a fresh random string at the top, but applying it doesn't rotate the live database.
 
-**Manual rotation procedure** (after a leak, or routine):
+A real rotation has to do three things, in order:
 
-1. Open Railway dashboard → `clever-freedom` → Postgres service → Variables tab.
-2. Click **Generate** next to `POSTGRES_PASSWORD` to get a fresh random string. Copy the value displayed at the top of the dialog (e.g., `AOUqKpbjyaEnTYeIoTrIWglYySnZybtX`). Close the dialog without saving the generator function (unless you want clones to use this generator pattern — separate concern).
-3. Edit `POSTGRES_PASSWORD` directly and paste the new value. Save. Railway restarts the Postgres container with the new password.
-4. **Update every dependent service.** Any service that references the password as a *resolved* string needs to be updated. Check the `shipyard` service's `DATABASE_URL`:
-   - If it's a reference variable like `${{Postgres.DATABASE_URL}}`, Railway resolves it at deploy time and it auto-updates on the next redeploy — no manual edit needed.
-   - If it's a resolved string like `postgresql://postgres:OLDPASSWORD@postgres.railway.internal:5432/railway`, replace it. **Better: convert it to a reference variable** while you're there: `DATABASE_URL=${{Postgres.DATABASE_URL}}`. After that, future rotations propagate automatically. See [railway-setup-guide.md](railway-setup-guide.md#6-set-app-service-environment-variables) for the reference-variable pattern.
-5. Run `railway redeploy --service shipyard --yes` (or via dashboard) to pick up the new value.
-6. Verify with `curl -sf https://shipyard-production-29ae.up.railway.app/health` (or `/api/sessions`) — a 200 response confirms the relay reconnected to Postgres with the new password.
+1. **`ALTER ROLE postgres WITH PASSWORD '<new>'`** inside the database — this changes the actual credential the DB checks on every connection.
+2. **Update `POSTGRES_PASSWORD` env var** to match — so Railway's templated `DATABASE_URL` (and any reference variable resolving to it) reflects reality.
+3. **Redeploy any service** whose `DATABASE_URL` is a reference variable, so it picks up the freshly templated URL.
+
+#### Working CLI rotation script
+
+Proven recipe, end-to-end. The new password is generated in memory, applied, and never printed to stdout.
+
+```bash
+# Step 0: always link first
+railway link --project clever-freedom
+
+# Step 1-4: rotate
+NEW_PW=$(python -c "import secrets; alpha='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; print(''.join(secrets.choice(alpha) for _ in range(32)))")
+echo "Step 0/4: generated new password (length ${#NEW_PW}, never printed)"
+
+OLD_URL=$(railway variables --service Postgres --kv 2>/dev/null | grep "^DATABASE_PUBLIC_URL=" | cut -d= -f2-)
+[ -z "$OLD_URL" ] && { echo "FAIL: no DATABASE_PUBLIC_URL"; exit 1; }
+echo "Step 1/4: extracted current URL (never printed)"
+
+NEW_PW="$NEW_PW" OLD_URL="$OLD_URL" python <<'PYEOF'
+import os, psycopg2
+from psycopg2 import sql
+conn = psycopg2.connect(os.environ['OLD_URL'])
+conn.autocommit = True
+cur = conn.cursor()
+cur.execute(sql.SQL("ALTER ROLE postgres WITH PASSWORD %s"), [os.environ['NEW_PW']])
+conn.close()
+print("Step 2/4: ALTER ROLE done")
+PYEOF
+
+railway variables --service Postgres --set "POSTGRES_PASSWORD=$NEW_PW" >/dev/null
+echo "Step 3/4: env var updated (Postgres will auto-redeploy)"
+
+# Re-link explicitly because state can drift between long-running commands
+railway link --project clever-freedom >/dev/null 2>&1
+railway redeploy --service shipyard --yes >/dev/null 2>&1
+echo "Step 4/4: shipyard redeploy issued"
+
+unset NEW_PW OLD_URL
+
+# Verify (poll for up to ~90 seconds)
+for i in 1 2 3 4 5 6; do
+  CODE=$(curl -sf -o /dev/null -w "%{http_code}" "https://shipyard-production-29ae.up.railway.app/api/sessions" 2>&1 || echo "fail")
+  echo "Verify attempt $i: /api/sessions = $CODE"
+  [ "$CODE" = "200" ] && break
+  [ $i -lt 6 ] && sleep 15
+done
+```
+
+Brief inconsistency window: between step 2 (ALTER ROLE) and step 3 (env var update + Postgres restart), `DATABASE_URL` templates with the *old* password but the role expects the *new* one. New connections fail; existing connections are fine. Window is ~5–10 seconds.
+
+#### Looking up the password later
+
+You don't need to save it anywhere — Railway is the password store. Anytime:
+
+```bash
+railway link --project clever-freedom
+railway variables --service Postgres --kv | grep "^POSTGRES_PASSWORD="
+```
+
+Or via the dashboard: `clever-freedom` → Postgres service → Variables tab → click any value to reveal.
+
+#### Prerequisite: shipyard's DATABASE_URL must be a reference variable
+
+The recipe above only works because `shipyard.DATABASE_URL = ${{Postgres.DATABASE_URL}}` (reference variable, resolved at deploy time). If `shipyard.DATABASE_URL` is a resolved `postgresql://...` string, the rotation breaks shipyard until you manually update its `DATABASE_URL` too. **Convert to a reference variable first:**
+
+```bash
+railway link --project clever-freedom
+railway variables --service shipyard --set 'DATABASE_URL=${{Postgres.DATABASE_URL}}' --skip-deploys
+railway redeploy --service shipyard --yes
+```
+
+(Single quotes around `${{...}}` are critical — the shell would expand `$` otherwise.)
+
+The `${{...}}` syntax is preserved server-side; Railway resolves it at deploy time. CLI display modes (`--kv`, `--json`, table) all resolve references for output, so to verify the conversion took effect you have to look in the dashboard — the variable's edit field shows the literal stored value (with `${{...}}`) when it's a reference. See [railway-setup-guide.md](railway-setup-guide.md#6-set-app-service-environment-variables) for the broader reference-variable pattern.
 
 ## The easy way: use the relay's REST API
 
