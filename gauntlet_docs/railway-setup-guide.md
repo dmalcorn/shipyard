@@ -292,6 +292,7 @@ If a CLI step fails because authentication is stale or a GitHub grant is missing
 - [target-templates/email-testing-guide.md](target-templates/email-testing-guide.md) — the test-time pattern Mailpit serves; explains why we need it on Railway and locally
 - [factory-replication-guide.md](factory-replication-guide.md) — the broader "Railway (relay + target deployment)" section covers the relay (which this doc explicitly does NOT touch)
 - [git-remote-setup-guide.md](git-remote-setup-guide.md) — embedded-PAT pattern for non-interactive GitHub auth
+- [How-to-extract-db-logs.md](How-to-extract-db-logs.md) — read-only log extraction via REST API, **plus** direct DB access via `railway connect Postgres` (TRUNCATE between projects, ad-hoc SELECT, schema inspection)
 - [chat2diagram lessons-learned `004`](https://github.com/dmalcorn/chat2diagram/blob/main/lessons-learned/004-railway-postgres-add-ambiguous-output.md) — the canonical writeup of the duplicate-service incident this doc exists to prevent
 - [chat2diagram lessons-learned `005`](https://github.com/dmalcorn/chat2diagram/blob/main/lessons-learned/005-drizzle-kit-push-silent-failure-on-railway.md) — the silent-no-op `drizzle-kit push` pattern
 - [Railway CLI reference](https://docs.railway.com/reference/cli-api) — full command reference
