@@ -43,7 +43,7 @@ The app code is identical across all three environments. **No `if env == "produc
 | `EMAIL_HOST_PASSWORD` | (empty) | (empty) | (real password from secrets) |
 | `DEFAULT_FROM_EMAIL` | `test@yourdomain.example` | `test@yourdomain.example` | `noreply@your-domain.example` |
 
-This is the most important pattern in the whole guide: **mock-shaped logic stays out of the app code**. The app always uses real SMTP. Tests run against a real-looking receiver. Production runs against a real production SMTP server. The only difference is configuration.
+This is the most important pattern in the whole guide: **mock-shaped logic stays out of the app code**. The app always uses real SMTP. Tests run against a real-looking receiver. Production runs against a real production SMTP server (typically a self-hosted Postfix instance on the production VPS, but anything speaking SMTP works — the app code doesn't care). The only difference is configuration.
 
 ## Why Mailpit
 
@@ -244,7 +244,7 @@ After deploying to Railway:
 
 After cutover to VPS production:
 
-1. Confirm `EMAIL_HOST` env var is the real production SMTP server, NOT Mailpit
+1. Confirm `EMAIL_HOST` env var is the real production SMTP server (e.g., the local Postfix instance on the VPS at `localhost:25`, or a remote SMTP host), NOT Mailpit
 2. Confirm `DEFAULT_FROM_EMAIL` is your real production sender, NOT `*.example`
 3. Log a `production_email_sent` event on every send and audit it against expected sender domains
 
@@ -254,7 +254,9 @@ Update when a real-world email-related production incident reveals a failure mod
 
 ## See also
 
+- [local-dev-docker-guide.md](local-dev-docker-guide.md) — the local-dev side: Mailpit lives in the same `docker-compose.yml` as the app and Postgres; this guide is the test-side
 - [test-structure-guide.md](test-structure-guide.md) — broader test pyramid; email tests live in the integration tier
 - [story-and-epic-writing-guide.md](story-and-epic-writing-guide.md) — story ACs for email features should specify the full flow (send + receive + click + state-change), not just the send
 - [ci-script-specification.md](ci-script-specification.md) — Phase 1b-bis (test infrastructure startup) sits alongside the existing Phase 1b (DB schema sync)
+- [../railway-setup-guide.md](../railway-setup-guide.md) — Railway side of the Option B topology (staging UAT environment)
 - [Mailpit documentation](https://mailpit.axllent.org/) — full REST API reference, configuration options

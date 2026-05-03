@@ -1,14 +1,15 @@
 # Target Templates
 
-Five documents in this directory describe what the Shipyard factory expects from a target project. Copy each one into your target's `_bmad-output/planning-artifacts/` *before* running the factory, and reference them when generating the target's own CI script, epics, and test layout. The lessons-learned protocol additionally requires copying its `## Agent Coding Rules` section header into the target's `CLAUDE.md`.
+Six documents in this directory describe what the Shipyard factory expects from a target project. Copy each one into your target's `_bmad-output/planning-artifacts/` *before* running the factory, and reference them when generating the target's own CI script, epics, and test layout. The lessons-learned protocol additionally requires copying its `## Agent Coding Rules` section header into the target's `CLAUDE.md`.
 
-## The five templates
+## The six templates
 
 | File | Audience | Copy into target as |
 |---|---|---|
 | [ci-script-specification.md](ci-script-specification.md) | The bmad-architect agent that generates `scripts/ci.sh` | `_bmad-output/planning-artifacts/ci-script-specification.md` |
 | [story-and-epic-writing-guide.md](story-and-epic-writing-guide.md) | The human (or agent) authoring `epics.md` | `_bmad-output/planning-artifacts/story-and-epic-writing-guide.md` |
 | [test-structure-guide.md](test-structure-guide.md) | The bmad-architect agent + the dev agent on every story | `_bmad-output/planning-artifacts/test-structure-guide.md` |
+| [local-dev-docker-guide.md](local-dev-docker-guide.md) | The bmad-architect agent (generates `Dockerfile.dev` + `docker-compose.yml`) + dev agent (writes code that respects local stack topology) | `_bmad-output/planning-artifacts/local-dev-docker-guide.md` |
 | [email-testing-guide.md](email-testing-guide.md) | Projects with email-based auth or notifications — architect (CI), dev agent (E2E tests), operator (Railway service setup) | `_bmad-output/planning-artifacts/email-testing-guide.md` (only for projects with email features) |
 | [lessons-learned-protocol.md](lessons-learned-protocol.md) | Architect at epic-review time + dev agent on every story (via `CLAUDE.md`) | `_bmad-output/planning-artifacts/lessons-learned-protocol.md` AND copy the `## Agent Coding Rules` section header into target's `CLAUDE.md` |
 

@@ -6,6 +6,31 @@ How to provision a target project's Railway infrastructure (Postgres, Mailpit, a
 
 **Scope:** Per-target staging environment — one Railway *project* containing the target app, its Postgres, and a Mailpit service for UAT. This is **separate** from the shipyard relay (`shipyard-production-29ae` in the `clever-freedom` Railway project), which is shared infrastructure across every factory build and is **not touched here**.
 
+## DB and dev-env topology — choose Option B
+
+Before provisioning anything, decide explicitly how the target's local dev environment relates to Railway. This decision determines what gets built where.
+
+**Option A — Railway-direct (anti-pattern, do NOT use):** the target's local dev runs on the host with `DATABASE_URL` and `EMAIL_HOST` pointing at Railway's services directly. No local Postgres or Mailpit. This is what the chat2bpmn and chat2diagram builds did *by accident* — a `.env` file with Railway's connection string was set somewhere in the factory's environment, and every dev/test run, every CI cycle, every UAT touched the same Railway database. Risks: tests can corrupt UAT data, UAT can corrupt tests, schema migrations get applied to a live DB during exploratory work, and there is no reproducibility on a fresh machine. Documented here so the pattern is recognizable when it shows up — never as a recommendation.
+
+**Option B — Local Docker dev + Railway staging (the recommended path):** the target runs entirely in Docker Desktop on the operator's machine for development — three services (`app`, `db`, `mailpit`) defined in a `docker-compose.yml`. Code is bind-mounted from the host filesystem so the factory (running on host) can edit code and the app container hot-reloads. Railway hosts an *independent copy* of the same architecture for integration UAT and demo prep. Production (post-launch) replaces Railway Mailpit with a real SMTP server (typically self-hosted Postfix on a VPS) but keeps the same env-var contract. Three environments, identical app code, env-var differences only.
+
+```
+Local dev/test         Railway staging (UAT)      Production (VPS)
+┌──────────────┐       ┌──────────────────┐       ┌──────────────────┐
+│ docker-      │       │ Railway services │       │ App on VPS       │
+│ compose.yml  │       │ (this guide)     │       │  ──SMTP──>       │
+│  app + db +  │       │  app + db +      │       │   self-hosted    │
+│  mailpit     │       │  mailpit         │       │   Postfix        │
+└──────────────┘       └──────────────────┘       └──────────────────┘
+   ↑ factory               ↑ git push to            ↑ post-launch
+   writes here             GitHub triggers          deploy
+                           Railway redeploy
+```
+
+**This guide documents the middle column.** For the left column (local Docker dev environment), see the target template [target-templates/local-dev-docker-guide.md](target-templates/local-dev-docker-guide.md), which is copied into each target's `_bmad-output/planning-artifacts/`. For the right column, see the production VPS deployment notes (handled out of scope here).
+
+The two environments are completely isolated. Local dev never reaches Railway's database; Railway staging never reaches the local one. This is the inverse of the chat2bpmn/chat2diagram pattern and is the explicit goal of the new setup.
+
 ## The single-attempt-then-verify protocol
 
 This is the most important rule in the document. It exists because the user has previously had to manually delete three duplicate Postgres services from the Railway dashboard after an agent retried `railway add` on silent output.
