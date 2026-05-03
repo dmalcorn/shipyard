@@ -65,10 +65,24 @@ railway variables --service <name> --kv     # all variables for a service (CONTA
 
 ## Prerequisites
 
+### Authenticating the Railway CLI for Claude's use
+
+The Railway CLI uses a per-machine auth token stored in `~/.railway/`. Once **any** shell on the host runs `railway login` and completes the browser OAuth flow, every subsequent shell — including the ones Claude spawns via the Bash tool — inherits the authenticated session. Claude does not need to authenticate separately.
+
+**The pattern that works:**
+
+1. Operator opens a VS Code terminal and runs `railway login`. The CLI opens a browser; operator approves; the token is written to `~/.railway/config.json`.
+2. Operator confirms with `railway whoami`. Should show the logged-in email.
+3. From that point on (until token expiry or explicit `railway logout`), Claude can drive every Railway CLI command — provisioning services, querying status, running maintenance like TRUNCATE — without re-authenticating.
+
+**When you see `Unauthorized. Please run 'railway login' again.` in Claude's output:** that's always the operator's cue, never something Claude can fix. The auth flow is interactive browser OAuth — Claude can't drive it. Operator runs `railway login` in their VS Code terminal; Claude retries the original command.
+
+### Other prerequisites
+
 Confirm before running any provisioning command:
 
 ```bash
-railway whoami        # operator must be logged in (browser OAuth, one-time)
+railway whoami        # should show the logged-in account
 railway --version     # CLI v4.33.0 or later
 ```
 
