@@ -170,7 +170,6 @@ The Command Bridge is a real-time monitoring dashboard where anyone can watch Sh
 - **LangSmith tracing** — every agent run auto-traced with custom metadata (role, task_id, phase, model_tier)
 - **Markdown audit logs** — `logs/session-{id}.md` with tree-style tool call traces
 - **SSE live streaming** — real-time log events pushed to browser via `/api/stream/{session_id}`
-- **Trace links** — [docs/trace-links.md](docs/trace-links.md) with 2 LangSmith traces (normal run + error recovery)
 
 ## Development
 
