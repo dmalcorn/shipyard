@@ -53,7 +53,7 @@ flowchart TD
     subgraph L3["Story Orchestrator · Level 3"]
         direction TB
         CS[create_story] --> WT[write_tests] --> IM[implement]
-        IM --> CR[code_review] --> CI[run_ci]
+        IM --> RT[run_tests] --> CR[code_review] --> CI[run_ci]
         CI -->|pass| GC[git_commit]
         CI -->|retry| FX[fix_ci] --> CI
     end
@@ -217,6 +217,8 @@ flowchart TD
 - `route_after_epic_architect` — fixes needed?
 - `route_after_epic_ci` — pass or error
 
+**Note on `analyze_reviews`:** as of 2026-04-12 this node is the **deterministic sieve** that pattern-matches review findings into Category A (auto-fixable) and Category B (needs architect judgment). The legacy 5-minute LLM-driven analyze-reviews agent is kept as a fallback path but is not the default. See `docs/analyze-reviews-sieve-plan.md` (now in `gauntlet_docs/`) for the design rationale.
+
 **Parallel review via Send API:**
 
 ```mermaid
@@ -247,13 +249,16 @@ flowchart TD
     WT -->|"continue"| IM["implement<br/><i>bmad-dev-story</i>"]
     WT -->|"error"| ERR
 
-    IM -->|"continue"| CR["code_review<br/><i>bmad-dev (CR mode)</i>"]
+    IM -->|"continue"| RT["run_tests<br/><i>Bash: pytest / vitest</i>"]
     IM -->|"error"| ERR
+
+    RT -->|"continue"| CR["code_review<br/><i>bmad-dev (CR mode)</i>"]
+    RT -->|"error"| ERR
 
     CR -->|"continue"| CI["run_ci<br/><i>Bash: local_ci.sh<br/>or npm test / pytest</i>"]
     CR -->|"error"| ERR
 
-    CI -->|"pass"| GC["git_commit<br/><i>Bash: git add + commit</i>"]
+    CI -->|"pass"| GC["git_commit<br/><i>Bash: git add + commit<br/>(auto-runs schema migration if<br/>schema.ts changed)</i>"]
     CI -->|"retry"| FX["fix_ci<br/><i>bmad-dev (CI fix mode)</i>"]
     CI -->|"error"| ERR
 
@@ -265,6 +270,7 @@ flowchart TD
     style CS fill:#fff3cd
     style WT fill:#fff3cd
     style IM fill:#fff3cd
+    style RT fill:#d4edda
     style CR fill:#fff3cd
     style FX fill:#fff3cd
     style CI fill:#d4edda

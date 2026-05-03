@@ -99,7 +99,7 @@ docker compose -f docker-compose.rebuild.yml up
 python -m src.main --rebuild /path/to/target/project --resume
 ```
 
-See [User's Guide](gauntlet_docs/users-guide.md) for full rebuild documentation.
+See [factory-replication-guide.md](gauntlet_docs/factory-replication-guide.md) for full rebuild setup and operation, [api-reference.md](gauntlet_docs/api-reference.md) for HTTP endpoints, and [railway-setup-guide.md](gauntlet_docs/railway-setup-guide.md) for target Railway provisioning.
 
 ## Architecture
 
@@ -204,7 +204,7 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 |---|---|
 | [factory-replication-guide.md](gauntlet_docs/factory-replication-guide.md) | Setup from zero: prerequisites, the four authentications, the host-vs-Docker question, first run, common gotchas |
 | [factory-lessons-from-chat2diagram.md](gauntlet_docs/factory-lessons-from-chat2diagram.md) | Retrospective on the chat2diagram build: architectural patterns that worked, recovery patterns, factory hardenings shipped during the run |
-| [User's Guide](gauntlet_docs/users-guide.md) | Comprehensive usage documentation |
+| [api-reference.md](gauntlet_docs/api-reference.md) | HTTP endpoints exposed by the FastAPI server: operator endpoints (`/instruct`, `/rebuild`, `/rebuild/intervene`) and relay endpoints used by the Command Bridge dashboard |
 | [git-remote-setup-guide.md](gauntlet_docs/git-remote-setup-guide.md) | Configuring target-repo remotes for Docker and host-mode runs |
 | [railway-setup-guide.md](gauntlet_docs/railway-setup-guide.md) | Pre-build provisioning of a target's Railway project (Postgres, Mailpit, app service) via the Railway CLI. Includes the single-attempt-then-verify protocol that prevents duplicate-service creation |
 | [How-to-extract-db-logs.md](gauntlet_docs/How-to-extract-db-logs.md) | Pulling pipeline logs off the Railway relay for forensic analysis |
@@ -226,7 +226,6 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 | Document | Description |
 |---|---|
 | [LangGraph Diagrams](gauntlet_docs/langgraph-diagrams.md) | Mermaid visualizations of all 5 pipeline graphs |
-| [system-flow.png](gauntlet_docs/system-flow.png) / [system-flow.mmd](gauntlet_docs/system-flow.mmd) | High-level flow diagram |
 | [orchestrator-redesign-rationale.md](gauntlet_docs/orchestrator-redesign-rationale.md) / [orchestrator-redesign-graph.md](gauntlet_docs/orchestrator-redesign-graph.md) | Architecture decision records for the multi-graph orchestrator |
 | [epic-review-redesign.md](gauntlet_docs/epic-review-redesign.md) | ADR for the per-epic dual-review subgraph |
 | [Coding Standards](coding-standards.md) | Conventions enforced across all agent-generated code |
