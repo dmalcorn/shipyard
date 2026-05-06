@@ -886,19 +886,26 @@ def _detect_type_from_architecture_md(base: str) -> str:
     except OSError:
         return "unknown"
 
-    # Order matters: check most-distinctive keywords first.
-    # Each entry is (type_key, list_of_indicator_patterns).
+    # Order matters: most-distinctive language signals first. The list-membership
+    # check is substring-based, so each pattern must be specific enough that it
+    # won't appear inside unrelated English words. (Earlier the Go list had
+    # "gin" — which matched "engine", "logging", "originally", "begin" and
+    # similar words in any architecture doc — and was checked before Python,
+    # so Django projects were misclassified as Go.)
+    #
+    # Each entry is (type_key, list_of_indicator_patterns). All patterns are
+    # already lowercased (the content has been .lower()'d above).
     stack_signals: list[tuple[str, list[str]]] = [
-        ("rust", ["cargo.toml", "tokio", "axum", "rocket", "serde"]),
-        ("go", ["go mod", "go module", "goroutine", "gin", "echo framework"]),
         ("python", [
-            "fastapi", "django", "flask", "langgraph", "pyproject",
-            "pip install", "pytest", "python",
+            "django", "fastapi", "flask", "langgraph", "pyproject.toml",
+            "pip install", "pytest", "ruff", "mypy",
         ]),
         ("node", [
-            "package.json", "pnpm", "npm", "yarn", "express",
-            "react", "next.js", "vite", "typescript",
+            "package.json", "tsconfig.json", "pnpm", "next.js", "vite.config",
+            "vitest", "playwright",
         ]),
+        ("rust", ["cargo.toml", "tokio", "axum framework", "rocket framework"]),
+        ("go", ["go.mod", "goroutine", "echo framework", "gin framework"]),
     ]
 
     for project_type, keywords in stack_signals:
