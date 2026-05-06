@@ -115,6 +115,34 @@ if ! claude --print "ready" --output-format text >/dev/null 2>&1; then
 fi
 echo "  ✓ Claude Code authenticated"
 
+# Venv check (best-effort — warn but don't block).
+# Reminds the operator to activate the project venv if they haven't.
+# Does not enforce — if deps are globally installed the factory will still run,
+# but the next factory_imports check below will still catch a broken environment.
+#
+# Note: VIRTUAL_ENV may be spuriously set to a system Python path (e.g.
+# 'c:\python314') by some installers — checking for pyvenv.cfg confirms
+# the path is actually a venv.
+VENV_OK=0
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -f "${VIRTUAL_ENV}/pyvenv.cfg" ]; then
+    VENV_OK=1
+fi
+if [ "$VENV_OK" -eq 1 ]; then
+    echo "  ✓ venv active: $VIRTUAL_ENV"
+else
+    if [ -f "$SHIPYARD_DIR/.venv/pyvenv.cfg" ]; then
+        echo "  ⚠ No venv active (VIRTUAL_ENV='${VIRTUAL_ENV:-unset}'). Activate before kickoff:"
+        echo "      source .venv/Scripts/activate     # Git Bash"
+        echo "      .venv\\Scripts\\activate           # PowerShell / cmd"
+    else
+        echo "  ⚠ No .venv found at $SHIPYARD_DIR/.venv. Create with:"
+        echo "      python -m venv .venv"
+        echo "      source .venv/Scripts/activate"
+        echo "      pip install -r requirements.txt -r requirements-dev.txt"
+    fi
+    echo "    (proceeding with whatever python is on PATH — see next check)"
+fi
+
 cd "$SHIPYARD_DIR"
 if ! python -c "from src.main import main" >/dev/null 2>&1; then
     echo "ERROR: factory imports broken — activate .venv and 'pip install -r requirements.txt'?" >&2
@@ -122,13 +150,22 @@ if ! python -c "from src.main import main" >/dev/null 2>&1; then
 fi
 echo "  ✓ Factory imports cleanly"
 
-# Relay health (best-effort — warn but don't block)
+# Relay health (best-effort — warn but don't block).
+# Two-layer probe so a broken DB layer doesn't masquerade as healthy:
+#   1. /health returns body containing "status":"ok"  — FastAPI app is up
+#   2. /api/sessions returns a JSON list              — Postgres is reachable
 RELAY_URL=$(grep -E '^SHIPYARD_RELAY_URL=' "$STAGED_ENV" | head -1 | cut -d= -f2- | tr -d '"')
 if [ -n "$RELAY_URL" ]; then
-    if curl -sf "$RELAY_URL/health" >/dev/null 2>&1; then
-        echo "  ✓ Relay healthy at $RELAY_URL"
-    else
+    HEALTH_BODY=$(curl -sf --max-time 10 "$RELAY_URL/health" 2>/dev/null || echo "")
+    if [ -z "$HEALTH_BODY" ]; then
         echo "  ⚠ Relay unreachable at $RELAY_URL — proceeding without dashboard"
+    elif ! echo "$HEALTH_BODY" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+        echo "  ⚠ Relay /health returned unexpected body: $HEALTH_BODY — proceeding without dashboard"
+    elif ! curl -sf --max-time 10 "$RELAY_URL/api/sessions" 2>/dev/null \
+            | python -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if isinstance(d, list) else 1)" >/dev/null 2>&1; then
+        echo "  ⚠ Relay app up but /api/sessions failed — DB layer unreachable; proceeding without dashboard"
+    else
+        echo "  ✓ Relay healthy at $RELAY_URL (app + DB reachable)"
     fi
 fi
 
