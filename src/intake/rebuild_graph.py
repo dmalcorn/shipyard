@@ -317,24 +317,28 @@ def _prompt_story_ci() -> None:
 
 
 def load_backlog_node(state: RebuildState) -> dict[str, Any]:
-    """Parse epics.md and group stories by epic."""
+    """Parse epics source (single-file or sharded form) and group stories by epic."""
     target_dir = state.get("target_dir", "")
 
-    # Verify epics file exists in planning-artifacts where BMAD agents expect it
+    # Verify either single-file or sharded epics source exists. backlog.py
+    # supports both forms; this is just a fast-fail check before invoking it.
     planning_dir = os.path.join(target_dir, "_bmad-output", "planning-artifacts")
-    epics_candidates = [
-        f for f in os.listdir(planning_dir)
-        if "epic" in f.lower() and f.endswith(".md")
-    ] if os.path.isdir(planning_dir) else []
+    epics_md = os.path.join(planning_dir, "epics.md")
+    epics_dir = os.path.join(planning_dir, "epics")
 
-    if not epics_candidates:
-        print(f"\n*** ABORT: No epics file found in {planning_dir}")
-        print("    BMAD agents require an epics file at:")
-        print(f"    {planning_dir}/epics.md")
-        print("    Place your epics file there and re-run.")
+    if not (os.path.isfile(epics_md) or os.path.isdir(epics_dir)):
+        print(f"\n*** ABORT: No epics source found in {planning_dir}")
+        print("    BMAD agents require ONE of:")
+        print(f"      {planning_dir}/epics.md           (single-file form)")
+        print(f"      {planning_dir}/epics/             (sharded BMAD form)")
+        print("    Place one there and re-run.")
         return {
             "pipeline_status": "failed",
-            "error": f"No epics file in {planning_dir}. BMAD agents cannot operate without it.",
+            "error": (
+                f"No epics source in {planning_dir} "
+                "(expected epics.md or epics/ directory). "
+                "BMAD agents cannot operate without it."
+            ),
         }
 
     backlog = load_backlog(target_dir)

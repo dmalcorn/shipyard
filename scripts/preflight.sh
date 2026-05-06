@@ -65,8 +65,15 @@ echo "▶ Validating target setup at $TARGET_DIR"
     || { echo "ERROR: missing $TARGET_ENV — copy from shipyard/.env.target.example" >&2; exit 67; }
 [ -f "$SHARED_ENV" ] \
     || { echo "ERROR: missing $SHARED_ENV — copy from shipyard/.env.shared.example and fill in" >&2; exit 68; }
-[ -f "$TARGET_DIR/_bmad-output/planning-artifacts/epics.md" ] \
-    || { echo "ERROR: missing $TARGET_DIR/_bmad-output/planning-artifacts/epics.md" >&2; exit 69; }
+# Accept either the single-file form (epics.md) OR the BMAD-sharded form
+# (epics/ directory with one shard per epic). backlog.py handles both.
+if [ ! -f "$TARGET_DIR/_bmad-output/planning-artifacts/epics.md" ] \
+    && [ ! -d "$TARGET_DIR/_bmad-output/planning-artifacts/epics" ]; then
+    echo "ERROR: missing epics source — expected one of:" >&2
+    echo "         $TARGET_DIR/_bmad-output/planning-artifacts/epics.md" >&2
+    echo "         $TARGET_DIR/_bmad-output/planning-artifacts/epics/" >&2
+    exit 69
+fi
 echo "  ✓ target dir + factory.yaml + .env + .env.shared + epics.md all present"
 
 # ---------- Stage config ----------

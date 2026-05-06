@@ -1,7 +1,23 @@
 """Backlog parser for intake pipeline output.
 
-Parses the generated epics.md file into a structured list of
+Parses the epics source from a target project into a structured list of
 epics and stories that the rebuild orchestrator can iterate over.
+
+Two source forms are supported (both BMAD-canonical):
+
+- **Single-file form** — `_bmad-output/planning-artifacts/epics.md` with
+  `## Epic N: Title` and `### Story N.M: Title` headings (H2/H3).
+
+- **Sharded form** — `_bmad-output/planning-artifacts/epics/` directory
+  containing one `epic-NN-*.md` shard per epic, with `# Epic N: Title`
+  and `## Story N.M: Title` headings (H1/H2). The headings shift up one
+  level because each shard is a standalone file. Support files like
+  `index.md`, `overview.md`, `functional-requirements-inventory.md` etc.
+  are ignored — only `epic-[0-9]*.md` shards are parsed. This is what
+  BMAD's `bmad-shard-doc` skill produces.
+
+If both forms exist, the single-file form wins (delete `epics.md` if you
+want the factory to use the sharded form).
 
 Identification scheme:
   - Epics: numbered "Epic 1", "Epic 2", etc.
@@ -17,47 +33,102 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def load_backlog(target_dir: str) -> list[dict[str, str | list[str]]]:
-    """Parse epics.md from the target directory into a structured backlog.
+_SHARD_NAME_RE = re.compile(r"^epic-(\d+)")
 
-    Expected markdown format:
-        ## Epic N: Title   or   ## Epic N — Title
-        ### Story N.M: Title   or   ### Story N.M — Title
-        **As a** ..., **I want** ..., **so that** ...
-        **Acceptance Criteria:**
-        - ...
+
+def load_backlog(target_dir: str) -> list[dict[str, str | list[str]]]:
+    """Parse epics source from the target directory into a structured backlog.
+
+    Accepts either `epics.md` (single-file) or `epics/` (sharded BMAD form);
+    see module docstring.
 
     Args:
-        target_dir: Path to directory containing epics.md.
+        target_dir: Path to the target project directory (i.e., the directory
+            containing `_bmad-output/planning-artifacts/`).
 
     Returns:
         List of dicts with keys: epic_num, epic_name, story_id, story_name,
         description, acceptance_criteria.
 
     Raises:
-        FileNotFoundError: If epics.md does not exist in target_dir.
+        FileNotFoundError: If neither form is present in target_dir.
     """
-    epics_path = (
-        Path(target_dir) / "_bmad-output" / "planning-artifacts" / "epics.md"
+    content, heading_level = _read_epics_source(target_dir)
+    return parse_epics_markdown(content, heading_level=heading_level)
+
+
+def _read_epics_source(target_dir: str) -> tuple[str, int]:
+    """Locate and read the epics source.
+
+    Returns (markdown_content, heading_level) — the heading_level tells
+    parse_epics_markdown which heading levels carry the Epic / Story
+    structure (2 for mono, 1 for sharded).
+    """
+    base = Path(target_dir) / "_bmad-output" / "planning-artifacts"
+    epics_file = base / "epics.md"
+    epics_dir = base / "epics"
+
+    if epics_file.is_file():
+        return epics_file.read_text(encoding="utf-8"), 2
+
+    if epics_dir.is_dir():
+        shards = sorted(
+            epics_dir.glob("epic-[0-9]*.md"),
+            key=lambda p: _shard_sort_key(p.name),
+        )
+        if not shards:
+            raise FileNotFoundError(
+                f"No epic-NN-*.md shards found in {epics_dir}/"
+            )
+        joined = "\n\n".join(s.read_text(encoding="utf-8") for s in shards)
+        return joined, 1
+
+    raise FileNotFoundError(
+        f"Epics source not found: expected {epics_file} or {epics_dir}/"
     )
-    if not epics_path.exists():
-        raise FileNotFoundError(f"Backlog file not found: {epics_path}")
-
-    content = epics_path.read_text(encoding="utf-8")
-
-    return parse_epics_markdown(content)
 
 
-def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
+def _shard_sort_key(filename: str) -> tuple[int, str]:
+    """Sort epic shards numerically: epic-2-... before epic-10-... ."""
+    m = _SHARD_NAME_RE.match(filename)
+    if m:
+        return (int(m.group(1)), filename)
+    return (0, filename)
+
+
+def parse_epics_markdown(
+    content: str, heading_level: int = 2
+) -> list[dict[str, str | list[str]]]:
     """Parse epics markdown content into structured backlog entries.
 
+    Expected format (with default heading_level=2):
+        ## Epic N: Title          or  ## Epic N — Title
+        ### Story N.M: Title      or  ### Story N.M — Title
+        **As a** ..., **I want** ..., **so that** ...
+        **Acceptance Criteria:**
+        - ...
+
+    For sharded BMAD files, pass heading_level=1; the epic header becomes
+    `# Epic N` and stories become `## Story N.M`.
+
     Args:
-        content: Raw markdown string from epics.md.
+        content: Raw markdown string.
+        heading_level: Markdown heading level of the Epic header. Story
+            headers sit at heading_level + 1.
 
     Returns:
         List of dicts with keys: epic_num, epic_name, story_id, story_name,
         description, acceptance_criteria.
     """
+    epic_prefix = "#" * heading_level
+    story_prefix = "#" * (heading_level + 1)
+    epic_re = re.compile(
+        rf"^{epic_prefix}\s+Epic\s+(\d+)(?::|[\s—]+)\s*(.+)"
+    )
+    story_re = re.compile(
+        rf"^{story_prefix}\s+Story\s+(\d+)[.\-](\d+)(?::|[\s—]+)\s*(.+)"
+    )
+
     backlog: list[dict[str, str | list[str]]] = []
     current_epic_num = ""
     current_epic_name = ""
@@ -71,8 +142,7 @@ def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
     for line in content.split("\n"):
         stripped = line.strip()
 
-        # Match epic headers: ## Epic N: Title  or  ## Epic N — Title
-        epic_match = re.match(r"^##\s+Epic\s+(\d+)(?::|[\s\u2014]+)\s*(.+)", stripped)
+        epic_match = epic_re.match(stripped)
         if epic_match:
             # Save previous story if exists
             if current_story_id:
@@ -96,11 +166,8 @@ def parse_epics_markdown(content: str) -> list[dict[str, str | list[str]]]:
             story_counter = 0
             continue
 
-        # Match story headers: ### Story N.M: Title  or  ### Story N.M — Title
-        # Accepts both dots and dashes: 1.1, 1-1, 2.1, 2-1
-        story_match = re.match(
-            r"^###\s+Story\s+(\d+)[.\-](\d+)(?::|[\s\u2014]+)\s*(.+)", stripped
-        )
+        # Match story headers — supports both "1.1" and "1-1" separators
+        story_match = story_re.match(stripped)
         if story_match:
             # Save previous story if exists
             if current_story_id:
