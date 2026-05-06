@@ -16,13 +16,11 @@ class TestDirectoryStructure:
         "directory",
         [
             "src/agent",
-            "src/tools",
             "src/multi_agent",
             "src/context",
             "src/audit_log",
             "scripts",
             "tests",
-            "tests/test_tools",
             "tests/test_agent",
             "tests/test_multi_agent",
             "tests/test_context",
@@ -37,12 +35,10 @@ class TestDirectoryStructure:
         [
             "src/__init__.py",
             "src/agent/__init__.py",
-            "src/tools/__init__.py",
             "src/multi_agent/__init__.py",
             "src/context/__init__.py",
             "src/audit_log/__init__.py",
             "tests/__init__.py",
-            "tests/test_tools/__init__.py",
             "tests/test_agent/__init__.py",
             "tests/test_multi_agent/__init__.py",
             "tests/test_context/__init__.py",
@@ -75,7 +71,6 @@ class TestEnvExample:
     @pytest.mark.parametrize(
         "var",
         [
-            "ANTHROPIC_API_KEY",
             "LANGCHAIN_TRACING_V2",
             "LANGCHAIN_API_KEY",
             "LANGCHAIN_PROJECT",

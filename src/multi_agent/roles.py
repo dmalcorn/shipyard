@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.tools import BaseTool
-
 VALID_AGENT_ROLES = frozenset({"dev", "test", "reviewer", "architect", "fix_dev"})
 VALID_MODEL_IDS = frozenset({"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"})
 VALID_PHASES = frozenset(
@@ -112,71 +110,6 @@ def get_role(name: str) -> AgentRole:
     if role is None:
         raise ValueError(f"Unknown role: {name!r}. Valid roles: {', '.join(sorted(ROLES))}")
     return role
-
-
-def get_tools_for_role(role: str, working_dir: str | None = None) -> list[BaseTool]:
-    """Return the correct tool list for the given agent role.
-
-    For roles with write_restrictions, wraps write_file and edit_file with
-    path-restricted versions. Unrestricted roles get the base tools directly.
-
-    When working_dir is provided, file and bash tools are wrapped to operate
-    relative to that directory instead of the project root.
-
-    Args:
-        role: Agent role identifier (dev, test, reviewer, architect, fix_dev).
-        working_dir: Optional working directory for tool operations.
-
-    Returns:
-        List of BaseTool instances for the role.
-    """
-    from src.tools import tools_by_name
-    from src.tools.restricted import create_restricted_edit_file, create_restricted_write_file
-
-    role_config = get_role(role)
-
-    # If working_dir is set, get working-dir-scoped tools
-    if working_dir is not None:
-        from src.tools.scoped import get_scoped_tools
-
-        scoped = get_scoped_tools(
-            working_dir,
-            write_restrictions=role_config.write_restrictions or None,
-        )
-        result: list[BaseTool] = []
-        for tool_name in role_config.tools:
-            if tool_name in scoped:
-                result.append(scoped[tool_name])
-            else:
-                result.append(tools_by_name[tool_name])
-        return result
-
-    result = []
-
-    for tool_name in role_config.tools:
-        if role_config.write_restrictions:
-            # Swap write_file/edit_file with restricted versions
-            # Use title-case role name for user-facing error messages
-            display_name = role_config.name.replace("_", " ").title()
-            if tool_name == "write_file":
-                result.append(
-                    create_restricted_write_file(display_name, role_config.write_restrictions)
-                )
-                continue
-            if tool_name == "edit_file":
-                result.append(
-                    create_restricted_edit_file(display_name, role_config.write_restrictions)
-                )
-                continue
-        try:
-            result.append(tools_by_name[tool_name])
-        except KeyError:
-            raise ValueError(
-                f"Tool {tool_name!r} referenced by role {role!r} not found in registered tools. "
-                f"Available: {', '.join(sorted(tools_by_name))}"
-            ) from None
-
-    return result
 
 
 def build_trace_config(

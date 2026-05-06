@@ -249,23 +249,3 @@ class TestInjectTaskContextWorkingDir:
         assert "(file not available)" in result[0].content
 
 
-class TestLayer3ToolsAvailable:
-    """AC #3: Read, Grep, Glob tools are available for on-demand context."""
-
-    def test_read_file_tool_exists(self) -> None:
-        from src.tools.file_ops import read_file
-
-        assert read_file is not None
-        assert hasattr(read_file, "invoke")
-
-    def test_search_files_tool_exists(self) -> None:
-        from src.tools.search import search_files
-
-        assert search_files is not None
-        assert hasattr(search_files, "invoke")
-
-    def test_list_files_tool_exists(self) -> None:
-        from src.tools.search import list_files
-
-        assert list_files is not None
-        assert hasattr(list_files, "invoke")
