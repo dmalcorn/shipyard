@@ -294,29 +294,3 @@ flowchart TD
 | implement | bmad-dev-story | TOOLS_DEV |
 | code_review | bmad-dev | TOOLS_CODE_REVIEW |
 | fix_ci | bmad-dev | TOOLS_CI_FIX |
-
-## 5. Core Agent (Inner Loop)
-
-**Source:** `src/agent/graph.py`
-**Checkpointing:** SQLite at `checkpoints/shipyard.db`
-
-The foundational ReAct loop. Called by BMAD agent invocations in the orchestrator and by `run_sub_agent()` in the intake pipeline.
-
-```mermaid
-flowchart TD
-    START((START)) --> AG["agent<br/><i>LLM call with<br/>bound tools</i>"]
-
-    AG -->|"tool_calls present"| TL["tools<br/><i>Execute tool calls,<br/>log to audit</i>"]
-    AG -->|"no tool_calls"| END((END))
-    AG -->|"retry >= 50"| ERR[error_handler]
-
-    TL --> AG
-
-    ERR --> END
-
-    style AG fill:#fff3cd
-    style TL fill:#d4edda
-    style ERR fill:#f8d7da
-```
-
-**Routing function:** `should_continue` — checks for tool_calls (→ tools), retry limit exceeded (→ error), or completion (→ end)

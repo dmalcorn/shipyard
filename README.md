@@ -55,37 +55,21 @@ Required variables:
 | `SHIPYARD_RELAY_URL` | Public dashboard relay endpoint (optional) |
 | `SHIPYARD_RELAY_KEY` | Shared secret for relay auth (optional) |
 
-### 3. Run
+### 3. Run a build
 
-**CLI mode** — interactive REPL:
-
-```bash
-python src/main.py --cli
-```
-
-**Server mode** — FastAPI with auto-reload:
+Each target keeps its own `factory.yaml` and `.env`. The pre-flight wrapper stages the per-target config into shipyard root, runs smoke tests, prompts for confirmation, then kicks off the rebuild:
 
 ```bash
-uvicorn src.main:app --reload --port 8000
+bash scripts/preflight.sh /path/to/target/project
 ```
 
-**Docker:**
+Resume after interruption:
 
 ```bash
-docker compose up
+bash scripts/preflight.sh /path/to/target/project --resume
 ```
 
-## Autonomous Rebuild Pipeline
-
-Rebuild a project from planning artifacts:
-
-```bash
-python -m src.main --rebuild /path/to/target/project
-```
-
-The target directory must contain `_bmad-output/approved-tech-stack.md` listing all technologies the project uses. The pipeline reads this to generate a comprehensive CI script before any code is written.
-
-The `target_dir` must be **outside** Shipyard's source tree. All agent file operations, bash commands, and git operations are scoped to the target directory.
+The target directory must be **outside** Shipyard's source tree, must contain `_bmad-output/planning-artifacts/epics.md`, and must contain either `_bmad-output/approved-tech-stack.md` (so the architect can generate `scripts/ci.sh`) or a hand-written `scripts/ci.sh` that conforms to [target-templates/ci-script-specification.md](gauntlet_docs/target-templates/ci-script-specification.md). All agent file operations, bash commands, and git operations are scoped to the target directory.
 
 **Docker rebuild** — runs the pipeline in a container with the target project mounted:
 
@@ -93,17 +77,13 @@ The `target_dir` must be **outside** Shipyard's source tree. All agent file oper
 docker compose -f docker-compose.rebuild.yml up
 ```
 
-**Resume after interruption:**
+**Relay/dashboard deployment** — the public monitoring dashboard at <https://shipyard-production-29ae.up.railway.app/> runs the same FastAPI app on Railway via `uvicorn src.main:app`. Operators don't run the FastAPI server locally; the local factory invocation goes through `preflight.sh` → `python -m src.main --rebuild`.
 
-```bash
-python -m src.main --rebuild /path/to/target/project --resume
-```
-
-See [factory-replication-guide.md](gauntlet_docs/factory-replication-guide.md) for full rebuild setup and operation, [api-reference.md](gauntlet_docs/api-reference.md) for HTTP endpoints, and [railway-setup-guide.md](gauntlet_docs/railway-setup-guide.md) for target Railway provisioning.
+See [docs/how-to-setup-factory-harness.md](docs/how-to-setup-factory-harness.md) for the full pre-flight checklist (Railway provisioning, target repo state, the four authentications), [factory-replication-guide.md](gauntlet_docs/factory-replication-guide.md) for the deeper architecture and host-vs-Docker decision, [api-reference.md](gauntlet_docs/api-reference.md) for HTTP endpoints, and [railway-setup-guide.md](gauntlet_docs/railway-setup-guide.md) for target Railway provisioning.
 
 ## Architecture
 
-Shipyard uses a 4-level hierarchical LangGraph architecture. Each level invokes the next as a wrapper node. See [LangGraph diagrams](gauntlet_docs/langgraph-diagrams.md) for Mermaid visualizations of all 5 graphs.
+Shipyard uses a 4-level hierarchical LangGraph architecture. Each level invokes the next as a wrapper node. See [LangGraph diagrams](gauntlet_docs/langgraph-diagrams.md) for Mermaid visualizations.
 
 ### Pipeline Hierarchy
 
@@ -113,7 +93,6 @@ Shipyard uses a 4-level hierarchical LangGraph architecture. Each level invokes 
 | 1 | Rebuild Graph | [src/intake/rebuild_graph.py](src/intake/rebuild_graph.py) | Iterates epics, pause/resume, checkpointing |
 | 2 | Epic Graph | [src/intake/epic_graph.py](src/intake/epic_graph.py) | Iterates stories, epic post-processing with dual review |
 | 3 | Story Orchestrator | [src/multi_agent/orchestrator.py](src/multi_agent/orchestrator.py) | Per-story TDD: create → test → implement → review → CI → commit |
-| Core | Agent Loop | [src/agent/graph.py](src/agent/graph.py) | ReAct tool-calling loop (foundation for all LLM nodes) |
 
 ### Per-Story Pipeline
 
@@ -128,9 +107,8 @@ Each LLM node invokes a specific BMAD agent via [bmad_invoke.py](src/multi_agent
 
 ```
 src/
-├── main.py                  # FastAPI server + CLI entry point
-├── agent/                   # LangGraph graph, state, prompts
-├── tools/                   # File ops, search, execution tools
+├── main.py                  # FastAPI app (relay/dashboard) + --rebuild CLI entry point
+├── agent/prompts.py         # Role-based system prompt templates (Layer 1 context)
 ├── context/                 # 3-layer context injection system
 ├── intake/                  # Rebuild pipeline, backlog parsing, cost tracking
 │   ├── rebuild_graph.py     # Level 1: epic loop with checkpointing
@@ -138,9 +116,10 @@ src/
 │   ├── pipeline.py          # Level 0: intake spec processing
 │   ├── cost_tracker.py      # Thread-safe cost accumulator
 │   └── pause.py             # Graceful pause/resume via signal handler
-├── multi_agent/             # Sub-agent spawning + orchestration
+├── multi_agent/             # BMAD agent invocation + orchestration
 │   ├── orchestrator.py      # Level 3: per-story TDD pipeline
-│   └── bmad_invoke.py       # Claude CLI subprocess with scoped tools
+│   ├── bmad_invoke.py       # Claude CLI subprocess with scoped tools
+│   └── roles.py             # Role definitions + LangSmith trace metadata
 ├── audit_log/               # Structured markdown audit logger
 ├── static/                  # Public monitoring dashboard (Command Bridge)
 ├── log_relay.py             # Postgres log relay for dashboard streaming
@@ -204,7 +183,7 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 |---|---|
 | [factory-replication-guide.md](gauntlet_docs/factory-replication-guide.md) | Setup from zero: prerequisites, the four authentications, the host-vs-Docker question, first run, common gotchas |
 | [factory-lessons-from-chat2diagram.md](gauntlet_docs/factory-lessons-from-chat2diagram.md) | Retrospective on the chat2diagram build: architectural patterns that worked, recovery patterns, factory hardenings shipped during the run |
-| [api-reference.md](gauntlet_docs/api-reference.md) | HTTP endpoints exposed by the FastAPI server: operator endpoints (`/instruct`, `/rebuild`, `/rebuild/intervene`) and relay endpoints used by the Command Bridge dashboard |
+| [api-reference.md](gauntlet_docs/api-reference.md) | HTTP endpoints exposed by the FastAPI server: `/rebuild/intervene` for human interventions during a build, plus the relay endpoints used by the Command Bridge dashboard |
 | [git-remote-setup-guide.md](gauntlet_docs/git-remote-setup-guide.md) | Configuring target-repo remotes for Docker and host-mode runs |
 | [railway-setup-guide.md](gauntlet_docs/railway-setup-guide.md) | Pre-build provisioning of a target's Railway project (Postgres, Mailpit, app service) via the Railway CLI. Includes the single-attempt-then-verify protocol that prevents duplicate-service creation |
 | [How-to-extract-db-logs.md](gauntlet_docs/How-to-extract-db-logs.md) | Pulling pipeline logs off the Railway relay for forensic analysis |

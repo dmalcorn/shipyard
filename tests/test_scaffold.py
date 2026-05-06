@@ -53,7 +53,6 @@ class TestDirectoryStructure:
         [
             "logs/.gitkeep",
             "reviews/.gitkeep",
-            "checkpoints/.gitkeep",
         ],
     )
     def test_runtime_dirs_have_gitkeep(self, gitkeep: str) -> None:
@@ -123,7 +122,6 @@ class TestRequirements:
         "package",
         [
             "langgraph",
-            "langchain-anthropic",
             "langgraph-checkpoint-sqlite",
             "python-dotenv",
             "fastapi",

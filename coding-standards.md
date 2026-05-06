@@ -9,8 +9,8 @@ These conventions apply to all code written in this project. When this file is i
 ### Naming
 
 - `snake_case` — functions, variables, modules, file names
-- `PascalCase` — classes only (`AgentState`, `SqliteSaver`)
-- `UPPER_SNAKE_CASE` — constants (`MAX_RETRIES`, `DEFAULT_MODEL`)
+- `PascalCase` — classes only (`InterventionLogger`, `RebuildState`)
+- `UPPER_SNAKE_CASE` — constants (`MAX_CI_CYCLES`, `DEFAULT_MODEL`)
 
 ### Type Hints
 
@@ -33,8 +33,8 @@ def build_prompt(role: str, context_files: list[str]):
 ### Imports
 
 - Order: standard library, then third-party, then local — separated by blank lines
-- Absolute imports only (`from src.tools.file_ops import read_file`)
-- No relative imports (`from .tools import ...`)
+- Absolute imports only (`from src.intake.checkpoint import save_phase`)
+- No relative imports (`from .intake import ...`)
 - No wildcard imports (`from x import *`)
 
 ```python
@@ -42,11 +42,10 @@ import os
 import subprocess
 from typing import Literal
 
-from langchain_anthropic import ChatAnthropic
 from langgraph.graph import StateGraph, START, END
 
-from src.agent.state import AgentState
-from src.tools.file_ops import read_file, edit_file
+from src.intake.checkpoint import save_phase
+from src.multi_agent.bmad_invoke import invoke_bmad_agent
 ```
 
 ### Docstrings
@@ -57,8 +56,8 @@ from src.tools.file_ops import read_file, edit_file
 - Google-style for complex functions
 
 ```python
-def read_file(file_path: str) -> str:
-    """Read the contents of a file at the given path."""
+def save_phase(target_dir: str, phase: str) -> None:
+    """Persist the current phase to <target_dir>/checkpoints/phase.json."""
     ...
 
 def build_system_prompt(role: str, context_files: list[str] | None = None) -> str:
@@ -77,60 +76,22 @@ def build_system_prompt(role: str, context_files: list[str] | None = None) -> st
 ### Error Handling
 
 - Never use bare `except:` — always `except Exception as e:` minimum
-- Tools: catch all exceptions internally, return `ERROR:` strings (never let exceptions escape)
+- Catch exceptions where you can do something useful with them; don't catch just to re-raise
 - Graph nodes: let LangGraph handle retries via state — don't add try/except around node logic
-- Log the exception before returning the error string
+- Log the exception before swallowing or transforming it
 
 ```python
-# Correct — inside a tool
+# Correct — narrow except, log, re-raise as a typed exception
 try:
-    with open(file_path, 'r') as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
-    return f"SUCCESS: {content}"
 except FileNotFoundError:
-    return f"ERROR: File not found: {file_path}. Use list_files to discover available files."
-except Exception as e:
-    return f"ERROR: Failed to read {file_path}: {e}"
+    logger.error("Backlog not found at %s", path)
+    raise
 
 # Wrong — bare except
 except:
-    return "ERROR: something went wrong"
-```
-
----
-
-## Tool Interface Contract
-
-Every tool follows the same pattern:
-
-1. Parameters are strings (LLM-consumable types)
-2. Return value is always a string
-3. Success responses start with `SUCCESS:`
-4. Error responses start with `ERROR:` followed by what went wrong and a recovery hint
-5. No exceptions escape — all errors are caught and returned as strings
-6. Large outputs (>5000 chars) are truncated: `(truncated, {n} chars total)`
-
-```python
-@tool
-def tool_name(param1: str, param2: str) -> str:
-    """One-line description. Used by: [which agent roles]."""
-    try:
-        # ... implementation ...
-        return f"SUCCESS: {description_of_result}"
-    except Exception as e:
-        return f"ERROR: {description_of_failure}. {recovery_hint}"
-```
-
-### Error Messages Must Be Self-Correcting
-
-The error tells the LLM exactly what went wrong and what to do next:
-
-```
-ERROR: old_string not found in {file_path}. Re-read the file to get current contents.
-ERROR: old_string found {count} times in {file_path}. Provide more surrounding context to make the match unique.
-ERROR: Command failed with exit code {code}: {stderr_first_500_chars}
-ERROR: File not found: {file_path}. Use list_files to discover available files.
-ERROR: Permission denied: Review agents cannot edit source files. Write to reviews/ directory only.
+    return "something went wrong"
 ```
 
 ---
@@ -171,11 +132,11 @@ Rules:
 
 ## Project Structure Rules
 
-- Source code lives in `src/` with domain-based modules: `agent/`, `tools/`, `multi_agent/`, `context/`, `logging/`
-- Tests live in `tests/` mirroring the `src/` structure (`test_tools/`, `test_agent/`, etc.)
-- Scripts live in `scripts/` — bash scripts for CI, testing, git operations
-- Runtime artifacts are git-ignored: `logs/`, `reviews/`, `checkpoints/`
-- Configuration at project root: `pyproject.toml`, `requirements.txt`, `.env.example`
+- Source code lives in `src/` with domain-based modules: `agent/` (prompts only), `multi_agent/` (BMAD agent invocation + orchestrator), `intake/` (rebuild graph + checkpointing), `context/` (Layer-1 prompt injection), `audit_log/`, `adapters/`
+- Tests live in `tests/` mirroring the `src/` structure (`test_intake/`, `test_multi_agent/`, etc.)
+- Scripts live in `scripts/` — `preflight.sh` for kickoff, `ci.sh`/`local_ci.sh` for testing, `extract_log.py` + `log_analysis/` for forensics
+- Runtime artifacts are git-ignored: `logs/`, `reviews/`. Per-build checkpoints live in `<target>/checkpoints/`, NOT in shipyard root
+- Configuration at project root: `pyproject.toml`, `requirements.txt`, `.env.shared`, `.env.example`
 
 ---
 
@@ -194,11 +155,8 @@ All three must pass before any git commit. These replace GitHub Actions to avoid
 
 | Don't | Do Instead |
 |---|---|
-| Raise exceptions from tools | Catch exceptions, return `ERROR:` string |
 | Use bare `except:` | Use `except Exception as e:` |
 | Use relative imports | Use absolute imports from `src.` |
 | Use wildcard imports | Import specific names |
 | Skip type hints on function signatures | Always annotate params and return type |
 | Write unstructured inter-agent files | Use YAML frontmatter + numbered findings |
-| Use fuzzy matching for edits | Use exact string match, fail loudly |
-| Rewrite entire files | Use surgical `edit_file` with `old_string`/`new_string` |

@@ -1,7 +1,6 @@
 # Core dependencies
 pyyaml>=6.0
 langgraph==1.1.6
-langchain-anthropic==1.4.0
 langgraph-checkpoint-sqlite==3.0.3
 python-dotenv==1.2.2
 fastapi==0.135.1
