@@ -19,6 +19,12 @@ venv/
 .env*
 !.env*.example
 
+# Factory config — staged shipyard/factory.yaml (rewritten by scripts/preflight.sh
+# per run) and rotated factory.yaml.old breadcrumbs are gitignored. The
+# factory.yaml.example template stays tracked.
+factory.yaml*
+!factory.yaml.example
+
 # Runtime artifacts (agent-generated)
 logs/
 reviews/
