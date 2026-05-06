@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -22,6 +23,15 @@ from src.intake.pause import force_quit_event
 from src.multi_agent.proc_registry import register, unregister
 
 logger = logging.getLogger(__name__)
+
+# Resolve the claude CLI executable once at module load.
+# Windows note: subprocess.Popen does NOT honor PATHEXT, so it can't
+# find `claude.cmd` (the npm-global Windows shim) by stem. shutil.which
+# does honor PATHEXT, so we resolve the full path here. On Linux/macOS
+# this returns the same path as a bare "claude" lookup, so it's a no-op
+# in practice. Falls back to the bare name if nothing resolves, which
+# preserves the prior behavior + error message on misconfigured hosts.
+CLAUDE_BIN = shutil.which("claude") or "claude"
 
 
 def _subprocess_env() -> dict[str, str]:
@@ -366,14 +376,16 @@ def invoke_bmad_agent(
 
     try:
         cli_args = [
-            "claude", "--print", "--verbose",
+            CLAUDE_BIN, "--print", "--verbose",
             "--output-format", "stream-json",
             "--setting-sources", "project",
             "--allowedTools", tools,
         ]
         if model:
             cli_args.extend(["--model", model])
-        cli_args.extend(["--", prompt])
+        # Prompt is delivered via stdin (not argv) so multi-line content
+        # survives Windows cmd.exe argument parsing on the claude.CMD shim.
+        # On Linux/macOS this is functionally equivalent to argv delivery.
 
         proc = subprocess.Popen(
             cli_args,
@@ -383,10 +395,20 @@ def invoke_bmad_agent(
             encoding="utf-8",
             errors="replace",
             cwd=cwd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             env=_subprocess_env(),
         )
         register(proc)
+
+        # Send the prompt and close stdin so claude knows the input is complete.
+        # Prompts are well under the OS pipe buffer limit, so a single write
+        # without separate draining is safe.
+        assert proc.stdin is not None
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except OSError as e:
+            logger.warning("Failed to send prompt to claude stdin: %s", e)
 
         # Watchdog: kill subprocess on force-quit (second Ctrl+C)
         def _watchdog() -> None:
@@ -573,14 +595,14 @@ def invoke_claude_cli(
 
     try:
         cli_args = [
-            "claude", "--print", "--verbose",
+            CLAUDE_BIN, "--print", "--verbose",
             "--output-format", "stream-json",
             "--setting-sources", "project",
             "--allowedTools", tools,
         ]
         if model:
             cli_args.extend(["--model", model])
-        cli_args.extend(["--", prompt])
+        # Prompt via stdin — see note in _invoke_bmad_streaming above.
 
         proc = subprocess.Popen(
             cli_args,
@@ -590,10 +612,17 @@ def invoke_claude_cli(
             encoding="utf-8",
             errors="replace",
             cwd=cwd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             env=_subprocess_env(),
         )
         register(proc)
+
+        assert proc.stdin is not None
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except OSError as e:
+            logger.warning("Failed to send prompt to claude stdin: %s", e)
 
         # Watchdog: kill subprocess on force-quit (second Ctrl+C)
         def _watchdog() -> None:
