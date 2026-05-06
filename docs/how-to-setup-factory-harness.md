@@ -83,6 +83,84 @@ The factory enforces these exact paths and filenames. If they're missing or name
 | `Dockerfile` (production) + `docker-compose.yml` (local dev) | recommended | three-container topology per [local-dev-docker-guide.md](../gauntlet_docs/target-templates/local-dev-docker-guide.md). Required if the target's CI script invokes `docker compose exec`. |
 | `.gitignore` covering `.env`, `.env.docker`, `node_modules/`, `__pycache__/`, etc. | recommended | prevents committing secrets and build junk |
 
+### 4.1 The `scripts/ci.sh` bootstrap problem (read before kickoff)
+
+**The trap:** the factory invokes `scripts/ci.sh` at every story-level CI gate. Most BMAD plans dedicate one story late in epic 1 to the canonical CI implementation per [ci-script-specification.md](../gauntlet_docs/target-templates/ci-script-specification.md) — Story 1.9 in PawprintRecipes, equivalents elsewhere. That story is far down the epic: stories 1.1 through 1.8 must run their CI gates *first*, against whatever ci.sh exists at kickoff.
+
+A stub or absent ci.sh causes every early story to fail CI, burn fix_ci retries, and fail the story. The chat2diagram build hit a milder version of this and lost ~$25 to fix_ci spinning before the operator caught on. PawprintRecipes' first kickoff (2026-05-06) hit a sharper version — every story 1.1 onward failed CI because the stub referenced a docker-compose file that wouldn't exist until Story 1.2.
+
+**The fix:** pre-write a *bootstrap* ci.sh before kickoff that does the minimum needed to keep early stories passing CI. Story 1.9 will replace it with the canonical version when its turn comes.
+
+#### What the bootstrap ci.sh must do
+
+1. **Accept the factory's flags**: `--story X-Y`, `--quick`, `--test-only`. The factory's `run_ci_node` always passes `--story X-Y`. Unknown flags MUST exit non-zero.
+2. **Phase 0 — doc-only short-circuit**: detect via `git diff --name-only HEAD` plus `git ls-files --others --exclude-standard`. If every changed/new path is under `_bmad-output/`, `docs/`, `lessons-learned/`, `epic-reviews/`, `targetsetup/`, or root `*.md`, exit 0 in <2s. This makes Story 1.1 (typically a doc-only spike) pass cleanly without doing any work.
+3. **Skip-when-missing for every other phase**: wrap each phase in `if [ -d <stack-dir> ]; then ...; fi` so missing tooling, missing source dirs, and missing config files all produce a friendly skip instead of a crash. Each phase activates progressively as later stories add their parts of the codebase.
+4. **A clear `# WILL BE REPLACED BY STORY 1.9` header comment** so when the dev agent runs that story it knows to fully replace the script rather than extend it.
+
+The Phase 0 logic is stack-agnostic — copy verbatim from either reference example below. The skip-when-missing pattern is also stack-agnostic.
+
+#### Reference implementations
+
+| Project | Stack | Lines | Path |
+|---|---|---|---|
+| **chat2diagram** | Next.js + Drizzle + Postgres | 174 | `chat2diagram/scripts/ci.sh` |
+| **PawprintRecipes** | Django + Next.js + Django staff + Postgres + Redis + Celery + Mailpit | ~210 | `PawprintRecipes/scripts/ci.sh` |
+
+Pick the closer match, copy, and adapt.
+
+#### What changes per stack
+
+Phase 0 (doc short-circuit) and the flag parsing are universal. Phase 1 (lint + typecheck) and Phase 3 (tests) are where each stack diverges:
+
+| Stack | Phase 1 — lint + typecheck | Phase 3 — story-scoped tests | Phase 4 — e2e |
+|---|---|---|---|
+| **Node-only** | `npx eslint .` + `npx tsc --noEmit` + `npx prettier --check` | `npx vitest run --passWithNoTests -t "story_X_Y\|Story_X_Y\|X-Y"` with full-suite fallback if zero matched | `npx playwright test --grep "story.X_Y"` |
+| **Python-only** | `ruff check <src>` + `mypy <src>` | `pytest -k "story_X_Y or Story_X_Y" <src>` — treat exit 5 (no tests collected) as success in `--story` mode | n/a or `pytest -m e2e` |
+| **Go-only** | `golangci-lint run` + `go vet ./...` | `go test -run "Story_X_Y" ./...` (Go's `-run` is regex over test names) | n/a or separate `go test ./e2e/...` |
+| **Django + Next.js** | `ruff` + `mypy` on `backend/` and `staff/`; `eslint` + `tsc` on `web/` | `pytest -k` on backend, `vitest -t` on web (each phase wrapped in dir-exists check) | `playwright test` against `docker-compose.test.yml` |
+| **Mixed (other)** | union of the above | union of the above | whichever frontend has e2e |
+
+Each story-scoped test runner MUST have a **full-suite fallback when zero tests match the filter** — otherwise stories whose tests don't yet exist silently get green-lit. PawprintRecipes' ci.sh uses `pytest` exit-5 detection for backend and `vitest --reporter=json` parse-and-check for web.
+
+#### Phase 0 skeleton (copy verbatim)
+
+```bash
+#!/usr/bin/env bash
+# CI script for <project> — bootstrap version. WILL BE REPLACED BY STORY 1.9.
+set -euo pipefail
+
+STORY_FILTER=""; QUICK_MODE=false; TEST_ONLY=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --story)     STORY_FILTER="$2"; shift 2 ;;
+        --quick)     QUICK_MODE=true; shift ;;
+        --test-only) TEST_ONLY=true; shift ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+# Phase 0: doc-only short-circuit — works in any stack
+if [ -n "$STORY_FILTER" ] && [ -d .git ]; then
+    CHANGED=$({
+        git diff --name-only HEAD 2>/dev/null || true
+        git ls-files --others --exclude-standard 2>/dev/null || true
+    } | sort -u)
+    if [ -n "$CHANGED" ]; then
+        CODE_FILES=$(echo "$CHANGED" | grep -Ev '^(_bmad-output/|docs/|lessons-learned/|epic-reviews/|targetsetup/|[^/]*\.md$)' || true)
+        if [ -z "$CODE_FILES" ]; then
+            echo "=== Story $STORY_FILTER is documentation-only — short-circuiting ==="
+            exit 0
+        fi
+    fi
+fi
+
+# Stack-specific phases follow — each wrapped in 'if [ -d <dir> ]; then ...; fi'
+# See PawprintRecipes/scripts/ci.sh for the full Django + Next.js pattern.
+```
+
+This skeleton plus the matching reference implementation is enough to keep every early story passing CI until Story 1.9 (or its equivalent) replaces it.
+
 ---
 
 ## 5. Railway provisioning — per-target staging
@@ -185,7 +263,7 @@ Items 1–4 are checked by `preflight.sh`. Items 5 and 6 stay manual — they're
 
 ## 8. Current status — PawprintRecipes (`c:\alcorn\AI\PawprintRecipes-wrapper\PawprintRecipes`)
 
-Snapshot taken 2026-05-06. Verify before kickoff — items shift fast in setup phase.
+Snapshot refreshed 2026-05-06 (after ci.sh bootstrap + first kickoff diagnostic loop). Verify before kickoff — items shift fast in setup phase.
 
 ### Done
 
@@ -195,33 +273,51 @@ Snapshot taken 2026-05-06. Verify before kickoff — items shift fast in setup p
 | Implementation-readiness gate | ✅ passed | `_bmad-output/planning-artifacts/implementation-readiness-report-2026-05-05.md`; CLAUDE.md says "Phase D Implementation Readiness COMPLETE" |
 | Project-level CLAUDE.md | ✅ present | `CLAUDE.md` 154 lines, source-of-truth hierarchy + critical rules + memory-system note |
 | Coding standards (split per platform) | ✅ four files | `coding-standards-{android,backend,ios,web}.md` |
+| Coding standards index (singular `coding-standards.md`) | ✅ redirect-to-platform-files | resolves [injection.py:69](../src/context/injection.py) Layer 1 lookup; thin index that routes agents by `[component]` tag to the right per-platform file (so they only load what they need) |
 | Memory system | ✅ junction in place | per CLAUDE.md §Memory system, `.claude/memory/` with junction back from user-home |
 | Targetsetup templates copied in | ✅ present | `targetsetup/ci-script-specification.md`, `local-dev-docker-guide.md`, `lessons-learned-protocol.md`, etc. — operator's reference copies of the shipyard target-templates |
-| `scripts/ci.sh` exists | ✅ stub present | 62 lines, backend-only; factory will skip auto-generation since the file exists |
+| `scripts/ci.sh` bootstrap version | ✅ written and committed | ~210 lines; Phase 0 doc-only short-circuit + skip-when-missing for every other phase + flag parsing per spec. Will be replaced by Story 1.9. See §4.1 for the pattern |
+| `.git/` initialized + initial commit + push | ✅ | branch `main`; remote `origin = https://github.com/dmalcorn/PawprintRecipes.git`; commit `42c16f3` is the planning-artifacts seed; subsequent commit added the bootstrap ci.sh |
+| GitHub repo | ✅ exists, private | `dmalcorn/PawprintRecipes` |
+| `<target>/factory.yaml` | ✅ present | greenfield (`fix_pre_existing_errors: true`); LangSmith project `PawprintRecipes`; sonnet-4-6 across the board, opus-4-6 for `epic_architect` |
+| `<target>/.env` | ✅ present | `LANGCHAIN_PROJECT=PawprintRecipes`; plain GitHub URL (relies on Git Credential Manager) |
+| `.gitignore` | ✅ minimal bootstrap | covers `.env*`, `checkpoints/`, OS noise; Story 1.2 will extend with node_modules / .next / __pycache__ / etc. |
+| Mobile implementation-artifacts archived | ✅ | `_bmad-output/implementation-artifacts/_archive/` holds 16-1-android-conventions.md and 17-1-ios-conventions.md (Phase 2/3 only — out of phase for Phase 1 web build) |
+| Railway project provisioning | ✅ | `PawprintRecipes` project (id `0ca088fc-3db0-47fa-b1f3-fe083b009a10`); services: `Postgres` + `mailpit` + `PawprintRecipes` (empty until source linked); 8 env vars set on app service incl. `RAILWAY_DOCKERFILE_PATH=docker/Dockerfile.backend`; mailpit web UI at `https://mailpit-production-0987.up.railway.app` |
+| chat2diagram migration cleanup | ✅ | `shipyard/factory.yaml` and `shipyard/.env` removed; both targets now use the per-target layout |
 
 ### Outstanding — must complete before kickoff
 
 | # | Item | Why | Where to fix |
 |---|---|---|---|
-| 1 | **No `.git/` directory** | factory will `git init` and create `master` branch automatically — fine, but means there's no GitHub remote yet | run `git init` + `gh repo create dmalcorn/PawprintRecipes --private --source=. --remote=origin` from inside the target |
-| 2 | **`scripts/ci.sh` is a stub, not the contract-compliant script** | Current ci.sh has no `--story X_Y`, no `--epic N`, no doc-only short-circuit, references `docker/docker-compose.dev.yml` which doesn't exist. Factory CI gates will fail at first invocation. | Either (a) rewrite per [ci-script-specification.md](../gauntlet_docs/target-templates/ci-script-specification.md), or (b) delete it and add `_bmad-output/approved-tech-stack.md` so the factory generates a proper one. **(a) recommended** — operator already drafted the structure |
-| 3 | **No `_bmad-output/approved-tech-stack.md`** | factory expects this exact filename and path. Target has `_bmad-output/planning-artifacts/approved-software-versions.md` — different file, different path. Only matters if option (b) above is chosen for ci.sh; otherwise irrelevant | copy/symlink approved-software-versions.md content to `_bmad-output/approved-tech-stack.md` if going route (b) |
-| 4 | **No `_bmad-output/planning-artifacts/coding-standards.md` (singular)** | factory's Layer 1 context injection ([injection.py:69](../src/context/injection.py)) reads this exact path. With four split coding-standards-*.md files instead, agents lose Layer 1 standards context. Silent quality hit, not a crash. | create `coding-standards.md` that either (a) consolidates the four, or (b) is a stub that points at the four with section anchors |
-| 5 | **No `Dockerfile` / `docker-compose.yml` for local dev** | Three-container topology (app + db + mailpit) per [local-dev-docker-guide.md](../gauntlet_docs/target-templates/local-dev-docker-guide.md) is required for the operator to UAT each story. The current `scripts/ci.sh` already references `docker/docker-compose.dev.yml`. | architect-generate or hand-write following the template; place under `docker/` or repo root |
-| 6 | **No `.env.docker` / `.env.docker.example`** | docker-compose template needs these to start | follow [local-dev-docker-guide.md §The .env.docker file](../gauntlet_docs/target-templates/local-dev-docker-guide.md) |
-| 7 | **Railway project not provisioned** | CLI is currently linked to `chat2bpmn`, not PawprintRecipes. No Postgres, no Mailpit, no app service. | follow [railway-setup-guide.md](../gauntlet_docs/railway-setup-guide.md) end-to-end. Project name MUST be exactly `PawprintRecipes` (one word, exact casing) |
-| 8 | **GitHub repo not created** | factory pushes to `origin`; pre-create as empty (no README, no LICENSE) so first push lands cleanly | `gh repo create dmalcorn/PawprintRecipes --private`. After first push, switch default branch to `master` per [git-remote-setup-guide.md §2](../gauntlet_docs/git-remote-setup-guide.md) |
-| 9 | **No `<target>/.env` for PawprintRecipes** | Per §6 each target carries its own .env. Without it, `preflight.sh` will refuse to start. | copy `shipyard/.env.target.example` to `c:\alcorn\AI\PawprintRecipes-wrapper\PawprintRecipes\.env` and fill in `LANGCHAIN_PROJECT=PawprintRecipes` + `GIT_REMOTE_ORIGIN` |
-| 10 | **No `<target>/factory.yaml` for PawprintRecipes** | Same reason. | copy `shipyard/factory.yaml.example` to `c:\alcorn\AI\PawprintRecipes-wrapper\PawprintRecipes\factory.yaml`; fill in `target_repo`, `target_remote_url`, `target.dir` (`"C:\\alcorn\\AI\\PawprintRecipes-wrapper\\PawprintRecipes"`), `langsmith.project` |
-| 11 | **chat2diagram still has its config in `shipyard/.env` and `shipyard/factory.yaml`** (legacy single-target layout) | The current shipyard root contains chat2diagram's last working config. Migrating it out *before* the first preflight run prevents accidental loss when preflight regenerates those files. | manually create `c:\alcorn\Gauntlet\8-Capstone\chat2diagram\.env` (target bits from `shipyard/.env`) and `c:\alcorn\Gauntlet\8-Capstone\chat2diagram\factory.yaml` (current `shipyard/factory.yaml` as-is); then delete `shipyard/factory.yaml` and `shipyard/.env` (not `.env.shared`). After this, both targets are set up symmetrically |
+| 1 | **PawprintRecipes Railway service not linked to GitHub repo** | required for auto-deploy on push; without it, every push to `main` triggers Railway's auto-detect to fail (Railpack tries Go/Rust/etc., finds nothing) | Railway dashboard → PawprintRecipes service → Settings → Source → Connect Repo → choose `dmalcorn/PawprintRecipes`. Auto-deploy gets useful output once Story 1.2 commits the Dockerfile + docker stack. |
+| 2 | **`DATABASE_URL` is a resolved string, not a reference variable** *(deferrable)* | Railway CLI v4.x resolves `${{ServiceName.VAR}}` references at set-time regardless of shell escaping (the railway-setup-guide.md is out of date on this). Practical impact: Postgres password rotation won't propagate. Not blocking kickoff. | Railway dashboard → PawprintRecipes service → Variables → delete `DATABASE_URL` → "+ Add → Add Reference" → choose Postgres → DATABASE_URL. The dashboard preserves the reference correctly. |
+| 3 | **Postgres password surfaced in earlier conversation transcript** *(deferrable)* | when verifying env-var setup with `railway variables --kv`, the resolved `DATABASE_URL` containing the password was returned to the operator's chat. Rotatable; not exploited. | Railway dashboard → Postgres service → Settings → "Reset Password". Combine with item #2 to fix the propagation gap at the same time. |
+
+### Intentionally deferred to Story 1.2 (do NOT pre-create)
+
+| Item | Why deferred |
+|---|---|
+| `docker/docker-compose.dev.yml` + `docker-compose.test.yml` + `docker-compose.prod.yml` + `docker-compose.prod-vps.yml` | Story 1.2's ACs cover all four files plus the three Dockerfiles, the Makefile, and the initial `.env.example`. Pre-creating conflicts with the story's "fresh clone" precondition and the dev agent's verification step. |
+| `docker/Dockerfile.backend` + `Dockerfile.staff` + `Dockerfile.web` | same — Story 1.2 |
+| `.env.docker.example` | same — Story 1.2 |
+
+### Factory patches applied during this setup (UNCOMMITTED in shipyard)
+
+These were diagnosed during the first kickoff cascade (2026-05-06) and patched in [src/multi_agent/bmad_invoke.py](../src/multi_agent/bmad_invoke.py). They are **not yet committed** to shipyard — pending verification of a successful end-to-end factory run. Both are Windows-only behaviors of the npm-installed claude CLI; they are no-ops on Linux/macOS.
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Every agent invocation died in 0.0s with `[WinError 2] The system cannot find the file specified` | Python's `subprocess.Popen` on Windows doesn't honor PATHEXT, so `["claude", ...]` couldn't find `claude.CMD` (the npm-global Windows shim) | resolve at module load: `CLAUDE_BIN = shutil.which("claude") or "claude"` and use `CLAUDE_BIN` in both call sites |
+| Agents received only the first line of the prompt ("...You MUST:") and refused to act | Windows `cmd.exe` argv parsing in the `.CMD` shim drops everything after the first newline in a multi-line argument | drop `cli_args.extend(["--", prompt])`; switch `stdin=subprocess.DEVNULL` → `stdin=subprocess.PIPE`; write prompt with `proc.stdin.write(prompt); proc.stdin.close()` immediately after `Popen` |
+
+Once Story 1.1 actually completes a real run end-to-end with these patches in place, commit them to shipyard so future targets inherit the fix. Until then, future targets on Windows will hit both bugs unless they pull from working-tree.
 
 ### Optional but recommended
 
 | Item | Why |
 |---|---|
-| Delete or archive `_bmad-output/implementation-artifacts/16-1-android-conventions.md` and `17-1-ios-conventions.md` | These were authored Phase 1 but Phase 1 is **web-only**. Mobile conventions belong in Phase 2/3 prep. Keep them in `_archive/` to prevent the factory's BMAD agents from picking them up out of phase |
-| Verify `.gitignore` | Should cover `.env*`, `node_modules/`, `__pycache__/`, `.next/`, `*.pyc`, `staticfiles/`, etc. before first commit |
-| Set Anthropic / LangSmith / GitHub PAT secrets in **Railway app service** | App service won't deploy successfully without them; the build itself doesn't need them on Railway, but the operator's UAT will |
+| Set Anthropic / LangSmith / GitHub PAT secrets in **Railway app service** | App service deploy will fail without them once Story 1.2 lands a real Dockerfile; the factory build doesn't need them on Railway, but the operator's UAT will |
 
 ---
 

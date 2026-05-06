@@ -31,6 +31,22 @@ Local dev/test         Railway staging (UAT)      Production (VPS)
 
 The two environments are completely isolated. Local dev never reaches Railway's database; Railway staging never reaches the local one. This is the inverse of the chat2bpmn/chat2diagram pattern and is the explicit goal of the new setup.
 
+## Link state drifts — re-link before every Railway operation
+
+Independent from (and just as important as) the single-attempt-then-verify rule below: the Railway CLI's project link can revert silently between shell invocations. A `railway link --project X` succeeds, then the next `railway add` or `railway variable set` runs against a *different* project than you just linked to. Commands return success but mutate the wrong project. The most expensive failure mode is when this creates duplicate billable resources (e.g., a Postgres added to the wrong project that has to be manually deleted from the dashboard).
+
+**Rule:** chain `railway link --project <name> && <actual-command>` in a single shell invocation. Do not assume a prior `railway link` is still in effect after any context switch — even within the same session.
+
+**Verify the current link before any mutating command if you can't chain:**
+
+```bash
+railway status --json | python -c "import json,sys; print(json.load(sys.stdin).get('name'))"
+```
+
+If the output is not the project you expect, abort and re-link before proceeding.
+
+**This is real and recurring** — it bit during the PawprintRecipes setup on 2026-05-06 (twice) and during the relay cleanup on 2026-05-02 (memorialized in [reference_railway_setup.md](../../../.claude/projects/c--alcorn-Gauntlet-8-Capstone-factory-shipyard/memory/reference_railway_setup.md)). Treat it as default behavior, not an edge case.
+
 ## The single-attempt-then-verify protocol
 
 This is the most important rule in the document. It exists because the user has previously had to manually delete three duplicate Postgres services from the Railway dashboard after an agent retried `railway add` on silent output.
