@@ -26,11 +26,9 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from src.agent.graph import create_agent, create_trace_config
 from src.audit_log.audit import AuditLogger
 from src.intake.intervention_log import (
     InterventionLogger,
@@ -58,16 +56,10 @@ from src.pipeline_tracker import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Environment & graph initialization
+# Environment
 # ---------------------------------------------------------------------------
 
 load_dotenv()
-
-# Ensure checkpoints directory exists
-os.makedirs("checkpoints", exist_ok=True)
-
-# Module-level compiled graph — shared by both server and CLI
-graph = create_agent()
 
 # Shared secret for authenticating event push requests
 _RELAY_KEY = os.environ.get("SHIPYARD_RELAY_KEY", "")
@@ -75,39 +67,6 @@ _RELAY_KEY = os.environ.get("SHIPYARD_RELAY_KEY", "")
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
-
-
-class InstructRequest(BaseModel):
-    """Request body for the /instruct endpoint."""
-
-    message: str
-    session_id: str | None = None
-
-
-class InstructResponse(BaseModel):
-    """Response body for the /instruct endpoint."""
-
-    session_id: str
-    response: str
-    messages_count: int
-
-
-class RebuildRequest(BaseModel):
-    """Request body for the /rebuild endpoint."""
-
-    target_dir: str
-    session_id: str | None = None
-
-
-class RebuildResponse(BaseModel):
-    """Response body for the /rebuild endpoint."""
-
-    session_id: str
-    stories_completed: int
-    stories_failed: int
-    interventions: int
-    total_stories: int
-    status: str
 
 
 class InterventionRequest(BaseModel):
@@ -221,85 +180,6 @@ async def pipeline_stage(session_id: str) -> dict[str, Any]:
     if not stage:
         return {"status": "unknown", "error": "No such session"}
     return stage
-
-
-@app.post("/instruct", response_model=InstructResponse)
-def instruct(request: InstructRequest) -> InstructResponse:
-    """Process an instruction through the agent graph.
-
-    Args:
-        request: The instruction request containing a message and optional session_id.
-
-    Returns:
-        InstructResponse with session_id, agent response text, and message count.
-    """
-    session_id = request.session_id or str(uuid.uuid4())
-    config = create_trace_config(session_id=session_id, task_id=session_id)
-
-    start_pipeline(session_id, "instruct")
-    advance_stage(session_id, "agent_node")
-
-    audit = AuditLogger(session_id=session_id, task_description=request.message)
-    audit.start_session()
-
-    try:
-        advance_stage(session_id, "should_continue")
-        result = graph.invoke(
-            {
-                "messages": [HumanMessage(content=request.message)],
-                "task_id": session_id,
-            },
-            config=config,
-        )
-        advance_stage(session_id, "response")
-        complete_pipeline(session_id)
-    except Exception:
-        fail_pipeline(session_id, "Agent invocation failed")
-        raise
-    finally:
-        audit.end_session()
-
-    response_text = _extract_response(result)
-    messages_count = len(result.get("messages", []))
-
-    return InstructResponse(
-        session_id=session_id,
-        response=response_text,
-        messages_count=messages_count,
-    )
-
-
-@app.post("/rebuild", response_model=RebuildResponse)
-def rebuild(request: RebuildRequest) -> RebuildResponse:
-    """Run the autonomous rebuild loop on a target project.
-
-    Args:
-        request: The rebuild request with target_dir and optional session_id.
-
-    Returns:
-        RebuildResponse with completion stats.
-    """
-    session_id = request.session_id or str(uuid.uuid4())
-
-    result = run_rebuild(
-        target_dir=request.target_dir,
-        session_id=session_id,
-    )
-
-    total = result.get("total_stories", 0)
-    completed = result.get("stories_completed", 0)
-    status = "completed" if completed == total and total > 0 else "partial"
-    if total == 0:
-        status = "empty"
-
-    return RebuildResponse(
-        session_id=session_id,
-        stories_completed=completed,
-        stories_failed=result.get("stories_failed", 0),
-        interventions=result.get("interventions", 0),
-        total_stories=total,
-        status=status,
-    )
 
 
 # Module-level dict to hold active intervention loggers per session
@@ -458,73 +338,6 @@ async def api_stream_logs(session_id: str, after_id: int = 0) -> EventSourceResp
             await asyncio.sleep(2)
 
     return EventSourceResponse(event_generator())
-
-
-def _extract_response(result: dict[str, Any]) -> str:
-    """Extract the final AI response text from graph invocation result."""
-    messages = result.get("messages", [])
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content:
-            content = msg.content
-            if isinstance(content, list):
-                return " ".join(
-                    block.get("text", "") for block in content if isinstance(block, dict)
-                )
-            return str(content)
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# CLI mode
-# ---------------------------------------------------------------------------
-
-
-def _run_cli() -> None:
-    """Run the interactive CLI loop."""
-    session_id = str(uuid.uuid4())
-
-    audit = AuditLogger(session_id=session_id, task_description="Interactive CLI session")
-    audit.start_session()
-
-    print(f"Shipyard CLI (session: {session_id})")
-    print('Type "exit" or "quit" to stop.\n')
-
-    try:
-        while True:
-            try:
-                user_input = input(">>> ")
-            except (KeyboardInterrupt, EOFError):
-                print("\nGoodbye.")
-                break
-
-            stripped = user_input.strip()
-            if not stripped:
-                continue
-            if stripped.lower() in ("exit", "quit"):
-                print("Goodbye.")
-                break
-
-            # Each turn gets a fresh thread_id so the checkpointer doesn't
-            # accumulate messages from prior turns and each turn produces
-            # its own independent LangSmith trace.
-            turn_id = str(uuid.uuid4())
-            turn_config = create_trace_config(session_id=turn_id, task_id=turn_id)
-            # Give the trace a human-readable name (truncated instruction)
-            turn_config["run_name"] = f"cli: {stripped[:60]}"
-
-            result = graph.invoke(
-                {
-                    "messages": [HumanMessage(content=stripped)],
-                    "task_id": turn_id,
-                },
-                config=turn_config,
-            )
-
-            response_text = _extract_response(result)
-            if response_text:
-                print(response_text)
-    finally:
-        audit.end_session()
 
 
 # ---------------------------------------------------------------------------
@@ -783,7 +596,6 @@ def _run_rebuild_cli(
 def main() -> None:
     """Route to CLI mode, intake mode, or start the FastAPI server."""
     parser = argparse.ArgumentParser(description="Shipyard agent server")
-    parser.add_argument("--cli", action="store_true", help="Run interactive CLI mode")
     parser.add_argument(
         "--rebuild",
         metavar="TARGET_DIR",
@@ -821,8 +633,6 @@ def main() -> None:
             skip_story_reviews=args.no_story_reviews,
             skip_story_ci=args.no_story_ci,
         )
-    elif args.cli:
-        _run_cli()
     else:
         import uvicorn
 
