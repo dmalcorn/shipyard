@@ -1,25 +1,28 @@
-# Shipyard Factory Configuration
-# Secrets (API keys) go in .env, not here. This file can be committed.
+# Shipyard factory configuration — per-target.
+# Lives at <target>/factory.yaml (committed to the target's repo).
+# Pre-flight script copies this into shipyard/factory.yaml at build time
+# and (if mutated by save_ci_fix_pre_existing) copies it back at run end.
+# Secrets stay in .env — never put API keys here.
 
 operator:
-  first_name: "Diane"
-  last_name: "Alcorn"
-  email: "dianealcorn@gmail.com"
+  first_name: "Your"
+  last_name: "Name"
+  email: "your@email.com"
 
 github:
-  username: "dmalcorn"
-  target_repo: "chat2diagram"
-  target_remote_url: "https://github.com/dmalcorn/chat2diagram.git"
+  username: "your-gh-handle"
+  target_repo: "TargetName"
+  target_remote_url: "https://github.com/your-gh-handle/TargetName.git"
 
 git:
-  author_name: "Diane Alcorn"
-  author_email: "dianealcorn@gmail.com"
+  author_name: "Your Name"
+  author_email: "your@email.com"
 
 langsmith:
-  project: "chat2bpmn"
+  project: "TargetName"
 
 target:
-  dir: "C:\\alcorn\\Gauntlet\\8-Capstone\\chat2diagram"
+  dir: "C:\\absolute\\path\\to\\TargetName"   # Windows: double-backslashes
 
 # Review configuration.
 # Set story_level to false to skip per-story code reviews

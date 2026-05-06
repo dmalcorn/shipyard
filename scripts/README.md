@@ -1,6 +1,14 @@
 # scripts/
 
-Two distinct categories of script live in this directory: **factory-runtime scripts** that the LangGraph invokes during a build, and **operator forensic tools** that humans run after a build to analyze what happened. They have nothing to do with each other; the distinction below saves the next investigator from wondering which is which.
+Three distinct categories of script live in this directory: **factory-runtime scripts** that the LangGraph invokes during a build, **operator orchestration scripts** that humans run to start a build, and **operator forensic tools** that humans run after a build to analyze what happened. They have nothing to do with each other; the distinction below saves the next investigator from wondering which is which.
+
+## Operator orchestration
+
+Humans run these to start (or wrap) a factory build.
+
+| Script | What it does | When you'd use it |
+|---|---|---|
+| `preflight.sh` | Stages a target's `factory.yaml` + `.env` into shipyard root, runs auth/import smoke tests, kicks off `python -m src.main --rebuild`, and removes the staged files on exit (success, failure, or Ctrl+C). | Every build kickoff. Lets per-target config live in each target repo and makes interleaved multi-target builds safe. See [docs/how-to-setup-factory-harness.md](../docs/how-to-setup-factory-harness.md). |
 
 ## Factory-runtime scripts
 
