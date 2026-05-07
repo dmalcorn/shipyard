@@ -1741,8 +1741,15 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
             ["git", "log", "-50", "--format=%s"],
             cwd=cwd,
         )
+        # Accept the canonical subject ("story X-Y complete") OR a
+        # descriptive form that starts with it followed by ": ..." — the
+        # dev_story agent sometimes commits with extra detail after the
+        # canonical prefix (e.g. "story 1-9 complete: Playwright e2e ...").
+        # The "expected_msg + ':'" guard prevents false matches like
+        # "story 1-99 complete" against "story 1-9 complete".
         prior_commit_found = any(
             line.strip() == expected_msg
+            or line.strip().startswith(expected_msg + ":")
             for line in log_out.splitlines()
         )
         if prior_commit_found:
