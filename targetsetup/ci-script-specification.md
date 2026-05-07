@@ -55,16 +55,70 @@ fi
 
 Targets that follow [local-dev-docker-guide.md](local-dev-docker-guide.md) run their app + DB + supporting services in a long-lived dev compose stack (`docker/docker-compose.dev.yml`). The leave-it-up policy means that stack is normally already running when CI fires.
 
-Some CI phases — notably the migration gate (Phase 1b below) — must run **inside** a dev container because the host doesn't have the language runtime, the framework, or the DB connection configured. Those phases SHOULD:
+**Backend lint, typecheck, and test phases MUST run inside the dev backend container, not on the host.** This is enforced based on a real failure mode in the 2026-05 PawprintRecipes run: across 22 stories, Phase 3a (backend pytest) recorded **0 passes, 0 failures, and 9 silent skips** because `command -v pytest` returned false in the orchestrator's `subprocess.run` PATH context — masking every backend test outcome for the entire epic 1+2 build. The deeper problem isn't just pytest's PATH: even when the bare CLI shim resolves, the host's Python env doesn't have the project's pinned deps (celery, structlog, drf-spectacular, etc.) — the dev container does, courtesy of `docker/Dockerfile.<service>` running `pip install -r requirements.txt`. Two failure modes (PATH divergence + dep parity) collapse to one fix: dispatch into the container.
+
+The phases this rule applies to:
+
+| Phase | Why it must dispatch |
+|---|---|
+| 1a — Backend lint (ruff/black) | Tools live in `pip` env, deps presence affects analysis |
+| 1b — Backend typecheck (mypy) | Same; mypy needs to import project deps |
+| 1b — Migration gate (already containerized) | DB connection + Django runtime |
+| 3a — Backend tests (pytest) | Imports the entire project; needs all deps |
+| 3c — Contract-invariant tests (pytest) | Same; imports the contract generator |
+
+Phases that legitimately stay on the host:
+
+| Phase | Why it stays on host |
+|---|---|
+| 0 — Doc-only short-circuit | Pure git operations |
+| fmt — Auto-format write pass | Best-effort; worse-case writes nothing |
+| 1c — Frontend lint (eslint) | Resolves from `node_modules/.bin` host-side |
+| 1d — Frontend typecheck (tsc) | Same |
+| 3b — Frontend tests (vitest) | Same |
+| 4 — E2E (Playwright) | Drives a browser process |
+| 5a — Bandit | Scans source files; static |
+| 5b — npm audit | Operates on `node_modules/` |
+
+Each containerized phase MUST:
 
 1. Detect whether the required service is in `running` state via `docker compose ps <service> --format json`.
 2. If not running, bring it up with `docker compose up -d <service>` and recheck — don't fail just because the operator hasn't kicked off the stack yet.
-3. If Docker isn't available at all (daemon down, CLI missing), warn and skip the phase rather than fail; the operator's environment is broken in a way the script can't fix.
+3. If Docker isn't available at all (daemon down, CLI missing), warn and fall back to host execution as a degraded mode (with a clear "Docker unavailable — falling back to host" message). The operator's environment is broken in a way the script can't fix; we run what we can rather than skip silently.
 4. If Docker IS available but the service can't be brought up, fail loud — silent skip masks real topology problems.
 
-The factory's orchestrator (`src/multi_agent/orchestrator.py`'s `_ensure_migrations`) follows the same pattern; CI script phases that touch containerized services should match.
+Reference helper scaffold (single file, reusable across phases):
 
-Phases that run only on the host (lint, typecheck, formatter checks) don't need this coordination — the relevant tools (ruff, mypy, eslint, tsc, prettier) are operator-installed and don't depend on the running stack.
+```bash
+DEV_COMPOSE_FILE="docker/docker-compose.dev.yml"
+BACKEND_SERVICE="<your-backend-service>"   # e.g. pawprint-backend, app-backend
+
+_docker_ready() {
+    [ -f "$DEV_COMPOSE_FILE" ] || return 1
+    command -v docker >/dev/null 2>&1 || return 1
+    docker info >/dev/null 2>&1 || return 1
+    return 0
+}
+
+_ensure_container_up() {
+    local service="$1"
+    local running
+    running=$(docker compose -f "$DEV_COMPOSE_FILE" ps "$service" --format json 2>/dev/null \
+                | grep -c '"State":"running"' || true)
+    if [ "$running" -eq 0 ]; then
+        echo "  $service not running — bringing up via 'docker compose up -d'"
+        docker compose -f "$DEV_COMPOSE_FILE" up -d "$service"
+    fi
+}
+
+_container_exec() {
+    local service="$1"
+    shift
+    docker compose -f "$DEV_COMPOSE_FILE" exec -T "$service" "$@"
+}
+```
+
+The factory's orchestrator (`src/multi_agent/orchestrator.py`'s `_ensure_migrations`) and stack adapters (`src/adapters/django.py`'s `autoformat`/`lint_fix`) use the same dispatch pattern via `src/dev_container.py`. CI script phases that touch the project's pinned Python tooling should match.
 
 ### Optional: separate test-stack lifecycle
 
@@ -208,20 +262,24 @@ npx prettier --check "src/**/*.{ts,tsx,js,jsx,json,css}" || exit 1   # fails on 
 
 Run linters in check mode. Failures here MUST exit non-zero. Examples:
 
-- TypeScript projects: `prettier --check`, `eslint .`
-- Python projects: `black --check`, `ruff check`
+- TypeScript projects: `prettier --check`, `eslint .` (host-side; resolves from `node_modules/.bin`)
+- Python projects: `python -m ruff check` (MUST run inside the dev backend container — see "Coordination with the dev Docker stack" above)
 - Mixed-stack: each stack's lint runs in its own subsection with a `=== Phase 2: <stack> Lint ===` header
+
+For multi-Python-service projects (e.g. `backend/` + `staff/` Django UI + worker), each service's lint runs inside its own container. The container's WORKDIR maps to the bind-mounted source dir, so the command becomes `python -m ruff check .` (no `backend/` prefix needed once inside).
 
 ### Phase 3 — Type check (MUST, skip with `--test-only`)
 
 Examples:
 
-- TypeScript: `npx tsc --noEmit`
-- Python with type hints: `mypy <packages>`
+- TypeScript: `npx tsc --noEmit` (host-side; tsc resolves from `node_modules/.bin`)
+- Python: `python -m mypy . --ignore-missing-imports` MUST run inside the dev backend container — mypy needs to import project deps to type-check them, and those deps live in the container's pip env, not the host's
 
 A note on `tsc --noEmit`: it's GLOBAL. A schema change in story X.5 that adds a required column will surface as TS errors in mocks across stories elsewhere. The factory's scope-constraint prompt now tells the agent these downstream errors ARE in scope (commit `a43564b`), but the CI script should make sure these errors are reported with full file paths and line numbers so the agent can find them.
 
 ### Phase 4 — Tests (MUST)
+
+Backend tests (pytest) MUST dispatch into the dev backend container. Frontend tests (vitest, jest) stay on the host because their tooling resolves from `node_modules/.bin` and the test runtime is JSDOM/Node, not the application container. See "Coordination with the dev Docker stack" above for the dispatch rationale and helper scaffold.
 
 Two patterns matter here, in order:
 
@@ -282,6 +340,8 @@ Examples:
 - `protoc --lint` — verifies proto definitions
 
 Like the migration gate (Phase 1b), this phase is **not** skipped by `--story X-Y` and **not** skipped by `--test-only`. It's a correctness gate, not a story-local concern.
+
+When the contract is generated by Python code (drf-spectacular, Pydantic-based generators), the test MUST dispatch into the dev backend container per the rule in "Coordination with the dev Docker stack" — same import-path concerns as Phase 3a.
 
 ### Phase 5 — Build (MUST, skip with `--test-only`)
 
