@@ -12,6 +12,8 @@ import json
 import logging
 import operator
 import os
+import re
+import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, TypedDict
 
@@ -52,7 +54,19 @@ from src.multi_agent.orchestrator import (
     get_fix_pre_existing,
     resolve_ci_command,
 )
+from src.multi_agent.bmad_invoke import (
+    get_rate_limit_sleep_seconds,
+    reset_rate_limit_sleep_counter,
+)
 from src.pipeline_tracker import update_story_progress
+
+# Threshold (in seconds of *actual work time*, excluding rate-limit sleeps)
+# above which a completed story is flagged as slow. 45 min — most stories
+# in the PawprintRecipes Epic 1+2 corpus completed in 7-30 min; a few heavy
+# stories (OAuth, Docker scaffolding) hit 30-50 min legitimately. Past 45
+# min the agent has likely thrashed in a CI-fix loop or against
+# under-specified acceptance criteria, and the operator should know.
+SLOW_STORY_WORK_SECONDS = 45 * 60
 
 # deferred-work.md lives under the target repo's BMAD output tree; BMAD
 # skills also append to this path at story level.
@@ -146,6 +160,9 @@ class EpicState(TypedDict, total=False):
     current_story_error: str
     current_story_failed_phase: str  # orchestrator phase where the story failed
     current_story_retry_instruction: str  # set by intervention
+    current_story_start_time: float  # time.time() captured at select_story_node;
+                                     # finalize subtracts rate-limit sleep from
+                                     # (now - this) to compute work_seconds.
 
     # Epic post-processing state
     epic_review_file_paths: Annotated[list[str], operator.add]
@@ -233,10 +250,17 @@ def select_story_node(state: EpicState) -> dict[str, Any]:
         story_index=state.get("rebuild_prior_completed", 0) + story_index,
     )
 
+    # Per-story duration accounting: capture start time and zero the
+    # rate-limit sleep counter so process_story_result_node can compute
+    # actual work time (wall time minus any rate-limit sleeps that
+    # accumulated during this story).
+    reset_rate_limit_sleep_counter()
+
     return {
         "current_story_status": "",
         "current_story_error": "",
         "current_story_retry_instruction": "",
+        "current_story_start_time": time.time(),
     }
 
 
@@ -360,15 +384,56 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
     else:
         stories_failed += 1
 
-    result_entry = {
+    # Duration accounting: wall_seconds = total elapsed since select_story_node
+    # captured the start time; sleep_seconds = time spent in rate-limit auto-
+    # retry waits during this story; work_seconds = wall - sleep, which is
+    # what we judge "slow" against. A story that took 2.5h wall time but
+    # 30 min of work (because a 2h rate-limit window opened mid-story) is
+    # not actually slow — the auto-retry handled it correctly. Without this
+    # subtraction, every rate-limit hit would show as a slow-story flag.
+    start_time = state.get("current_story_start_time", 0.0)
+    sleep_seconds = get_rate_limit_sleep_seconds()
+    if start_time > 0:
+        wall_seconds = max(0.0, time.time() - start_time)
+        work_seconds = max(0.0, wall_seconds - sleep_seconds)
+    else:
+        # Resume case: start_time wasn't set in this process. Fall back to
+        # zero so we don't emit nonsense numbers (a fresh "now" minus 1970
+        # would dwarf any real story).
+        wall_seconds = 0.0
+        work_seconds = 0.0
+    is_slow = (
+        status == "completed"
+        and work_seconds > SLOW_STORY_WORK_SECONDS
+    )
+
+    result_entry: dict[str, Any] = {
         "epic": epic_num,
         "story": story_id,
         "story_name": story_name,
         "status": status,
         "interventions": 0,
+        "wall_seconds": int(wall_seconds),
+        "sleep_seconds": int(sleep_seconds),
+        "work_seconds": int(work_seconds),
     }
 
-    print(f"\n    STORY RESULT: {story_id} ({story_name}) — {status}")
+    duration_summary = (
+        f"work {int(work_seconds // 60)}m"
+        + (f" (+ {int(sleep_seconds // 60)}m rate-limit sleep)" if sleep_seconds > 0 else "")
+    )
+    slow_flag = "  *** SLOW" if is_slow else ""
+    print(
+        f"\n    STORY RESULT: {story_id} ({story_name}) — {status} "
+        f"[{duration_summary}]{slow_flag}",
+    )
+    if is_slow:
+        print(
+            f"    [slow-story] Story {story_id} took {int(work_seconds // 60)}m of "
+            f"actual work (threshold {SLOW_STORY_WORK_SECONDS // 60}m). Likely "
+            f"causes: CI-fix loop thrashing, under-specified acceptance criteria, "
+            f"or context-bloat in dev_story prompt.",
+        )
 
     global_completed = state.get("rebuild_prior_completed", 0) + stories_completed
     global_failed = state.get("rebuild_prior_failed", 0) + stories_failed
@@ -382,6 +447,10 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
         failed=global_failed,
         interventions=total_interventions,
         story_index=state.get("rebuild_prior_completed", 0) + story_index + 1,
+        last_story_wall_seconds=int(wall_seconds),
+        last_story_sleep_seconds=int(sleep_seconds),
+        last_story_work_seconds=int(work_seconds),
+        last_story_slow=is_slow,
     )
 
     updates: dict[str, Any] = {
@@ -606,34 +675,148 @@ def _parse_fix_plan(content: str) -> tuple[bool, int]:
     return flag, approved_count
 
 
-def _files_changed_in_epic(working_dir: str | None, epic_num: str) -> list[str]:
+# Identifies the story portion of a commit subject in either the canonical
+# form ("story 1-9 complete") or the descriptive form the dev_story agent
+# sometimes emits ("story 1-9 complete: Playwright e2e config, ..."). The
+# capture group is the task_id (epic_num-story_id, e.g. "1-9").
+_COMMIT_STORY_ID_RE = re.compile(r"^story (\S+) complete(?:\s|:|$)")
+
+# Story-title patterns that mark a story as out-of-scope for epic-level
+# code review.
+#
+# - "Spike" stories at the start of an epic are doc-only by BMAD convention
+#   (see e.g. Epic 1 spec: "Story 1.1 is the doc-only Spike per brief §2.10").
+#   They produce planning artifacts the reviewer doesn't need to gate on.
+# - "Integration Polish" stories at the end of an epic don't add new feature
+#   code — they tie the epic's stories together and stand up the operator
+#   demo (Epic 1 spec: "Story 1.10 is the Integration Polish per brief §2.12").
+#   Their code (Makefile glue, demo scaffolding, README updates) is already
+#   covered by the per-story reviews of stories 2..N-1; including them in
+#   the epic review just inflates the prompt without adding signal.
+_SPIKE_TITLE_RE = re.compile(r"\bspike\b", re.IGNORECASE)
+_POLISH_TITLE_RE = re.compile(r"\bintegration polish\b", re.IGNORECASE)
+
+
+def _doc_only_task_ids(
+    stories: list[dict[str, Any]],
+    epic_num: str,
+) -> set[str]:
+    """Return the task_ids (e.g. {"1-1", "1-10"}) for stories whose titles
+    mark them as doc-only spikes or integration-polish stories. These get
+    excluded from the epic-level review file scope.
+    """
+    excluded: set[str] = set()
+    for s in stories:
+        name = s.get("story_name", "") or ""
+        if _SPIKE_TITLE_RE.search(name) or _POLISH_TITLE_RE.search(name):
+            sid = s.get("story_id", "")
+            if sid:
+                excluded.add(f"{epic_num}-{sid}")
+    return excluded
+
+
+def _files_changed_in_epic(
+    working_dir: str | None,
+    epic_num: str,
+    exclude_task_ids: set[str] | None = None,
+) -> list[str]:
     """Return all files touched by any story-commit in the given epic.
 
     Uses the git log convention ``story {epic_num}-<story_id> complete``
     (written by ``orchestrator.git_commit_node``) rather than trying to
     accumulate file lists through the orchestrator's phase state, which
     loses entries across the commit boundary between stories.
+
+    If ``exclude_task_ids`` is non-empty, commits whose subject identifies
+    an excluded task (e.g. doc-only spike, integration-polish story) are
+    skipped during file collection. A file modified in both an excluded
+    and a non-excluded story is still included — the exclusion is at the
+    commit level, not the file level.
     """
     if not epic_num:
         return []
 
+    excluded = exclude_task_ids or set()
     cwd = working_dir or "."
-    ok, output = _run_bash(
-        [
-            "git",
-            "log",
-            f"--grep=^story {epic_num}-",
-            "--name-only",
-            "--format=",
-        ],
-        cwd=cwd,
-        timeout=15,
-    )
-    if not ok:
-        logger.warning("git log for epic %s file list failed: %s", epic_num, output[:200])
-        return []
 
-    files = {line.strip() for line in output.splitlines() if line.strip()}
+    # __BDY__ delimits per-commit blocks so we can parse out the subject
+    # before applying the exclusion filter. Unlikely to collide with any
+    # real commit subject; even if it did, the worst case is the wrong
+    # files getting filtered for one commit, not a crash.
+    #
+    # We invoke subprocess directly instead of via _run_bash because
+    # _run_bash truncates output to the last 5000 chars to keep prompts
+    # bounded. For an epic with broad commits (e.g. story 1-1 of
+    # PawprintRecipes touched ~840 .claude/skills/** files when bootstrapping
+    # the BMAD framework, producing 64KB of git output), that truncation
+    # silently drops most of the commit history and the resulting file
+    # list ends up being whatever fits in the tail-end of the output.
+    # This output never feeds an LLM prompt, so the cap is harmful here.
+    import subprocess
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "log",
+                f"--grep=^story {epic_num}-",
+                "--name-only",
+                "--format=__BDY__%n%s",
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("git log for epic %s file list failed: %s", epic_num, e)
+        return []
+    if result.returncode != 0:
+        logger.warning(
+            "git log for epic %s file list failed: %s",
+            epic_num, (result.stderr or "")[:200],
+        )
+        return []
+    output = result.stdout or ""
+
+    files: set[str] = set()
+    skipped_task_ids: set[str] = set()
+    for block in output.split("__BDY__\n"):
+        block = block.strip("\n")
+        if not block:
+            continue
+        lines = block.split("\n")
+        subject = lines[0].strip()
+        m = _COMMIT_STORY_ID_RE.match(subject)
+        if not m:
+            # Not a story-complete commit (e.g. an intermediate fix
+            # commit) — fall back to including its files, matching the
+            # prior behavior.
+            for f in lines[1:]:
+                f = f.strip()
+                if f:
+                    files.add(f)
+            continue
+        task_id = m.group(1)
+        if task_id in excluded:
+            skipped_task_ids.add(task_id)
+            continue
+        for f in lines[1:]:
+            f = f.strip()
+            if f:
+                files.add(f)
+
+    if skipped_task_ids:
+        logger.info(
+            "epic %s file collection: skipped commits for %d doc-only/polish "
+            "stor%s: %s",
+            epic_num,
+            len(skipped_task_ids),
+            "y" if len(skipped_task_ids) == 1 else "ies",
+            sorted(skipped_task_ids),
+        )
+
     return sorted(files)
 
 
@@ -648,10 +831,18 @@ def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     """
     working_dir = state.get("target_dir") or None
     epic_num = state.get("epic_num", "")
+    stories = state.get("stories", [])
     _ensure_epic_reviews_dir(working_dir=working_dir)
-    files = _files_changed_in_epic(working_dir, epic_num)
+    exclude_task_ids = _doc_only_task_ids(stories, epic_num)
+    files = _files_changed_in_epic(
+        working_dir, epic_num, exclude_task_ids=exclude_task_ids,
+    )
     logger.info(
-        "prepare_epic_reviews: epic=%s files_from_git=%d", epic_num, len(files),
+        "prepare_epic_reviews: epic=%s files_from_git=%d (excluded %d "
+        "doc-only/polish stor%s from review scope: %s)",
+        epic_num, len(files), len(exclude_task_ids),
+        "y" if len(exclude_task_ids) == 1 else "ies",
+        sorted(exclude_task_ids) if exclude_task_ids else "[]",
     )
     return {"epic_review_file_paths": [], "epic_files_modified": files}
 

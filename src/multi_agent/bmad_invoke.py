@@ -275,6 +275,35 @@ def _extract_agent_identification(output: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+# Module-global counter of seconds spent in rate-limit auto-retry sleeps.
+# The orchestrator resets this at story-start and reads it at story-end so
+# per-story duration metrics can subtract sleep time from wall-clock time —
+# otherwise a story that hit a 2h rate-limit window looks "slow" when it
+# was actually just waiting. Single-threaded in practice (one story at a
+# time); the lock is defensive only.
+_rate_limit_sleep_seconds: int = 0
+_rate_limit_sleep_lock = threading.Lock()
+
+
+def reset_rate_limit_sleep_counter() -> None:
+    """Zero the rate-limit sleep counter. Called at story boundaries."""
+    global _rate_limit_sleep_seconds
+    with _rate_limit_sleep_lock:
+        _rate_limit_sleep_seconds = 0
+
+
+def get_rate_limit_sleep_seconds() -> int:
+    """Return seconds spent in rate-limit sleeps since the last reset."""
+    with _rate_limit_sleep_lock:
+        return _rate_limit_sleep_seconds
+
+
+def _add_rate_limit_sleep(seconds: int) -> None:
+    global _rate_limit_sleep_seconds
+    with _rate_limit_sleep_lock:
+        _rate_limit_sleep_seconds += seconds
+
+
 def _parse_rate_limit_wait_seconds(output: str) -> int | None:
     """Parse "You've hit your limit · resets HH:MMam/pm (...)" and return
     seconds until the wall-clock reset time (in local time). The CLI's
@@ -575,6 +604,10 @@ def invoke_bmad_agent(
                         "aborting retry.",
                     )
                     raise SystemExit(2)
+                # Record the slept time so per-story duration metrics can
+                # subtract it from wall time and distinguish "slow story"
+                # from "story that waited on a rate-limit window."
+                _add_rate_limit_sleep(wait_s)
                 print(
                     f"      [bmad] *** Resuming after rate-limit wait — "
                     f"re-invoking {bmad_agent} {command}",
