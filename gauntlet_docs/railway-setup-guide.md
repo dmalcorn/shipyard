@@ -156,15 +156,14 @@ print('services:', services)
 
 Expected: services list now contains `Postgres`, `mailpit`, and (later) the app service. Same single-attempt-then-verify discipline as Postgres.
 
-### 4. Expose Mailpit's web UI
+### 4. Confirm Mailpit stays private — do NOT add a public domain
 
-The Mailpit web/API port (8025) needs a public domain so the operator can browse captured emails during UAT. The SMTP port (1025) stays internal — only the app talks to it.
+**Policy: Mailpit is private-network only.** Both ports (SMTP `1025` and the web UI `8025`) are reachable only via Railway's internal hostname `mailpit.railway.internal`. The app talks to it over private networking; nothing else.
+
+Why no public domain: Mailpit listens on **two** ports inside the container. When a public domain is added without an explicit `targetPort`, Railway's auto-detection can't pick one and `CONFIGURE_NETWORK` errors out after a 5-minute timeout, marking the deployment FAILED. (Recovered case from PawprintRecipes 2026-05-06: deployment `7454d145-e75e-41fc-9246-b5352713f28b`.) Even with `--port 8025` specified, the safest posture is no public exposure at all.
 
 ```bash
-# Generate a public domain for port 8025
-railway domain --service mailpit --port 8025
-
-# Verify
+# Verify mailpit has NO public service domains and NO TCP proxies.
 railway status --json | python -c "
 import json, sys
 for s in json.load(sys.stdin).get('services', []):
@@ -173,7 +172,15 @@ for s in json.load(sys.stdin).get('services', []):
 "
 ```
 
-Expected: at least one entry like `mailpit-production-XXXX.up.railway.app`. Save this — it goes into the app's `MAILPIT_WEB_URL` env var below.
+Expected: empty list. If a public domain already exists, delete it via the dashboard (Settings → Networking → remove domain) or via the GraphQL `serviceDomainDelete` mutation, then redeploy.
+
+When the operator needs to browse captured emails during UAT (rare — most verification is via the API), spin up a temporary public domain with an explicit port, then **delete it after**:
+
+```bash
+railway domain --service mailpit --port 8025      # temporary
+# ...browse mailpit-production-XXXX.up.railway.app...
+# Then delete the domain from the dashboard before walking away.
+```
 
 ### 5. Create the app service
 
@@ -197,24 +204,24 @@ Use `--skip-deploys` when setting in sequence to avoid kicking off partial deplo
 
 ```bash
 APP=<TargetName>
-MAILPIT_DOMAIN=<the domain from step 4>
 
 railway variables --service "$APP" --skip-deploys \
   --set "DATABASE_URL=\${{Postgres.DATABASE_URL}}" \
   --set "SMTP_HOST=mailpit.railway.internal" \
   --set "SMTP_PORT=1025" \
   --set "SMTP_USE_TLS=False" \
-  --set "MAILPIT_WEB_URL=https://$MAILPIT_DOMAIN" \
   --set "LANGCHAIN_PROJECT=$APP" \
   --set "DEFAULT_FROM_EMAIL=test@yourdomain.example"
 ```
+
+`MAILPIT_WEB_URL` is intentionally **not** set — Mailpit's web UI is not publicly reachable, and any test/UAT process that needs to query the API does so over the Railway private network (`http://mailpit.railway.internal:8025`) from inside another Railway service.
 
 Then any target-specific secrets (auth keys, `NEXT_PUBLIC_*`, Anthropic API key if the target uses LLMs, etc.) — set those individually with `--skip-deploys` until the last one.
 
 **Verify:**
 
 ```bash
-railway variables --service "$APP" --kv | grep -E "^(DATABASE_URL|SMTP_HOST|MAILPIT_WEB_URL|LANGCHAIN_PROJECT)="
+railway variables --service "$APP" --kv | grep -E "^(DATABASE_URL|SMTP_HOST|LANGCHAIN_PROJECT)="
 ```
 
 Expected: every variable listed. `DATABASE_URL` should show as a reference (e.g., `${{Postgres.DATABASE_URL}}`), not a resolved `postgres://` string. If it resolved at the CLI layer, the shell escaping was wrong — fix the quoting and re-set.
@@ -255,11 +262,21 @@ print(services)
 "
 # Expected: ['Postgres', 'mailpit', '<TargetName>']
 
-# 2. Mailpit web UI reachable
-curl -sf "https://$MAILPIT_DOMAIN/api/v1/messages" | python -c "
-import json, sys; d = json.load(sys.stdin); print('messages:', d.get('total', 0))
+# 2. Mailpit deployment is healthy (no public reachability check — mailpit
+#    is private-only by design; `railway run` injects env vars locally but
+#    does NOT join Railway's private network, so curling
+#    mailpit.railway.internal from outside Railway will not resolve).
+railway status --json | python -c "
+import json, sys
+for s in json.load(sys.stdin).get('services', []):
+    if s['name'] == 'mailpit':
+        d = s.get('latestDeployment', {})
+        print('mailpit deploy status:', d.get('status'),
+              'stopped=' + str(d.get('deploymentStopped')))
 "
-# Expected: messages: 0  (empty inbox on a fresh Mailpit)
+# Expected: mailpit deploy status: SUCCESS stopped=False
+# End-to-end mailpit reachability is exercised by the app's E2E test suite
+# (which runs inside Railway and so DOES have private-network access).
 
 # 3. App env vars wired
 railway variables --service "$APP" --kv | grep -c "^SMTP_HOST="

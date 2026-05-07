@@ -113,7 +113,7 @@ The `trap` ensures Mailpit + the test DB shut down even if tests fail. `--wait` 
 For the integration-test (Railway staging) environment:
 
 1. **Mailpit service** deployed from `axllent/mailpit:latest` in the same Railway project as the target app and Postgres
-2. **Port 8025 exposed publicly** so the operator can browse captured emails during UAT (the SMTP port `1025` stays on Railway's private network — only the app reaches it via `mailpit.railway.internal`)
+2. **No public exposure** — both the SMTP port (`1025`) and the web UI / API port (`8025`) stay on Railway's private network. The app reaches both via `mailpit.railway.internal`. Mailpit listens on two ports inside the container; adding a public domain without an explicit `targetPort` makes Railway's network auto-config error out and the deployment fails (recovered case: PawprintRecipes 2026-05-06). Private-only avoids that whole class of failure.
 3. **App service env vars**:
    ```
    EMAIL_HOST=mailpit.railway.internal
@@ -122,11 +122,19 @@ For the integration-test (Railway staging) environment:
    EMAIL_HOST_USER=
    EMAIL_HOST_PASSWORD=
    DEFAULT_FROM_EMAIL=test@yourdomain.example
-   MAILPIT_WEB_URL=https://<mailpit-railway-domain>   # for operator UAT and E2E tests
    ```
-4. **Verification:** open the Mailpit public domain in a browser → empty inbox. Trigger a password-reset / verification flow on the deployed app → email lands in Mailpit within 1–2 seconds with the correct From, Subject, body, and link.
+   No `MAILPIT_WEB_URL` — Mailpit's API is reached at `http://mailpit.railway.internal:8025` from inside Railway. Set `MAILPIT_API_URL` only on the **test/E2E** service (which runs inside Railway's network) and never on the production service.
+4. **Verification:** confirm mailpit's latest deployment is `SUCCESS` and not stopped (`railway status --json`). Trigger a password-reset / verification flow on the deployed app; the E2E test suite — which runs inside Railway and so has private-network access — fetches captured emails via the API and asserts on From, Subject, body, and link.
 
-The `mailpit.railway.internal` hostname uses Railway's private network — no public-internet exposure of the SMTP port. Only the web UI (`8025`) is publicly reachable.
+When the operator personally needs to browse captured emails (rare; usually only when an E2E test fails and the rendered email needs human inspection), spin up a temporary public domain with an explicit port and **delete it after**:
+
+```bash
+railway domain --service mailpit --port 8025      # temporary
+# ...browse mailpit-production-XXXX.up.railway.app...
+# Delete the domain from the dashboard before walking away.
+```
+
+Don't leave the domain in place. Mailpit listening on two ports plus a no-`targetPort` domain is the original failure mode this section exists to prevent.
 
 ## End-to-end test pattern (Playwright + Mailpit API)
 
@@ -210,7 +218,7 @@ This is **one test, five stages, ten distinct assertions**. Each stage catches a
 | **MUST**   | The app's email-sending code path is **identical** in test and production. No `if settings.TESTING:` branches. The difference is environment variables only                                                  |
 | **SHOULD** | Test env vars set `DEFAULT_FROM_EMAIL` to a domain that's clearly fake (`test@yourdomain.example`) so production traffic is impossible if env vars accidentally leak                                         |
 | **SHOULD** | Email tests run in the integration-tier of the test pyramid (story-scoped, ~5-30s each), not the unit tier (which stays mock-free of any email handling)                                                     |
-| **SHOULD** | Mailpit's web UI is reachable from the operator's browser during a build — when CI fails on an email assertion, opening the rendered email in a browser is the fastest debug path                            |
+| **SHOULD** | When CI fails on an email assertion, the operator can browse the rendered email by adding a *temporary* public domain to the Mailpit service (`railway domain --service mailpit --port 8025`) and deleting it after. Mailpit stays private by default — see "Railway setup" above for why                            |
 
 ## Anti-patterns
 
@@ -231,7 +239,7 @@ For projects spanning a backend and a frontend (e.g. Django + Next.js):
 - The **backend** sends the emails (Django's `send_mail()` or equivalent). It needs `EMAIL_HOST`, `EMAIL_PORT`, etc. configured at deploy time
 - The **frontend** doesn't talk to SMTP at all — it just triggers backend endpoints that send the email. So no email env vars on the frontend service
 - E2E tests live in the **monorepo root** under `e2e/`, not inside backend/ or frontend/. They drive the frontend (via Playwright) and assert against Mailpit's API
-- Mailpit's API URL is a **test-only env var** (`MAILPIT_API_URL=http://localhost:8025` in dev, `https://<your-mailpit>.up.railway.app` in Railway, never set in production)
+- Mailpit's API URL is a **test-only env var** (`MAILPIT_API_URL=http://localhost:8025` in local dev, `http://mailpit.railway.internal:8025` for E2E tests running inside Railway, never set in production). Tests cannot hit Mailpit from outside Railway because Mailpit is private-only by design — run E2E suites from a Railway service or run them locally against the docker-compose Mailpit instead
 
 ## How the bmad-architect agent should use this guide
 
@@ -259,9 +267,9 @@ Before kickoff:
 
 After deploying to Railway:
 
-1. Open the Mailpit Railway service's URL; verify empty inbox
+1. Confirm Mailpit's latest deployment is `SUCCESS` and not stopped: `railway status --json` → mailpit.latestDeployment.status. (Mailpit's web UI is private — no public URL to open.)
 2. Hit a deployed endpoint that sends an email (manual login → password reset)
-3. Confirm the email appears in Mailpit within 1-2 seconds, with the right From, Subject, and body
+3. Confirm the email arrived by running the E2E test suite from inside Railway, or — for one-off manual inspection — temporarily add a public domain (`railway domain --service mailpit --port 8025`), browse the captured email, then delete the domain
 
 After cutover to VPS production:
 

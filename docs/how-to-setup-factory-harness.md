@@ -172,7 +172,7 @@ Minimum services to stand up per target:
 | Service | Purpose | Created via |
 |---|---|---|
 | `Postgres` | UAT database | `railway add --database postgres` |
-| `mailpit` | UAT email capture (web UI on port 8025) | `railway add --image axllent/mailpit:latest --service mailpit` |
+| `mailpit` | UAT email capture (private-only — SMTP `1025` + web UI `8025` reachable via `mailpit.railway.internal` only; do NOT add a public domain) | `railway add --image axllent/mailpit:latest --service mailpit` |
 | `<TargetName>` | the app itself | `railway add --service <TargetName>` (link to GitHub repo from dashboard) |
 
 Then the app-service env vars (use `${{Postgres.DATABASE_URL}}` reference variables — never resolved strings) per [railway-setup-guide.md §6](../gauntlet_docs/railway-setup-guide.md).
@@ -283,7 +283,7 @@ Snapshot refreshed 2026-05-06 (after ci.sh bootstrap + first kickoff diagnostic 
 | `<target>/.env` | ✅ present | `LANGCHAIN_PROJECT=PawprintRecipes`; plain GitHub URL (relies on Git Credential Manager) |
 | `.gitignore` | ✅ minimal bootstrap | covers `.env*`, `checkpoints/`, OS noise; Story 1.2 will extend with node_modules / .next / __pycache__ / etc. |
 | Mobile implementation-artifacts archived | ✅ | `_bmad-output/implementation-artifacts/_archive/` holds 16-1-android-conventions.md and 17-1-ios-conventions.md (Phase 2/3 only — out of phase for Phase 1 web build) |
-| Railway project provisioning | ✅ | `PawprintRecipes` project (id `0ca088fc-3db0-47fa-b1f3-fe083b009a10`); services: `Postgres` + `mailpit` + `PawprintRecipes` (empty until source linked); 8 env vars set on app service incl. `RAILWAY_DOCKERFILE_PATH=docker/Dockerfile.backend`; mailpit web UI at `https://mailpit-production-0987.up.railway.app` |
+| Railway project provisioning | ✅ | `PawprintRecipes` project (id `0ca088fc-3db0-47fa-b1f3-fe083b009a10`); services: `Postgres` + `mailpit` + `PawprintRecipes` (empty until source linked); 8 env vars set on app service incl. `RAILWAY_DOCKERFILE_PATH=docker/Dockerfile.backend`; **mailpit is private-only** — public domain removed 2026-05-07 after `CONFIGURE_NETWORK` failure caused by two-port autodetect (1025 SMTP + 8025 HTTP); reach via `mailpit.railway.internal` |
 | chat2diagram migration cleanup | ✅ | `shipyard/factory.yaml` and `shipyard/.env` removed; both targets now use the per-target layout |
 
 ### Outstanding — must complete before kickoff
