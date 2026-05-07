@@ -166,6 +166,11 @@ class EpicState(TypedDict, total=False):
 
     # Epic post-processing state
     epic_review_file_paths: Annotated[list[str], operator.add]
+    # Story IDs in scope for epic-level code review — populated by
+    # prepare_epic_reviews_node, consumed by route_to_epic_reviewers.
+    # Excludes spike (first) + integration-polish (last) stories per the
+    # BMAD methodology. Each entry: {story_id, story_name, task_id}.
+    epic_review_stories: list[dict[str, str]]
     epic_fix_plan_path: str
     epic_fixes_needed: bool
     epic_fix_cycle: int
@@ -199,13 +204,24 @@ class EpicState(TypedDict, total=False):
 
 
 class EpicReviewNodeInput(TypedDict):
-    """Input schema for epic-level review node via Send API."""
+    """Input schema for epic-level review node via Send API.
+
+    The reviewer is given a list of story IDs (with names) — not a flat
+    file list. The BMAD code-review skill is self-driving from a story
+    number: it reads the story spec, finds the dev agent's recorded file
+    list, runs git diff for that story's commit, and verifies the story's
+    acceptance criteria are met by the implementation. Pre-computing the
+    file list externally would (a) duplicate work the agent does anyway,
+    (b) strip away the per-story context the review needs, and (c) risk
+    drifting from BMAD's own evolving review workflow. So we just hand
+    over the IDs.
+    """
 
     reviewer_type: str  # "bmad" or "claude"
     task_id: str
     session_id: str
     epic_num: str
-    files_to_review: list[str]
+    stories_to_review: list[dict[str, str]]  # each: story_id, story_name, task_id
     working_dir: str
 
 
@@ -675,12 +691,6 @@ def _parse_fix_plan(content: str) -> tuple[bool, int]:
     return flag, approved_count
 
 
-# Identifies the story portion of a commit subject in either the canonical
-# form ("story 1-9 complete") or the descriptive form the dev_story agent
-# sometimes emits ("story 1-9 complete: Playwright e2e config, ..."). The
-# capture group is the task_id (epic_num-story_id, e.g. "1-9").
-_COMMIT_STORY_ID_RE = re.compile(r"^story (\S+) complete(?:\s|:|$)")
-
 # Story-title patterns that mark a story as out-of-scope for epic-level
 # code review.
 #
@@ -702,8 +712,8 @@ def _doc_only_task_ids(
     epic_num: str,
 ) -> set[str]:
     """Return the task_ids (e.g. {"1-1", "1-10"}) for stories whose titles
-    mark them as doc-only spikes or integration-polish stories. These get
-    excluded from the epic-level review file scope.
+    mark them as doc-only spikes or integration-polish stories. These are
+    omitted from the in-scope story list passed to the epic-level reviewer.
     """
     excluded: set[str] = set()
     for s in stories:
@@ -715,149 +725,65 @@ def _doc_only_task_ids(
     return excluded
 
 
-def _files_changed_in_epic(
-    working_dir: str | None,
-    epic_num: str,
-    exclude_task_ids: set[str] | None = None,
-) -> list[str]:
-    """Return all files touched by any story-commit in the given epic.
-
-    Uses the git log convention ``story {epic_num}-<story_id> complete``
-    (written by ``orchestrator.git_commit_node``) rather than trying to
-    accumulate file lists through the orchestrator's phase state, which
-    loses entries across the commit boundary between stories.
-
-    If ``exclude_task_ids`` is non-empty, commits whose subject identifies
-    an excluded task (e.g. doc-only spike, integration-polish story) are
-    skipped during file collection. A file modified in both an excluded
-    and a non-excluded story is still included — the exclusion is at the
-    commit level, not the file level.
-    """
-    if not epic_num:
-        return []
-
-    excluded = exclude_task_ids or set()
-    cwd = working_dir or "."
-
-    # __BDY__ delimits per-commit blocks so we can parse out the subject
-    # before applying the exclusion filter. Unlikely to collide with any
-    # real commit subject; even if it did, the worst case is the wrong
-    # files getting filtered for one commit, not a crash.
-    #
-    # We invoke subprocess directly instead of via _run_bash because
-    # _run_bash truncates output to the last 5000 chars to keep prompts
-    # bounded. For an epic with broad commits (e.g. story 1-1 of
-    # PawprintRecipes touched ~840 .claude/skills/** files when bootstrapping
-    # the BMAD framework, producing 64KB of git output), that truncation
-    # silently drops most of the commit history and the resulting file
-    # list ends up being whatever fits in the tail-end of the output.
-    # This output never feeds an LLM prompt, so the cap is harmful here.
-    import subprocess
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "log",
-                f"--grep=^story {epic_num}-",
-                "--name-only",
-                "--format=__BDY__%n%s",
-            ],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("git log for epic %s file list failed: %s", epic_num, e)
-        return []
-    if result.returncode != 0:
-        logger.warning(
-            "git log for epic %s file list failed: %s",
-            epic_num, (result.stderr or "")[:200],
-        )
-        return []
-    output = result.stdout or ""
-
-    files: set[str] = set()
-    skipped_task_ids: set[str] = set()
-    for block in output.split("__BDY__\n"):
-        block = block.strip("\n")
-        if not block:
-            continue
-        lines = block.split("\n")
-        subject = lines[0].strip()
-        m = _COMMIT_STORY_ID_RE.match(subject)
-        if not m:
-            # Not a story-complete commit (e.g. an intermediate fix
-            # commit) — fall back to including its files, matching the
-            # prior behavior.
-            for f in lines[1:]:
-                f = f.strip()
-                if f:
-                    files.add(f)
-            continue
-        task_id = m.group(1)
-        if task_id in excluded:
-            skipped_task_ids.add(task_id)
-            continue
-        for f in lines[1:]:
-            f = f.strip()
-            if f:
-                files.add(f)
-
-    if skipped_task_ids:
-        logger.info(
-            "epic %s file collection: skipped commits for %d doc-only/polish "
-            "stor%s: %s",
-            epic_num,
-            len(skipped_task_ids),
-            "y" if len(skipped_task_ids) == 1 else "ies",
-            sorted(skipped_task_ids),
-        )
-
-    return sorted(files)
-
-
 def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
-    """Clean epic-reviews/ and compute the authoritative file list.
+    """Compute the in-scope story list for epic-level review.
 
-    The file list is derived from git history rather than from whatever
-    accumulated in ``epic_files_modified`` during the story loop. The
-    loop-accumulated value was unreliable: each story ends with a git
-    commit, and the downstream detector (``git diff HEAD``) only sees
-    *uncommitted* files, so earlier stories' work was silently dropped.
+    Excludes doc-only spike stories (always first per BMAD methodology)
+    and integration-polish stories (always last) — these are reviewed at
+    most via story-level reviews; the polish story's "code" is glue and
+    epic-level integration tests, which the demo run itself catches.
+
+    We deliberately do NOT pre-compute file lists for the reviewers. The
+    BMAD code-review workflow is self-driving from a story number — it
+    reads the story spec, locates the dev's recorded file list, runs git
+    diff against that story's commit, and verifies acceptance criteria.
+    Handing it an externally-built file list duplicates that work, strips
+    away the per-story context, and risks drifting from BMAD's own
+    evolving review workflow.
     """
     working_dir = state.get("target_dir") or None
     epic_num = state.get("epic_num", "")
     stories = state.get("stories", [])
     _ensure_epic_reviews_dir(working_dir=working_dir)
-    exclude_task_ids = _doc_only_task_ids(stories, epic_num)
-    files = _files_changed_in_epic(
-        working_dir, epic_num, exclude_task_ids=exclude_task_ids,
-    )
+
+    excluded = _doc_only_task_ids(stories, epic_num)
+    in_scope: list[dict[str, str]] = []
+    for s in stories:
+        sid = s.get("story_id", "")
+        if not sid:
+            continue
+        task_id = f"{epic_num}-{sid}"
+        if task_id in excluded:
+            continue
+        in_scope.append({
+            "story_id": sid,
+            "story_name": s.get("story_name", ""),
+            "task_id": task_id,
+        })
+
     logger.info(
-        "prepare_epic_reviews: epic=%s files_from_git=%d (excluded %d "
-        "doc-only/polish stor%s from review scope: %s)",
-        epic_num, len(files), len(exclude_task_ids),
-        "y" if len(exclude_task_ids) == 1 else "ies",
-        sorted(exclude_task_ids) if exclude_task_ids else "[]",
+        "prepare_epic_reviews: epic=%s stories_in_scope=%d "
+        "(excluded %d doc-only/polish: %s)",
+        epic_num, len(in_scope), len(excluded),
+        sorted(excluded) if excluded else "[]",
     )
-    return {"epic_review_file_paths": [], "epic_files_modified": files}
+    return {
+        "epic_review_file_paths": [],
+        "epic_review_stories": in_scope,
+    }
 
 
 def route_to_epic_reviewers(state: EpicState) -> list[Send]:
     """Fan-out to two parallel epic-level reviewers (BMAD + Claude) via Send API."""
     session_id = state.get("session_id", "")
     epic_num = state.get("epic_num", "")
-    epic_files = state.get("epic_files_modified", [])
+    stories_to_review = state.get("epic_review_stories", [])
     working_dir = state.get("target_dir", "")
 
-    unique_files = sorted(set(epic_files))
-
-    if not unique_files:
-        logger.warning("No files modified in Epic %s — skipping epic review", epic_num)
+    if not stories_to_review:
+        logger.warning(
+            "No in-scope stories for Epic %s — skipping epic review", epic_num,
+        )
         return []
 
     task_id = f"epic-{epic_num}-review"
@@ -866,7 +792,7 @@ def route_to_epic_reviewers(state: EpicState) -> list[Send]:
         "task_id": task_id,
         "session_id": session_id,
         "epic_num": epic_num,
-        "files_to_review": unique_files,
+        "stories_to_review": stories_to_review,
         "working_dir": working_dir,
     }
 
@@ -885,10 +811,13 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
     reviewer_type = state["reviewer_type"]
     task_id = state["task_id"]
     epic_num = state.get("epic_num", "")
-    files_to_review = state["files_to_review"]
+    stories_to_review = state["stories_to_review"]
     working_dir = state.get("working_dir") or None
 
-    files_list = "\n".join(f"- {f}" for f in files_to_review)
+    stories_list = "\n".join(
+        f"- {s['task_id']}: {s['story_name']}" for s in stories_to_review
+    )
+    story_ids = [s["task_id"] for s in stories_to_review]
     timestamp = datetime.now(UTC).isoformat()
 
     review_format = (
@@ -897,7 +826,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         f"agent_role: reviewer\n"
         f"task_id: {task_id}\n"
         f"timestamp: {timestamp}\n"
-        f"input_files: [{', '.join(files_to_review)}]\n"
+        f"input_stories: [{', '.join(story_ids)}]\n"
         f"reviewer_type: {reviewer_type}\n"
         f"review_scope: epic\n"
         f"---\n\n"
@@ -906,6 +835,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         f"{{1-2 sentence overview}}\n\n"
         f"## Findings\n\n"
         f"### 1. {{Finding title}}\n"
+        f"- **Story:** {{task_id}}\n"
         f"- **File:** {{relative path}}\n"
         f"- **Issue:** {{description}}\n"
         f"- **Severity:** {{critical|major|minor}}\n"
@@ -916,15 +846,33 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
 
     if reviewer_type == "bmad":
         # Delegate to the bmad-code-review skill via the dev persona.
-        # Intentionally minimal: don't pin workflow internals (step count,
-        # layer names) — the skill evolves independently.
+        # Intentionally minimal: do not prescribe the per-story workflow
+        # (which files to read, how to diff, what gates to run). The
+        # skill defines that and evolves independently — the BMAD
+        # methodology owners improve the workflow on their cadence, and
+        # any pre-processing we do here would race that. We just hand
+        # over the story list and let the skill do its job.
         output_filename = REVIEW_BMAD_FILENAME_TEMPLATE.format(epic_num=epic_num)
         result = invoke_bmad_agent(
             bmad_agent="bmad-agent-dev",
             command=(
-                f"Run the bmad-code-review skill on ALL code changes "
-                f"across this entire epic.\n\n"
-                f"Files to review:\n{files_list}\n\n"
+                f"Run the bmad-code-review skill across the following "
+                f"stories from Epic {epic_num}. The skill defines the "
+                f"review workflow — follow it as authored, do not "
+                f"deviate.\n\n"
+                f"Stories to review:\n{stories_list}\n\n"
+                f"You're free to review the stories individually, in "
+                f"batches, or all together. Within an epic, stories are "
+                f"usually closely related; reviewing them holistically "
+                f"often surfaces cross-story consistency issues (naming "
+                f"drift, contract mismatches, integration gaps) that a "
+                f"strict story-by-story pass would miss. Use your "
+                f"judgment about how to group your review.\n\n"
+                f"Consolidate findings into a single epic-level report "
+                f"using the format below. Group findings by story and "
+                f"add a final section for cross-story integration "
+                f"issues.\n\n"
+                f"{review_format}\n\n"
                 f"OUTPUT HANDLING — READ CAREFULLY:\n"
                 f"- Output your complete review as your FINAL message "
                 f"to the console. The runtime captures your last console "
@@ -944,18 +892,41 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
             model=_epic_model_for("epic_review"),
         )
     else:
-        # Plain Claude review — integration, correctness, cross-story consistency
+        # Plain Claude review — no BMAD skill loaded, so we tell Claude
+        # the same story list and ask it to do an analogous workflow per
+        # story (read the story spec, find the commit, review the diff
+        # against acceptance criteria) — keeping minimal prescription so
+        # behavior stays comparable to the BMAD reviewer's output shape.
         output_filename = REVIEW_CLAUDE_FILENAME_TEMPLATE.format(epic_num=epic_num)
         prompt = (
-            f"You are an expert code reviewer. Review ALL code changes across "
-            f"this entire epic for:\n"
-            f"- Cross-story integration issues and inconsistencies\n"
-            f"- Architectural coherence and code duplication between stories\n"
-            f"- Correctness, spec violations, and edge cases\n"
-            f"- Naming consistency and maintainability\n\n"
+            f"You are an expert code reviewer. Review the code changes for "
+            f"the following Epic {epic_num} stories:\n\n"
+            f"{stories_list}\n\n"
+            f"You're free to review the stories individually, in batches, "
+            f"or all together. Within an epic, stories are usually closely "
+            f"related; reviewing them holistically often surfaces cross-"
+            f"story consistency issues (naming drift, contract mismatches, "
+            f"integration gaps) that a strict story-by-story pass would "
+            f"miss. Use your judgment about how to group your review.\n\n"
+            f"For each story you cover:\n"
+            f"1. Read the story spec at "
+            f"`_bmad-output/implementation-artifacts/<task_id>-<slug>.md` "
+            f"(use Glob to resolve the slug if needed).\n"
+            f"2. Locate the dev agent's recorded file list and the matching "
+            f"commit (subject begins `story <task_id> complete`); inspect "
+            f"the diff with `git show` or `git log -p --grep`.\n"
+            f"3. Review against the story's acceptance criteria — verify "
+            f"the goals were actually achieved, not just that the code is "
+            f"well-styled. Also check for cross-story integration issues, "
+            f"architectural coherence, correctness, edge cases, and "
+            f"naming.\n\n"
             f"CRITICAL FIRST STEP: Read CLAUDE.md and "
-            f"_bmad-output/planning-artifacts/coding-standards.md before reviewing.\n\n"
-            f"Files to review:\n{files_list}\n\n{review_format}"
+            f"_bmad-output/planning-artifacts/coding-standards.md before "
+            f"reviewing.\n\n"
+            f"Consolidate findings into a single epic-level report. Group "
+            f"findings by story and add a final section for cross-story "
+            f"integration issues.\n\n"
+            f"{review_format}"
         )
         result = invoke_claude_cli(
             prompt=prompt,
