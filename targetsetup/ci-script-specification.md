@@ -306,6 +306,19 @@ A note on `tsc --noEmit`: it's GLOBAL. A schema change in story X.5 that adds a 
 
 Backend tests (pytest) MUST dispatch into the dev backend container. Frontend tests (vitest, jest) stay on the host because their tooling resolves from `node_modules/.bin` and the test runtime is JSDOM/Node, not the application container. See "Coordination with the dev Docker stack" above for the dispatch rationale and helper scaffold.
 
+**Critical: pytest dispatch MUST override `DJANGO_SETTINGS_MODULE` via `-e`.** The dev container's `docker-compose.dev.yml` sets `DJANGO_SETTINGS_MODULE=config.settings.dev` so the runtime app server uses dev (Postgres) settings. That env var **overrides** pyproject.toml's `[tool.pytest.ini_options].DJANGO_SETTINGS_MODULE` setting when pytest runs via `docker compose exec`. Without an explicit `-e` override, pytest picks up dev settings and tries to create a `test_<dbname>` database in real Postgres — which fails on schema-qualified table creates because Django doesn't propagate the schema-init script (`docker/postgres-init.sql` only runs once for the original DB, not for the auto-created `test_*` DB). This fails with `psycopg.errors.InvalidSchemaName: schema "user_schema" does not exist` at test setup, errors every backend test, and looks like a code bug when it's actually a settings-routing bug.
+
+Reference dispatch (matches Phase 1b's migration-gate pattern):
+
+```bash
+docker compose -f "$DEV_COMPOSE_FILE" exec -T \
+    -e DJANGO_SETTINGS_MODULE=config.settings.test \
+    "$BACKEND_SERVICE" python -m pytest "${PYTEST_ARGS[@]}" \
+    -k "$STORY_GREP_PYTEST" -m "not e2e" tests/
+```
+
+Same `-e` override applies to Phase 3c (contract invariants) and any other pytest dispatch into the container. Surfaced in PawprintRecipes Story 3-4 (2026-05-08) — backend tests had been silently skipping for 22 stories prior, so the gotcha was latent until Phase 3a actually started running.
+
 Two patterns matter here, in order:
 
 **Story-scoped test run with single-pass detection.** Story-scoping uses test name patterns: most projects tag tests with `story_X_Y` or `Story_X_Y` in their `describe()` / test names so they're filterable.
