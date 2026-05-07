@@ -469,6 +469,30 @@ def _run_rebuild_cli(
             target_dir = yaml_target
             print(f"  Target dir from factory.yaml: {target_dir}")
 
+    # Validate the target dir exists on disk. The most common failure mode
+    # here is bash (MINGW64) eating backslashes from an unquoted Windows
+    # path on the CLI: e.g. `--rebuild C:\alcorn\AI\Foo` collapses to
+    # `C:alcornAIFoo`, which os.path.abspath then resolves against shipyard's
+    # CWD — running silently against a non-existent path. Fail loudly with
+    # a useful hint so the operator catches it immediately.
+    if not os.path.isdir(target_dir):
+        yaml_target = get_target_dir(config) if config else "./target/"
+        if yaml_target != "./target/" and os.path.isdir(yaml_target):
+            print(
+                f"  WARNING: --rebuild target dir does not exist: {target_dir}\n"
+                f"           Falling back to factory.yaml target.dir: {yaml_target}",
+            )
+            target_dir = yaml_target
+        else:
+            print(
+                f"\nERROR: --rebuild target dir does not exist on disk:\n"
+                f"  {target_dir}\n\n"
+                f"On Windows + bash (MINGW64), unquoted backslashes are stripped "
+                f"as escape characters. Quote the path or use forward slashes:\n"
+                f'  python -m src.main --rebuild "C:/alcorn/AI/Foo" --resume',
+            )
+            raise SystemExit(2)
+
     # Reset pause flag from any previous run in this process
     reset_pause()
 
