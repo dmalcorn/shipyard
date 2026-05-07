@@ -120,6 +120,31 @@ _container_exec() {
 
 The factory's orchestrator (`src/multi_agent/orchestrator.py`'s `_ensure_migrations`) and stack adapters (`src/adapters/django.py`'s `autoformat`/`lint_fix`) use the same dispatch pattern via `src/dev_container.py`. CI script phases that touch the project's pinned Python tooling should match.
 
+### Prerequisite: dev tools MUST be installed in the container
+
+Container dispatch only works if the container has the tools the CI script invokes. Hit this in PawprintRecipes Story 3-4 (2026-05-08): right after the Phase 1a/1b dispatch refactor landed, the next CI cycle failed with `No module named ruff` inside `pawprint-backend`. Root cause: `requirements.txt` only listed runtime deps + pytest; ruff and mypy were assumed to be operator-installed on the host (which is what the previous host-side ci.sh was doing). Container dispatch broke that assumption silently — no `command -v ruff` check anymore, just an immediate import failure inside the container.
+
+**Rule:** for every Python tool the CI script invokes inside the container via `python -m <tool>`, the tool MUST be pinned in the deps the container's Dockerfile installs. The minimal set for a Django-based target with this CI script:
+
+| Tool | Phases that need it | Goes in |
+|---|---|---|
+| `ruff` | 1a (lint), fmt | requirements-dev.txt |
+| `mypy` | 1b (typecheck) | requirements-dev.txt |
+| `pytest` (+ `pytest-django`, `pytest-cov`) | 3a, 3c | requirements.txt OR requirements-dev.txt |
+| `bandit` | 5a (host-side, separate concern) | n/a — host-installed |
+| `black` (optional, legacy) | adapter fallback only | requirements-dev.txt if needed |
+
+The cleanest split: `backend/requirements.txt` for runtime deps (Django, celery, drf, etc.), `backend/requirements-dev.txt` for CI/dev tools. The dev `Dockerfile.<service>` installs both:
+
+```dockerfile
+COPY backend/requirements.txt backend/requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+```
+
+The production Dockerfile installs only `requirements.txt`. See [local-dev-docker-guide.md](local-dev-docker-guide.md#python-dev-tools-in-the-container) for the full pattern.
+
+If the architect generates a Dockerfile that doesn't install the dev tools, every backend lint/typecheck phase will fail on the first CI cycle and the agent has to scramble to add them mid-build. Better to get this right at planning time.
+
 ### Optional: separate test-stack lifecycle
 
 Some projects use a dedicated `docker/docker-compose.test.yml` so tests run against a throwaway DB while the long-lived dev stack keeps its data. Reasonable for projects with seed-data heavy tests, integration tests that mutate broadly, or anywhere a wiped test DB on every run is cheaper than carefully isolating fixtures.

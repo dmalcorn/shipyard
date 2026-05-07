@@ -214,6 +214,51 @@ The factory's orchestrator detects every `manage.py` (in `backend/`, `staff/`, e
 
 Why dev-only via env var: production deploys want explicit, staged migrations (the deploy script runs `migrate` once before swapping containers), not every replica racing to apply migrations on startup. Setting `RUN_MIGRATIONS_ON_START` only in the dev compose keeps the same image safe for both environments.
 
+## Python dev tools in the container
+
+The CI script ([ci-script-specification.md](ci-script-specification.md#prerequisite-dev-tools-must-be-installed-in-the-container)) dispatches backend lint, typecheck, and tests **inside** the dev backend container. That only works if the container's Python env has the tools the CI script invokes — ruff, mypy, pytest (+ pytest-django, pytest-cov), and any other `python -m <tool>` you run.
+
+The clean separation: `requirements.txt` for runtime, `requirements-dev.txt` for CI/dev tools. The dev Dockerfile installs both; the production Dockerfile installs only `requirements.txt`.
+
+```
+backend/
+├── requirements.txt          # Django, celery, drf, structlog, ...
+└── requirements-dev.txt      # ruff, mypy, pytest*, django-stubs, ...
+```
+
+Dev Dockerfile (`docker/Dockerfile.<service>`):
+
+```dockerfile
+COPY backend/requirements.txt backend/requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+```
+
+Production Dockerfile:
+
+```dockerfile
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+```
+
+A reasonable starter `requirements-dev.txt` for a Django target:
+
+```
+# Linting and formatting
+ruff>=0.7.0,<1.0.0
+
+# Type checking
+mypy>=1.13.0,<2.0.0
+django-stubs[compatible-mypy]>=5.1.0
+
+# Optional legacy formatter — only if a story needs both ruff format AND
+# black for some specific reason. Modern projects can skip.
+# black>=24.0.0
+```
+
+Dev tools that are language-agnostic CLIs (bandit for Python security scan, npm audit for JS deps) stay on the operator's host — they don't import project code, so container dispatch buys nothing.
+
+Why this matters: in PawprintRecipes Story 3-4 (2026-05-08), the CI script's Phase 1a/1b dispatch into the container hit `No module named ruff` because requirements.txt had only runtime deps + pytest. The agent had to scramble to add ruff/mypy mid-build. Getting this right at planning time avoids the scramble.
+
 ## The `.env.docker` file
 
 ```bash
