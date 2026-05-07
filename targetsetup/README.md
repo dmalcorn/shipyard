@@ -40,7 +40,7 @@ For each new factory project:
 2. `mkdir -p _bmad-output/planning-artifacts`
 3. Copy these templates from shipyard into that directory:
    ```bash
-   cp /path/to/shipyard/gauntlet_docs/target-templates/*.md \
+   cp /path/to/shipyard/targetsetup/*.md \
       /path/to/new-target/_bmad-output/planning-artifacts/
    ```
 4. Write the project-specific planning artifacts: `prd.md`, `architecture.md`, `epics.md`, `approved-tech-stack.md` — each consistent with the templates

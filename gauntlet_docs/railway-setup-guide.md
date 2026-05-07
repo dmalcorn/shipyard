@@ -27,7 +27,7 @@ Local dev/test         Railway staging (UAT)      Production (VPS)
                            Railway redeploy
 ```
 
-**This guide documents the middle column.** For the left column (local Docker dev environment), see the target template [target-templates/local-dev-docker-guide.md](target-templates/local-dev-docker-guide.md), which is copied into each target's `_bmad-output/planning-artifacts/`. For the right column, see the production VPS deployment notes (handled out of scope here).
+**This guide documents the middle column.** For the left column (local Docker dev environment), see the target template [targetsetup/local-dev-docker-guide.md](../targetsetup/local-dev-docker-guide.md), which is copied into each target's `_bmad-output/planning-artifacts/`. For the right column, see the production VPS deployment notes (handled out of scope here).
 
 The two environments are completely isolated. Local dev never reaches Railway's database; Railway staging never reaches the local one. This is the inverse of the chat2bpmn/chat2diagram pattern and is the explicit goal of the new setup.
 
@@ -305,7 +305,7 @@ If a CLI step fails because authentication is stale or a GitHub grant is missing
 
 ## Cross-references
 
-- [target-templates/email-testing-guide.md](target-templates/email-testing-guide.md) — the test-time pattern Mailpit serves; explains why we need it on Railway and locally
+- [targetsetup/email-testing-guide.md](../targetsetup/email-testing-guide.md) — the test-time pattern Mailpit serves; explains why we need it on Railway and locally
 - [factory-replication-guide.md](factory-replication-guide.md) — the broader "Railway (relay + target deployment)" section covers the relay (which this doc explicitly does NOT touch)
 - [git-remote-setup-guide.md](git-remote-setup-guide.md) — embedded-PAT pattern for non-interactive GitHub auth
 - [How-to-extract-db-logs.md](How-to-extract-db-logs.md) — read-only log extraction via REST API, **plus** direct DB access via `railway connect Postgres` (TRUNCATE between projects, ad-hoc SELECT, schema inspection)

@@ -12,8 +12,8 @@ This document is the single ordered runbook. It pulls together what the deeper g
 > - [factory-replication-guide.md](../gauntlet_docs/factory-replication-guide.md) — host-vs-Docker, the four authentications, gotchas
 > - [railway-setup-guide.md](../gauntlet_docs/railway-setup-guide.md) — Postgres / Mailpit / app service provisioning, single-attempt-then-verify
 > - [git-remote-setup-guide.md](../gauntlet_docs/git-remote-setup-guide.md) — branch / PAT / Railway-deploy-branch alignment
-> - [target-templates/local-dev-docker-guide.md](../gauntlet_docs/target-templates/local-dev-docker-guide.md) — three-container local dev (app + db + mailpit)
-> - [target-templates/ci-script-specification.md](../gauntlet_docs/target-templates/ci-script-specification.md) — what `scripts/ci.sh` must accept and emit
+> - [targetsetup/local-dev-docker-guide.md](../targetsetup/local-dev-docker-guide.md) — three-container local dev (app + db + mailpit)
+> - [targetsetup/ci-script-specification.md](../targetsetup/ci-script-specification.md) — what `scripts/ci.sh` must accept and emit
 
 ---
 
@@ -78,14 +78,14 @@ The factory enforces these exact paths and filenames. If they're missing or name
 | `_bmad-output/planning-artifacts/architecture.md` | required by BMAD agents | read by dev / architect |
 | `_bmad-output/planning-artifacts/coding-standards.md` | recommended | injected as Layer 1 context ([injection.py:69](../src/context/injection.py)). If missing, agents miss the coding standards layer — silent quality hit, not a crash. |
 | `_bmad-output/approved-tech-stack.md` | required **only if no `scripts/ci.sh` exists** | source for auto-generated CI script. If `scripts/ci.sh` already exists, factory skips generation ([orchestrator.py:1093](../src/multi_agent/orchestrator.py)) |
-| `scripts/ci.sh` | required (auto-generated if missing AND `approved-tech-stack.md` exists) | invoked at every CI gate; must accept `--story X_Y`, `--epic N`, etc. per [ci-script-specification.md](../gauntlet_docs/target-templates/ci-script-specification.md) |
+| `scripts/ci.sh` | required (auto-generated if missing AND `approved-tech-stack.md` exists) | invoked at every CI gate; must accept `--story X_Y`, `--epic N`, etc. per [ci-script-specification.md](../targetsetup/ci-script-specification.md) |
 | `CLAUDE.md` | recommended | per-target rules + lessons-learned Tier 2; loaded by every Claude CLI invocation |
-| `Dockerfile` (production) + `docker-compose.yml` (local dev) | recommended | three-container topology per [local-dev-docker-guide.md](../gauntlet_docs/target-templates/local-dev-docker-guide.md). Required if the target's CI script invokes `docker compose exec`. |
+| `Dockerfile` (production) + `docker-compose.yml` (local dev) | recommended | three-container topology per [local-dev-docker-guide.md](../targetsetup/local-dev-docker-guide.md). Required if the target's CI script invokes `docker compose exec`. |
 | `.gitignore` covering `.env`, `.env.docker`, `node_modules/`, `__pycache__/`, etc. | recommended | prevents committing secrets and build junk |
 
 ### 4.1 The `scripts/ci.sh` bootstrap problem (read before kickoff)
 
-**The trap:** the factory invokes `scripts/ci.sh` at every story-level CI gate. Most BMAD plans dedicate one story late in epic 1 to the canonical CI implementation per [ci-script-specification.md](../gauntlet_docs/target-templates/ci-script-specification.md) — Story 1.9 in PawprintRecipes, equivalents elsewhere. That story is far down the epic: stories 1.1 through 1.8 must run their CI gates *first*, against whatever ci.sh exists at kickoff.
+**The trap:** the factory invokes `scripts/ci.sh` at every story-level CI gate. Most BMAD plans dedicate one story late in epic 1 to the canonical CI implementation per [ci-script-specification.md](../targetsetup/ci-script-specification.md) — Story 1.9 in PawprintRecipes, equivalents elsewhere. That story is far down the epic: stories 1.1 through 1.8 must run their CI gates *first*, against whatever ci.sh exists at kickoff.
 
 A stub or absent ci.sh causes every early story to fail CI, burn fix_ci retries, and fail the story. The chat2diagram build hit a milder version of this and lost ~$25 to fix_ci spinning before the operator caught on. PawprintRecipes' first kickoff (2026-05-06) hit a sharper version — every story 1.1 onward failed CI because the stub referenced a docker-compose file that wouldn't exist until Story 1.2.
 
@@ -275,7 +275,7 @@ Snapshot refreshed 2026-05-06 (after ci.sh bootstrap + first kickoff diagnostic 
 | Coding standards (split per platform) | ✅ four files | `coding-standards-{android,backend,ios,web}.md` |
 | Coding standards index (singular `coding-standards.md`) | ✅ redirect-to-platform-files | resolves [injection.py:69](../src/context/injection.py) Layer 1 lookup; thin index that routes agents by `[component]` tag to the right per-platform file (so they only load what they need) |
 | Memory system | ✅ junction in place | per CLAUDE.md §Memory system, `.claude/memory/` with junction back from user-home |
-| Targetsetup templates copied in | ✅ present | `targetsetup/ci-script-specification.md`, `local-dev-docker-guide.md`, `lessons-learned-protocol.md`, etc. — operator's reference copies of the shipyard target-templates |
+| Targetsetup templates copied in | ✅ present | `targetsetup/ci-script-specification.md`, `local-dev-docker-guide.md`, `lessons-learned-protocol.md`, etc. — operator's reference copies of the shipyard targetsetup canon |
 | `scripts/ci.sh` bootstrap version | ✅ written and committed | ~210 lines; Phase 0 doc-only short-circuit + skip-when-missing for every other phase + flag parsing per spec. Will be replaced by Story 1.9. See §4.1 for the pattern |
 | `.git/` initialized + initial commit + push | ✅ | branch `main`; remote `origin = https://github.com/dmalcorn/PawprintRecipes.git`; commit `42c16f3` is the planning-artifacts seed; subsequent commit added the bootstrap ci.sh |
 | GitHub repo | ✅ exists, private | `dmalcorn/PawprintRecipes` |

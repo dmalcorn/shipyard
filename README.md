@@ -69,7 +69,7 @@ Resume after interruption:
 bash scripts/preflight.sh /path/to/target/project --resume
 ```
 
-The target directory must be **outside** Shipyard's source tree, must contain `_bmad-output/planning-artifacts/epics.md`, and must contain either `_bmad-output/approved-tech-stack.md` (so the architect can generate `scripts/ci.sh`) or a hand-written `scripts/ci.sh` that conforms to [target-templates/ci-script-specification.md](gauntlet_docs/target-templates/ci-script-specification.md). All agent file operations, bash commands, and git operations are scoped to the target directory.
+The target directory must be **outside** Shipyard's source tree, must contain `_bmad-output/planning-artifacts/epics.md`, and must contain either `_bmad-output/approved-tech-stack.md` (so the architect can generate `scripts/ci.sh`) or a hand-written `scripts/ci.sh` that conforms to [targetsetup/ci-script-specification.md](targetsetup/ci-script-specification.md). All agent file operations, bash commands, and git operations are scoped to the target directory.
 
 **Docker rebuild** — runs the pipeline in a container with the target project mounted:
 
@@ -192,13 +192,13 @@ Runs ruff, mypy, and pytest in sequence — all must pass before committing. Git
 
 | Document | Description |
 |---|---|
-| [target-templates/README.md](gauntlet_docs/target-templates/README.md) | Why these templates exist and how to use them |
-| [target-templates/ci-script-specification.md](gauntlet_docs/target-templates/ci-script-specification.md) | CI behavior the factory expects: required CLI flags, phases, story-scoping, doc-only short-circuit, multi-stack patterns, pre-commit hook coordination, anti-patterns |
-| [target-templates/story-and-epic-writing-guide.md](gauntlet_docs/target-templates/story-and-epic-writing-guide.md) | Vertical-slice principle, story anatomy with Cross-cutting Considerations, multi-component conventions, anti-patterns from chat2diagram |
-| [target-templates/test-structure-guide.md](gauntlet_docs/target-templates/test-structure-guide.md) | Five eval categories applied greenfield, story-tagging conventions, central mock factories (the schema-drift fix), test pyramid for factory builds |
-| [target-templates/local-dev-docker-guide.md](gauntlet_docs/target-templates/local-dev-docker-guide.md) | Three-container local dev topology (app + Postgres + Mailpit) in Docker Desktop with bind-mounted source. Eliminates the chat2bpmn/chat2diagram failure mode where dev pointed at Railway directly |
-| [target-templates/email-testing-guide.md](gauntlet_docs/target-templates/email-testing-guide.md) | Mailpit-based end-to-end pattern for email-touching features (password reset, verification, magic-link). Catches the failure mode where mock-based tests pass but production email is broken |
-| [target-templates/lessons-learned-protocol.md](gauntlet_docs/target-templates/lessons-learned-protocol.md) | Two-tier system for capturing build lessons: forensic `lessons-learned/NNN-*.md` files (Tier 1, auto-distilled by factory after multi-cycle CI) and prescriptive `## Agent Coding Rules` in target `CLAUDE.md` (Tier 2, promoted by architect at epic review) |
+| [targetsetup/README.md](targetsetup/README.md) | Why these templates exist and how to use them |
+| [targetsetup/ci-script-specification.md](targetsetup/ci-script-specification.md) | CI behavior the factory expects: required CLI flags, phases, story-scoping, doc-only short-circuit, multi-stack patterns, pre-commit hook coordination, anti-patterns |
+| [targetsetup/story-and-epic-writing-guide.md](targetsetup/story-and-epic-writing-guide.md) | Vertical-slice principle, story anatomy with Cross-cutting Considerations, multi-component conventions, anti-patterns from chat2diagram |
+| [targetsetup/test-structure-guide.md](targetsetup/test-structure-guide.md) | Five eval categories applied greenfield, story-tagging conventions, central mock factories (the schema-drift fix), test pyramid for factory builds |
+| [targetsetup/local-dev-docker-guide.md](targetsetup/local-dev-docker-guide.md) | Three-container local dev topology (app + Postgres + Mailpit) in Docker Desktop with bind-mounted source. Eliminates the chat2bpmn/chat2diagram failure mode where dev pointed at Railway directly |
+| [targetsetup/email-testing-guide.md](targetsetup/email-testing-guide.md) | Mailpit-based end-to-end pattern for email-touching features (password reset, verification, magic-link). Catches the failure mode where mock-based tests pass but production email is broken |
+| [targetsetup/lessons-learned-protocol.md](targetsetup/lessons-learned-protocol.md) | Two-tier system for capturing build lessons: forensic `lessons-learned/NNN-*.md` files (Tier 1, auto-distilled by factory after multi-cycle CI) and prescriptive `## Agent Coding Rules` in target `CLAUDE.md` (Tier 2, promoted by architect at epic review) |
 
 ### Architecture references
 
