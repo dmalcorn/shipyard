@@ -756,36 +756,40 @@ def _ensure_dependencies(working_dir: str | None) -> None:
             _run_bash(["go", "mod", "download"], cwd=working_dir)
 
 
-# Migration framework detection: (marker_file, check_command, generate_command, label)
+# Migration framework detection: (marker_file, check_command, label)
 # check_command returns exit 0 if migrations are up-to-date, non-zero if pending.
-# generate_command auto-creates any missing migration files.
-_MIGRATION_FRAMEWORKS: list[tuple[str, list[str], list[str], str]] = [
+# We deliberately do NOT auto-generate missing migrations here — the dev_story
+# agent creates them as part of its implementation work, and the target's own
+# CI gate (e.g. ci.sh Phase 1e in PawprintRecipes) validates the result. An
+# earlier version of this code attempted auto-generation; across a 22-story
+# session in 2026-05 it succeeded zero times because the check command's
+# non-zero return is dominated by DB-state issues (InconsistentMigrationHistory,
+# ImproperlyConfigured, container races) rather than actual pending model
+# changes. The auto-generate step never caught a real case and produced ~36
+# false-positive warnings, so it was removed.
+_MIGRATION_FRAMEWORKS: list[tuple[str, list[str], str]] = [
     # Django — manage.py in project root or common subdirs
     (
         "manage.py",
         ["python", "manage.py", "makemigrations", "--check", "--dry-run"],
-        ["python", "manage.py", "makemigrations"],
         "Django",
     ),
     # Alembic (Flask / FastAPI / SQLAlchemy)
     (
         "alembic.ini",
         ["alembic", "check"],
-        ["alembic", "revision", "--autogenerate", "-m", "auto"],
         "Alembic",
     ),
     # Prisma (Node.js)
     (
         "prisma/schema.prisma",
         ["npx", "prisma", "migrate", "status"],
-        ["npx", "prisma", "migrate", "dev", "--name", "auto"],
         "Prisma",
     ),
     # Diesel (Rust)
     (
         "diesel.toml",
         ["diesel", "migration", "pending"],
-        ["diesel", "migration", "run"],
         "Diesel",
     ),
 ]
@@ -972,25 +976,62 @@ _MIGRATION_SEARCH_SUBDIRS: tuple[str, ...] = (
 )
 
 
+def _django_hermetic_settings_module(search_dir: str) -> str | None:
+    """Return a Django settings module to use for the migration check, or None.
+
+    Per lesson-learned 003 from PawprintRecipes (and analogous patterns in
+    other Django targets): ``makemigrations --check`` triggers
+    ``check_consistent_history()`` against whatever DB the active settings
+    point at. When that DB carries stale applied-migration state — common
+    after model renames, migration squashes, or partial bootstrap runs —
+    the check fails with ``InconsistentMigrationHistory`` even though the
+    migration files on disk are perfectly correct. The fix is to point
+    the check at an ephemeral DB (SQLite ``:memory:``) so it validates
+    files-on-disk only.
+
+    Convention: a target opts in by creating
+    ``<search_dir>/config/settings/migration_check.py`` that overlays
+    ``base.py`` and pins ``DATABASES['default']`` to SQLite ``:memory:``.
+    If that file exists, we pass ``--settings=config.settings.migration_check``
+    to the check command. Otherwise we fall back to the default settings.
+    """
+    candidate = os.path.join(search_dir, "config", "settings", "migration_check.py")
+    if os.path.isfile(candidate):
+        return "config.settings.migration_check"
+    return None
+
+
 def _process_migration_project(
     search_dir: str,
     marker: str,
     check_cmd: list[str],
-    generate_cmd: list[str],
     label: str,
     working_dir: str | None,
 ) -> None:
-    """Run check + (auto-generate-if-pending) for a single project's marker file.
+    """Run the migration check for a single project's marker file.
 
-    Dispatches into the container when a compose service bind-mounts ``search_dir``;
-    otherwise runs on the host. Bring-up failure is logged as a warning and the
-    project is skipped — but the caller may still process other projects.
+    Dispatches into the container when a compose service bind-mounts
+    ``search_dir``; otherwise runs on the host. Bring-up failure is logged
+    as a warning and the project is skipped — but the caller may still
+    process other projects.
+
+    Reports up-to-date or pending; does not auto-generate. The dev_story
+    agent creates missing migrations as part of its implementation, and
+    the target's own CI gate validates the result.
     """
     compose_path = _find_dev_compose_file(working_dir)
     service = (
         _find_compose_service_for_dir(compose_path, search_dir, working_dir)
         if compose_path else None
     )
+
+    # Django: prefer a hermetic settings overlay so the check validates
+    # files-on-disk only (not the dev DB's mutable applied-migration history).
+    effective_check = list(check_cmd)
+    if label == "Django":
+        hermetic = _django_hermetic_settings_module(search_dir)
+        if hermetic:
+            effective_check.append(f"--settings={hermetic}")
 
     if compose_path and service:
         print(
@@ -1008,13 +1049,11 @@ def _process_migration_project(
             "docker", "compose", "-f", compose_path,
             "exec", "-T", service,
         ]
-        check_cmd_full = exec_prefix + check_cmd
-        generate_cmd_full = exec_prefix + generate_cmd
+        check_cmd_full = exec_prefix + effective_check
         run_cwd: str | None = working_dir
     else:
         print(f"    [migrations] {label} detected in {search_dir} (host-side)")
-        check_cmd_full = check_cmd
-        generate_cmd_full = generate_cmd
+        check_cmd_full = effective_check
         run_cwd = search_dir
 
     passed, output = _run_bash(check_cmd_full, cwd=run_cwd)
@@ -1025,8 +1064,8 @@ def _process_migration_project(
 
     # Django UI-only services (e.g., a staff panel that proxies to a backend
     # API) have no DATABASES setting, so makemigrations errors before it can
-    # even check for pending changes. Skip cleanly instead of attempting to
-    # auto-generate, which would just hit the same error and double-log it.
+    # even check for pending changes. Skip cleanly instead of treating it as
+    # "pending."
     if "ImproperlyConfigured" in output and "DATABASES" in output:
         print(
             f"    [migrations] {search_dir} has no DATABASES configured "
@@ -1034,19 +1073,18 @@ def _process_migration_project(
         )
         return
 
-    print(f"    [migrations] Pending migrations in {search_dir} — auto-generating...")
-    gen_passed, gen_output = _run_bash(generate_cmd_full, cwd=run_cwd)
-    if gen_passed:
-        print(f"    [migrations] {label} migrations generated for {search_dir}")
-        # Stage generated files on the host. Bind mounts propagate files
-        # written inside the container back out to the host.
-        _run_bash(["git", "add", "-A"], cwd=search_dir)
-    else:
-        print(f"    [migrations] WARNING: auto-generate failed for {search_dir}")
-        logger.warning(
-            "Migration auto-generate failed for %s in %s: %s",
-            label, search_dir, gen_output[:500],
-        )
+    # Pending: dev_story agent will generate the migration files as part of
+    # its implementation. We just surface the signal so the operator can spot
+    # missed migrations from a prior story. Truncate output to 2000 chars
+    # (was 500 previously, which often cut tracebacks off mid-stack).
+    print(
+        f"    [migrations] WARNING: {label} check reports pending changes "
+        f"in {search_dir} — dev_story agent should create them.",
+    )
+    logger.warning(
+        "Migration check reported pending for %s in %s. Output:\n%s",
+        label, search_dir, output[:2000],
+    )
 
 
 def _ensure_migrations(working_dir: str | None) -> None:
@@ -1069,7 +1107,7 @@ def _ensure_migrations(working_dir: str | None) -> None:
     """
     base = working_dir or "."
 
-    for marker, check_cmd, generate_cmd, label in _MIGRATION_FRAMEWORKS:
+    for marker, check_cmd, label in _MIGRATION_FRAMEWORKS:
         search_dirs = [base]
         for subdir in _MIGRATION_SEARCH_SUBDIRS:
             candidate = os.path.join(base, subdir)
@@ -1083,7 +1121,7 @@ def _ensure_migrations(working_dir: str | None) -> None:
                 continue
             handled_any = True
             _process_migration_project(
-                search_dir, marker, check_cmd, generate_cmd, label, working_dir,
+                search_dir, marker, check_cmd, label, working_dir,
             )
 
         if handled_any:
