@@ -41,6 +41,21 @@ set -euo pipefail
 
 `pipefail` matters: `cmd1 | cmd2` exit status reflects the failing command in the pipe, not just `cmd2`. Without it, a `vitest run | tee log.txt` pattern silently swallows test failures because `tee` always exits 0.
 
+## Coordination with the dev Docker stack
+
+Targets that follow [local-dev-docker-guide.md](local-dev-docker-guide.md) run their app + DB + supporting services in a long-lived dev compose stack (`docker/docker-compose.dev.yml`). The leave-it-up policy means that stack is normally already running when CI fires.
+
+Some CI phases — notably the migration gate (Phase 1b below) — must run **inside** a dev container because the host doesn't have the language runtime, the framework, or the DB connection configured. Those phases SHOULD:
+
+1. Detect whether the required service is in `running` state via `docker compose ps <service> --format json`.
+2. If not running, bring it up with `docker compose up -d <service>` and recheck — don't fail just because the operator hasn't kicked off the stack yet.
+3. If Docker isn't available at all (daemon down, CLI missing), warn and skip the phase rather than fail; the operator's environment is broken in a way the script can't fix.
+4. If Docker IS available but the service can't be brought up, fail loud — silent skip masks real topology problems.
+
+The factory's orchestrator (`src/multi_agent/orchestrator.py`'s `_ensure_migrations`) follows the same pattern; CI script phases that touch containerized services should match.
+
+Phases that run only on the host (lint, typecheck, formatter checks) don't need this coordination — the relevant tools (ruff, mypy, eslint, tsc, prettier) are operator-installed and don't depend on the running stack.
+
 ## Required phases (in order)
 
 ### Phase 0 — Documentation-only short-circuit (MUST)
@@ -53,6 +68,7 @@ Recognized documentation paths (extend per project):
 - `docs/**`
 - `lessons-learned/**`
 - `epic-reviews/**`
+- `targetsetup/**` — the copied-in target templates (this guide, the local-dev-docker guide, etc.) are documentation; edits to them must not trigger full CI
 - `*.md` at the project root
 
 Detection MUST use git, not heuristics. Reference implementation:
@@ -65,7 +81,7 @@ if [ -n "$STORY_FILTER" ] && [ -d .git ]; then
     } | sort -u)
 
     if [ -n "$CHANGED" ]; then
-        CODE_FILES=$(echo "$CHANGED" | grep -Ev '^(_bmad-output/|docs/|lessons-learned/|epic-reviews/|[^/]*\.md$)' || true)
+        CODE_FILES=$(echo "$CHANGED" | grep -Ev '^(_bmad-output/|docs/|lessons-learned/|epic-reviews/|targetsetup/|[^/]*\.md$)' || true)
         if [ -z "$CODE_FILES" ]; then
             echo "=== Story $STORY_FILTER is documentation-only — skipping lint, typecheck, tests, and build ==="
             echo "$CHANGED" | sed 's/^/    /'
@@ -82,15 +98,56 @@ This MUST run before Phase 1 (dependency install) — otherwise a doc-only story
 
 If a dependency lock file exists and `node_modules/` (or its language equivalent) is missing or stale, install. Skip if already up to date — `npm ci` against an unchanged lock takes ~5 seconds vs ~60+ for a cold install.
 
-### Phase 1b — Database schema sync (MAY, if applicable)
+### Phase 1b — Migration gate (MUST when applicable)
 
-For projects with database migrations, run the migrator here so subsequent test runs see the current schema. Examples:
+For projects with database migrations, this phase **gates CI on missing migration files** — i.e., it catches "operator changed a model but forgot to commit the generated migration." Apply-the-migrations is a separate concern that lives elsewhere (see "Where migrations are actually applied" below); this CI phase only checks that the migration files are committed and consistent with the model code.
 
-- Drizzle: `npx tsx scripts/migrate-db.ts` (NOT `drizzle-kit push --force` — see [factory-lessons-from-chat2diagram.md](../factory-lessons-from-chat2diagram.md#migration-tracking-corruption) for why)
-- Django: `python manage.py migrate --check` or `python manage.py migrate`
-- Rails: `bundle exec rails db:migrate`
+The check MUST run inside the dev application container, not on the host. Two reasons:
 
-Required only when `DATABASE_URL` is set in the environment AND the project has a migration mechanism. CI scripts that run without a DB available should detect that and skip cleanly, not fail.
+- The host doesn't always have Django/SQLAlchemy/etc. installed, and shouldn't have to. The dev container does.
+- The container has the dev DB reachable via the compose network. The host generally doesn't, unless the operator has configured it.
+
+If the dev container isn't running, the script SHOULD bring it up via `docker compose up -d <backend-service>` before exec'ing the check. (The dev stack is meant to stay up between sessions per the leave-it-up policy in [local-dev-docker-guide.md](local-dev-docker-guide.md), but a fresh checkout or post-`down` state should still work.)
+
+Reference patterns by stack:
+
+- **Django** (`makemigrations --check`):
+  ```bash
+  docker compose -f docker/docker-compose.dev.yml exec -T <backend-service> \
+      python manage.py makemigrations --check --dry-run --no-input
+  ```
+- **Drizzle** (`drizzle-kit check`):
+  ```bash
+  docker compose -f docker/docker-compose.dev.yml exec -T <app-service> \
+      npx drizzle-kit check
+  ```
+- **Alembic** (`alembic check`):
+  ```bash
+  docker compose -f docker/docker-compose.dev.yml exec -T <backend-service> \
+      alembic check
+  ```
+
+On nonzero exit, fail CI with an actionable message that names the fix command:
+
+```
+FAIL: Pending model changes have no committed migration files.
+      Run:    make makemigrations
+      Then commit the new files in backend/<app>/migrations/.
+```
+
+If Docker isn't available (e.g., daemon down, CLI missing), the gate SHOULD warn-and-skip rather than fail — the operator's environment is broken in a way the script can't fix, and we don't want to block legitimate runs. But if Docker IS available, missing migrations MUST fail.
+
+This phase is NOT skipped by `--test-only` — uncommitted migrations are a correctness issue, not a static-analysis nicety.
+
+#### Where migrations are actually applied
+
+Applying migrations to the dev DB is **not** the CI script's job. Instead:
+
+- The dev application container's entrypoint does it on every container start, gated by `RUN_MIGRATIONS_ON_START=true` in the dev compose file. See the "Django backends — the migrate-on-start entrypoint" section of [local-dev-docker-guide.md](local-dev-docker-guide.md) for the pattern.
+- The factory orchestrator runs `makemigrations` (auto-generate) inside the container before each CI cycle if any model change is detected without a corresponding migration file. See `_ensure_migrations` in `src/multi_agent/orchestrator.py`.
+- Production deploys apply migrations explicitly via the deploy script (e.g., `scripts/deploy-vps.sh`), once, before swapping containers — never via container startup.
+
+The CI-script gate above is the third layer: catches the case where the orchestrator's auto-generate didn't fire (operator ran the build manually, or the orchestrator's makemigrations was skipped because the container couldn't be brought up) AND the operator didn't manually run `make makemigrations`.
 
 ### Phase 1c — Auto-format, then check (MUST)
 
@@ -262,7 +319,7 @@ This keeps the tool resolution path consistent between local dev, factory runs, 
 - **MAY**: `2>/dev/null` on auto-format/auto-fix commands where errors are deliberately ignored — but follow with a `|| true` so pipefail doesn't kill the script.
 - **SHOULD**: prefix major sections with `=== Phase N: <description> ===` so log files are scannable.
 
-## Anti-patterns from chat2diagram (do not repeat)
+## Anti-patterns from prior builds (do not repeat)
 
 | Anti-pattern                                                                                                                 | Why it hurt                                                                                                                     | Fix                                                                                                                                                  |
 | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------- |
@@ -274,6 +331,9 @@ This keeps the tool resolution path consistent between local dev, factory runs, 
 | `git diff` in subshells without `2>/dev/null                                                                                 |                                                                                                                                 | true`                                                                                                                                                | Unset variables / missing repo failed Phase 0 entirely, broke all CI | Defensive defaults on every git invocation in detection logic |
 | Pre-commit hook calls bare `prettier` / `eslint` / `black`                                                                   | Failed silently when `node_modules/.bin/` was wiped (Docker churn, manual `git clean`); operator had to `npm install` and retry | Always invoke via `npx prettier`, `npx eslint`, or `python -m black` so tools resolve from project-local installs                                    |
 | Pre-commit hook duplicates the factory's autoformat step in the same mode (both `--write`, or one `--write` + one `--check`) | Double work, or hooks fight the factory's edits                                                                                 | Pick coordination pattern explicitly: hooks delegate to factory (Option A) OR factory delegates to hooks (Option B) — not both running the same tool |
+| Running `manage.py migrate` (or any migrator) on the host inside `scripts/ci.sh`                                             | Host needs the framework, the DB driver, and a reachable DB on `localhost`; fragile across machines and breaks the moment the DB moves into Docker | Run migration commands inside the dev application container via `docker compose exec`; the container has the language runtime + the DB on the compose network without the host needing anything |
+| Skipping the migration gate (`makemigrations --check` / `drizzle-kit check` / `alembic check`)                               | Operator changes a model, runs tests against a synced dev DB, doesn't notice the missing migration file is uncommitted; landed on `main`, prod deploy hits "no such column"      | Add Phase 1b gate; fail CI loud with the exact `make` command to fix it                                                                              |
+| Setting `RUN_MIGRATIONS_ON_START=true` (or any auto-migrate-on-start flag) in a prod compose file                            | All replicas race to apply migrations during a rolling deploy; partial-state failure mid-rollout                                | Set the env var ONLY in `docker-compose.dev.yml`. Production migrates explicitly via the deploy script, once, before swapping containers             |
 
 ## How the bmad-architect should use this document
 
@@ -291,10 +351,11 @@ When generating `scripts/ci.sh` from `approved-tech-stack.md`, the architect age
 Before kicking off the factory:
 
 1. Read `scripts/ci.sh` end-to-end. Should be ~100-200 lines for a single-stack project, ~150-300 for multi-stack.
-2. Run it against an unchanged checkout: `bash scripts/ci.sh`. Should pass with all phases marked, no Phase 0 short-circuit (since nothing changed, but also nothing broke).
+2. Run it against an unchanged checkout with the dev stack up: `make up && bash scripts/ci.sh`. Should pass with all phases marked, no Phase 0 short-circuit (since nothing changed, but also nothing broke).
 3. Make a trivial doc-only change in `_bmad-output/`, run `bash scripts/ci.sh --story X-Y` for some story. Phase 0 should short-circuit in <2 seconds.
 4. Make a trivial code change, run `bash scripts/ci.sh --story X-Y`. All phases should run, including the full-suite fallback if no tests match.
-5. Look at the output for any anti-patterns from the table above. Fix them in the architect's prompt or the script directly.
+5. **Validate the migration gate (Phase 1b):** add a no-op field to a model (e.g., `dummy = models.IntegerField(null=True)` on any Django model), do NOT run `make makemigrations`, then `bash scripts/ci.sh --story X-Y`. The script MUST fail Phase 1b with a clear "pending model changes" message, not pass silently. Revert the change after.
+6. Look at the output for any anti-patterns from the table above. Fix them in the architect's prompt or the script directly.
 
 ## Updating this specification
 
@@ -302,6 +363,7 @@ When a future factory build surfaces a new CI pattern worth standardizing, updat
 
 ## See also
 
+- [local-dev-docker-guide.md](local-dev-docker-guide.md) — the dev Docker stack the migration gate dispatches into; the leave-it-up policy CI scripts assume; the Django entrypoint pattern that handles `migrate --noinput` on container start
 - [factory-replication-guide.md](../factory-replication-guide.md#common-gotchas) — host-side gotchas that affect CI script behavior
 - [factory-lessons-from-chat2diagram.md](../factory-lessons-from-chat2diagram.md) — full retrospective on the lessons codified here
 - [story-and-epic-writing-guide.md](story-and-epic-writing-guide.md) — partner template for the planning side

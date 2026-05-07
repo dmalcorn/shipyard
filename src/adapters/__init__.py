@@ -57,10 +57,15 @@ def load_adapters(
     """
     raw_stacks = config.get("target", {}).get("stacks")
     if not raw_stacks:
-        logger.info(
+        # Loud — silent fallback to node_drizzle has caused real problems
+        # (e.g., Django targets where eslint runs at project root and fails
+        # because eslint.config lives in a subdir). Operators should set
+        # target.stacks explicitly.
+        logger.warning(
             "No 'target.stacks' in factory.yaml — defaulting to ['node_drizzle'] "
-            "for backward compatibility. Set 'target.stacks: [<adapter-name>]' "
-            "explicitly to silence this message.",
+            "for backward compatibility. This is almost certainly wrong for any "
+            "non-Drizzle target and will cause autoformat/lint to run at the "
+            "project root. Set 'target.stacks: [<adapter-name>]' explicitly.",
         )
         raw_stacks = ["node_drizzle"]
 
@@ -87,6 +92,20 @@ def load_adapters(
             "Loaded adapter %s with cwd=%s",
             name, cwd,
         )
+
+        # Marker check — if the adapter's expected marker file (manage.py for
+        # django, package.json for node*) isn't in cwd, the operator has almost
+        # certainly mis-configured target.stacks. Lint/format will fail
+        # downstream as a "non-blocking" warning that masks the real cause;
+        # surface it loudly here instead.
+        if not adapter.detect():
+            logger.warning(
+                "Adapter %r loaded with cwd=%s but its marker files were not "
+                "found there — autoformat/lint will run against the wrong "
+                "directory. Verify 'target.stacks' in factory.yaml points "
+                "this adapter at the right subdir.",
+                name, cwd,
+            )
     return adapters
 
 

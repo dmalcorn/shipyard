@@ -8,7 +8,7 @@ This is a copy-into-target template. Place it at `_bmad-output/planning-artifact
 
 Three previous factory builds drifted into a hidden anti-pattern: the target's `.env` held a Railway `DATABASE_URL`, and every dev run, every test, every UAT touched the same Railway-hosted database. Tests could corrupt UAT data; UAT could corrupt tests; schema migrations got applied during exploratory work; the build could not be reproduced on a fresh machine because nothing was self-contained. The fix is **complete environment separation** — a local stack that is identical in shape to the Railway one but has zero connection to it.
 
-The result: the operator can `docker compose up`, get a fully working stack at `localhost`, hammer on it for hours, and `docker compose down -v` to reset to clean state with one command. Railway is touched only when code lands on `main` and triggers a redeploy.
+The result: the operator can `docker compose up`, get a fully working stack at `localhost`, and **leave it running** as the routine state for development. The stack is meant to stay up — the containers idle cheaply between sessions, and `restart: unless-stopped` brings them back after host reboots. `docker compose down` and `down -v` exist for non-routine situations (port conflicts with another project, host resource pressure, DB state reset) but are not part of the daily loop. Railway is touched only when code lands on `main` and triggers a redeploy.
 
 ## The three-container topology
 
@@ -53,9 +53,9 @@ The app, db, and mailpit containers communicate by service name on the compose n
 
 ```yaml
 # docker-compose.yml — local development stack
-# Spin up:    docker compose up --watch
-# Tear down:  docker compose down            (keeps DB volume)
-# Reset:      docker compose down -v         (deletes DB volume — clean slate)
+# Routine:    docker compose up --watch      (leave it running between sessions)
+# Stop:       docker compose down            (non-routine — keeps DB volume)
+# Reset:      docker compose down -v         (non-routine — deletes DB volume; clean slate)
 services:
   app:
     build:
@@ -92,7 +92,7 @@ services:
           path: ./package.json
 
   db:
-    image: postgres:17
+    image: postgres:18
     container_name: <target>-db
     restart: unless-stopped
     ports:
@@ -102,7 +102,9 @@ services:
       POSTGRES_PASSWORD: <target>_dev
       POSTGRES_DB: <target>
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18+: mount at /var/lib/postgresql (data lands in a version-major
+      # subdir per pg_ctlcluster). For postgres ≤17, use /var/lib/postgresql/data.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U <target>"]
       interval: 5s
@@ -160,6 +162,58 @@ Why a separate dev Dockerfile:
 - Dev image keeps dev dependencies (drizzle-kit, eslint, vitest) so the container can run them.
 - Bind-mount means no `COPY` of source — saves rebuild time on every code change.
 
+## Django backends — the migrate-on-start entrypoint
+
+Django targets need an extra wrinkle: schema migrations have to run before the app server can serve a request, and they need to re-run after every model change, every `down -v` reset, and every container recreation. Without help, the operator has to remember to `make migrate` every time, and forgetting it means the container starts but every request crashes against a stale schema.
+
+The fix is a tiny shared shell entrypoint that runs `manage.py migrate --noinput` before exec'ing the actual command — gated by an env var so it only fires in dev, never in prod.
+
+```sh
+# docker/django-entrypoint.sh — committed, used by EVERY Django service
+#!/bin/sh
+set -e
+if [ "$RUN_MIGRATIONS_ON_START" = "true" ]; then
+    echo "[entrypoint] Applying database migrations..."
+    python manage.py migrate --noinput
+fi
+exec "$@"
+```
+
+Each Django Dockerfile wires it in identically:
+
+```dockerfile
+# Dockerfile.backend (or Dockerfile.staff, etc.) — Django dev image
+# ... usual COPY requirements.txt, pip install, COPY source ...
+
+COPY docker/django-entrypoint.sh /usr/local/bin/django-entrypoint.sh
+RUN chmod +x /usr/local/bin/django-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/django-entrypoint.sh"]
+
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+```
+
+Then in `docker-compose.dev.yml` (and ONLY in the dev compose — never `docker-compose.prod.yml` etc.), set the toggle on every Django service:
+
+```yaml
+services:
+  backend:
+    # ...
+    environment:
+      - RUN_MIGRATIONS_ON_START=true   # auto-migrate on every container start
+
+  staff:
+    # NOTE: a UI-only Django that proxies to the backend API has no DATABASES
+    # setting — leave RUN_MIGRATIONS_ON_START unset there. The shared
+    # entrypoint is still installed in Dockerfile.staff (no-op without the
+    # env var), so the toggle is available if staff ever gains its own DB.
+```
+
+For monorepos with multiple Django apps (e.g., a customer-facing `backend/` plus an internal `staff/` template UI, both with their own `manage.py`), every Django Dockerfile installs the same shared entrypoint — but `RUN_MIGRATIONS_ON_START=true` only goes on services that **have their own `DATABASES` setting**. A UI-only Django that proxies to a backend API has no DATABASES configured, so `manage.py migrate` would crash on container start. Leave the env var unset for those services; the entrypoint becomes a no-op (`exec "$@"`), and the toggle stays available if the service ever gains its own DB schema.
+
+The factory's orchestrator detects every `manage.py` (in `backend/`, `staff/`, etc.) and runs `makemigrations --check` against each project's container in turn. When it hits a UI-only Django (recognized by an `ImproperlyConfigured: DATABASES` error), it skips that project cleanly with one log line — no spurious auto-generate attempt.
+
+Why dev-only via env var: production deploys want explicit, staged migrations (the deploy script runs `migrate` once before swapping containers), not every replica racing to apply migrations on startup. Setting `RUN_MIGRATIONS_ON_START` only in the dev compose keeps the same image safe for both environments.
+
 ## The `.env.docker` file
 
 ```bash
@@ -214,28 +268,32 @@ For test runs, the factory has two options:
 
 ## Operator commands
 
+**Routine policy:** start the stack once and leave it running. Don't tear it down at the end of a session — `restart: unless-stopped` keeps it healthy across reboots, and idle containers cost very little. `down` and `down -v` are non-routine operations; reach for them only in the situations called out below.
+
 ```bash
-# Start the stack (with --watch for live reload)
+# Routine — start the stack once (with --watch for live reload)
 docker compose up --watch
 
-# Start in detached mode (no terminal locked)
+# Routine — start in detached mode (no terminal locked); leave it running
 docker compose up -d
 
-# View live logs
+# Routine — view live logs without stopping anything
 docker compose logs -f app
 docker compose logs -f db
 
-# Run a one-off command inside the app container
+# Routine — run one-off commands while the stack stays up
 docker compose exec app npm run drizzle:push          # apply schema
 docker compose exec app npx tsx scripts/seed.ts        # seed dev data
 
-# Stop containers (keeps volumes)
+# NON-ROUTINE — stop containers (keeps DB volume).
+# Use only when: another project needs these ports, or you're freeing host RAM/CPU.
 docker compose down
 
-# Stop and DELETE all volumes (clean slate — destroys DB data)
+# NON-ROUTINE — stop and DELETE the DB volume (clean slate, destroys DB data).
+# Use only when: local DB state is wedged, migrations are confused, or you want to re-seed.
 docker compose down -v
 
-# Rebuild after Dockerfile.dev changes
+# NON-ROUTINE — rebuild after Dockerfile.dev changes
 docker compose build --no-cache app
 docker compose up
 ```
@@ -250,8 +308,10 @@ docker compose up
 | **MUST**   | `node_modules/` is a Docker-managed volume, NOT shared with the host — Linux binaries inside the container would conflict with Windows binaries the factory uses on the host                         |
 | **SHOULD** | The host has its own `node_modules/` (after `npm install` on host) so factory autoformat tools can find prettier/eslint                                                                              |
 | **SHOULD** | `.env.docker` is gitignored; commit `.env.docker.example` with shape only (no secrets)                                                                                                               |
-| **SHOULD** | `docker compose down -v` is the documented "reset" command — operators should reach for it whenever local state diverges from expected                                                               |
+| **MUST**   | The dev stack is left running between sessions — `up` once, leave it up. `down` and `down -v` are non-routine (only for port conflicts, host resource pressure, or DB state reset)                   |
+| **SHOULD** | `docker compose down -v` is the documented "reset" command for when local state diverges from expected — but it is the exception, not part of the daily loop                                         |
 | **SHOULD** | Production `Dockerfile` and dev `Dockerfile.dev` are separate files — production needs multi-stage build + dev-dep prune, dev needs the opposite                                                     |
+| **MUST**   | Every Django service installs the shared `docker/django-entrypoint.sh` in its Dockerfile. `RUN_MIGRATIONS_ON_START=true` is set ONLY for services with their own `DATABASES` configured — and ONLY in `docker-compose.dev.yml`, never in prod compose. UI-only Django services that proxy to a backend API leave the env var unset (the entrypoint is a no-op without it)         |
 
 ## Anti-patterns
 
@@ -263,6 +323,8 @@ docker compose up
 | `EMAIL_HOST=localhost` set on the container                | App tries to reach SMTP on the _container's_ localhost (i.e., itself), not Mailpit                                                                    | Use the service name: `EMAIL_HOST=mailpit`                                                                          |
 | Skipping `--watch` mode and rebuilding on every change     | 30-60s rebuild kills dev productivity                                                                                                                 | `docker compose up --watch` syncs code changes live; only rebuilds on `package.json` changes                        |
 | Forgetting `docker compose down -v` exists                 | Operator manually cleans Postgres tables, gets confused state                                                                                         | When in doubt, blow away the volume — the seed script puts data back                                                |
+| Django container starts `runserver` without applying pending migrations | Container is "up" but every request crashes against a stale schema; operator forgets `make migrate` and assumes it's a code bug                       | Add the `django-entrypoint.sh` pattern; set `RUN_MIGRATIONS_ON_START=true` in dev compose so it self-heals on every start |
+| Putting `RUN_MIGRATIONS_ON_START=true` in a prod compose file | Replicas race to apply migrations on rolling deploy; partial-state failure mid-rollout                                                                 | Set the env var ONLY in `docker-compose.dev.yml`. Production migrates via the deploy script, once, before swapping containers |
 | Production using Mailpit's `mailpit.railway.internal` host | Real users see no email                                                                                                                               | Production env vars point at the actual SMTP server (e.g., self-hosted Postfix on a VPS); confirm at deploy time    |
 
 ## Multi-component considerations
@@ -285,6 +347,7 @@ When generating Dockerfile + docker-compose.yml for a new target, the architect 
 3. Generate `.env.docker.example` with shape only — no secret values
 4. Add `.env.docker` to `.gitignore`
 5. Reference this guide in the target's `README.md` so future operators know the topology
+6. **For Django targets:** generate `docker/django-entrypoint.sh` (the shared migrate-on-start script), wire it into every Django Dockerfile via `COPY` + `chmod +x` + `ENTRYPOINT`, and set `RUN_MIGRATIONS_ON_START=true` in `docker-compose.dev.yml` ONLY on Django services that have their own `DATABASES` setting. UI-only Django services that proxy to a backend API (e.g., a staff panel) install the entrypoint but leave the env var unset — the entrypoint is a no-op without it, and the toggle remains available if the service ever gains its own DB. Do NOT set the env var in any prod compose file
 
 The architect SHOULD also coordinate with the [ci-script-specification.md](ci-script-specification.md): the CI script's Phase 1b (DB schema sync) needs to use `localhost:5432` (when run on host) or `db:5432` (when run inside compose). The compose file makes both work because the host port is published.
 

@@ -29,6 +29,7 @@ epic_graph.py as post-epic processing, not here.
 
 from __future__ import annotations
 
+import json
 import logging
 import operator
 import os
@@ -38,6 +39,7 @@ import subprocess
 from collections.abc import Mapping
 from typing import Annotated, Any, TypedDict
 
+import yaml
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -789,49 +791,305 @@ _MIGRATION_FRAMEWORKS: list[tuple[str, list[str], list[str], str]] = [
 ]
 
 
+_COMPOSE_FILE_CANDIDATES: tuple[str, ...] = (
+    "docker/docker-compose.dev.yml",
+    "docker/docker-compose.dev.yaml",
+    "docker-compose.dev.yml",
+    "docker-compose.dev.yaml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+)
+
+
+def _find_dev_compose_file(working_dir: str | None) -> str | None:
+    """Locate the dev docker-compose file by convention. Returns relative path or None."""
+    base = working_dir or "."
+    for candidate in _COMPOSE_FILE_CANDIDATES:
+        if os.path.isfile(os.path.join(base, candidate)):
+            return candidate
+    return None
+
+
+def _find_compose_service_for_dir(
+    compose_path: str,
+    target_search_dir: str,
+    working_dir: str | None,
+) -> str | None:
+    """Find which service in compose_path bind-mounts target_search_dir.
+
+    Parses the compose YAML and returns the service whose ``volumes:`` entry
+    has a host-side bind that resolves to the same directory as the migration
+    framework's marker file. Returns None if no service matches.
+    """
+    base = working_dir or "."
+    full_compose_path = os.path.join(base, compose_path)
+    compose_dir = os.path.dirname(full_compose_path) or base
+
+    try:
+        with open(full_compose_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        logger.warning("Could not parse compose file %s: %s", full_compose_path, e)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    services = data.get("services") or {}
+    if not isinstance(services, dict):
+        return None
+
+    target_real = os.path.realpath(target_search_dir)
+
+    for service_name, spec in services.items():
+        if not isinstance(spec, dict):
+            continue
+        volumes = spec.get("volumes") or []
+        if not isinstance(volumes, list):
+            continue
+        for vol in volumes:
+            if not isinstance(vol, str):
+                continue
+            host_part = vol.split(":", 1)[0]
+            if not host_part:
+                continue
+            # Named volumes are bare identifiers (no path separators) and
+            # should be skipped — they don't bind a host directory.
+            if "/" not in host_part and "\\" not in host_part and not os.path.isabs(host_part):
+                continue
+            if os.path.isabs(host_part):
+                resolved = os.path.realpath(host_part)
+            else:
+                resolved = os.path.realpath(os.path.join(compose_dir, host_part))
+            if resolved == target_real:
+                return str(service_name)
+    return None
+
+
+def _docker_service_running(
+    compose_path: str,
+    service: str,
+    working_dir: str | None,
+) -> bool:
+    """Return True if the named service's container is in 'running' state.
+
+    'Running but unhealthy' still counts — ``docker compose exec`` works on any
+    running container, and we don't need the app's HTTP port to apply migrations.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", compose_path, "ps", service,
+             "--format", "json"],
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("docker compose ps failed for %s: %s", service, e)
+        return False
+
+    if result.returncode != 0:
+        return False
+
+    output = result.stdout.strip()
+    if not output:
+        return False
+
+    # Compose emits either a JSON array or JSONL depending on version.
+    entries: list[Any] = []
+    try:
+        if output.startswith("["):
+            parsed = json.loads(output)
+            if isinstance(parsed, list):
+                entries = parsed
+        else:
+            for line in output.splitlines():
+                line_stripped = line.strip()
+                if line_stripped:
+                    entries.append(json.loads(line_stripped))
+    except json.JSONDecodeError:
+        return False
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        # `Service` is the compose service name; `Name` is the container name.
+        # Match either, since ps output shape varies.
+        if entry.get("Service") != service and entry.get("Name") != service:
+            continue
+        if entry.get("State") == "running":
+            return True
+    return False
+
+
+def _ensure_docker_service_up(
+    compose_path: str,
+    service: str,
+    working_dir: str | None,
+) -> bool:
+    """Ensure the named service is running, bringing it up via compose if needed.
+
+    Returns True if the service is (or becomes) running. Returns False if the
+    service can't be started — in which case the caller should fail loud rather
+    than silently fall back to host-side execution.
+    """
+    if _docker_service_running(compose_path, service, working_dir):
+        return True
+
+    print(
+        f"    [migrations] container '{service}' not running — "
+        f"starting via 'docker compose up -d {service}'"
+    )
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", compose_path, "up", "-d", service],
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=240,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("docker compose up failed for %s: %s", service, e)
+        return False
+
+    if result.returncode != 0:
+        logger.warning(
+            "docker compose up returned %s for %s: %s",
+            result.returncode, service, (result.stderr or result.stdout)[:500],
+        )
+        return False
+
+    return _docker_service_running(compose_path, service, working_dir)
+
+
+_MIGRATION_SEARCH_SUBDIRS: tuple[str, ...] = (
+    "backend",
+    "server",
+    "api",
+    "app",
+    "src",
+    "staff",
+)
+
+
+def _process_migration_project(
+    search_dir: str,
+    marker: str,
+    check_cmd: list[str],
+    generate_cmd: list[str],
+    label: str,
+    working_dir: str | None,
+) -> None:
+    """Run check + (auto-generate-if-pending) for a single project's marker file.
+
+    Dispatches into the container when a compose service bind-mounts ``search_dir``;
+    otherwise runs on the host. Bring-up failure is logged as a warning and the
+    project is skipped — but the caller may still process other projects.
+    """
+    compose_path = _find_dev_compose_file(working_dir)
+    service = (
+        _find_compose_service_for_dir(compose_path, search_dir, working_dir)
+        if compose_path else None
+    )
+
+    if compose_path and service:
+        print(
+            f"    [migrations] {label} detected in {search_dir}; "
+            f"running inside container '{service}' via {compose_path}"
+        )
+        if not _ensure_docker_service_up(compose_path, service, working_dir):
+            print(
+                f"    [migrations] WARNING: could not start '{service}' — "
+                f"skipping {search_dir} (fix the container, then re-run)"
+            )
+            return
+
+        exec_prefix = [
+            "docker", "compose", "-f", compose_path,
+            "exec", "-T", service,
+        ]
+        check_cmd_full = exec_prefix + check_cmd
+        generate_cmd_full = exec_prefix + generate_cmd
+        run_cwd: str | None = working_dir
+    else:
+        print(f"    [migrations] {label} detected in {search_dir} (host-side)")
+        check_cmd_full = check_cmd
+        generate_cmd_full = generate_cmd
+        run_cwd = search_dir
+
+    passed, output = _run_bash(check_cmd_full, cwd=run_cwd)
+
+    if passed:
+        print(f"    [migrations] {label} migrations up to date for {search_dir}")
+        return
+
+    # Django UI-only services (e.g., a staff panel that proxies to a backend
+    # API) have no DATABASES setting, so makemigrations errors before it can
+    # even check for pending changes. Skip cleanly instead of attempting to
+    # auto-generate, which would just hit the same error and double-log it.
+    if "ImproperlyConfigured" in output and "DATABASES" in output:
+        print(
+            f"    [migrations] {search_dir} has no DATABASES configured "
+            f"(UI-only service?) — skipping migration check"
+        )
+        return
+
+    print(f"    [migrations] Pending migrations in {search_dir} — auto-generating...")
+    gen_passed, gen_output = _run_bash(generate_cmd_full, cwd=run_cwd)
+    if gen_passed:
+        print(f"    [migrations] {label} migrations generated for {search_dir}")
+        # Stage generated files on the host. Bind mounts propagate files
+        # written inside the container back out to the host.
+        _run_bash(["git", "add", "-A"], cwd=search_dir)
+    else:
+        print(f"    [migrations] WARNING: auto-generate failed for {search_dir}")
+        logger.warning(
+            "Migration auto-generate failed for %s in %s: %s",
+            label, search_dir, gen_output[:500],
+        )
+
+
 def _ensure_migrations(working_dir: str | None) -> None:
     """Check for pending database migrations and auto-generate if needed.
 
-    Detects the migration framework from marker files, runs the check
-    command, and auto-generates migrations when they're out of date.
-    Also searches common subdirectories (e.g. backend/) for the marker
-    file, since many projects nest the app server.
+    Detects the migration framework from marker files. When a dev docker-compose
+    file is present and a service bind-mounts the framework's source directory,
+    the migration commands run *inside* the container — so the host doesn't need
+    Django/Postgres/etc. installed and reachable. The container is started via
+    ``docker compose up -d`` first if it isn't already running. On bring-up
+    failure the project is skipped with a warning rather than silently falling
+    back to host execution, so topology problems don't get masked.
+
+    Monorepos with multiple framework projects (e.g., a Django ``backend/`` and a
+    separate Django ``staff/`` Django app) are all processed within the same
+    framework pass — each project's migrations get checked independently.
+
+    For non-Dockerized targets (no compose file or no matching service), commands
+    run on the host as before.
     """
     base = working_dir or "."
 
     for marker, check_cmd, generate_cmd, label in _MIGRATION_FRAMEWORKS:
-        # Search project root and one level of common subdirs
         search_dirs = [base]
-        for subdir in ("backend", "server", "api", "app", "src"):
+        for subdir in _MIGRATION_SEARCH_SUBDIRS:
             candidate = os.path.join(base, subdir)
             if os.path.isdir(candidate):
                 search_dirs.append(candidate)
 
+        handled_any = False
         for search_dir in search_dirs:
             marker_path = os.path.join(search_dir, marker)
             if not os.path.isfile(marker_path):
                 continue
+            handled_any = True
+            _process_migration_project(
+                search_dir, marker, check_cmd, generate_cmd, label, working_dir,
+            )
 
-            print(f"    [migrations] {label} detected in {search_dir}")
-            passed, output = _run_bash(check_cmd, cwd=search_dir)
-
-            if passed:
-                print(f"    [migrations] {label} migrations up to date")
-            else:
-                print("    [migrations] Pending migrations — auto-generating...")
-                gen_passed, gen_output = _run_bash(generate_cmd, cwd=search_dir)
-                if gen_passed:
-                    print(f"    [migrations] {label} migrations generated")
-                    # Stage the generated migration files
-                    _run_bash(["git", "add", "-A"], cwd=search_dir)
-                else:
-                    print("    [migrations] WARNING: auto-generate failed")
-                    logger.warning(
-                        "Migration auto-generate failed for %s in %s: %s",
-                        label, search_dir, gen_output[:500],
-                    )
-
-            # Only handle the first matching framework per project
+        if handled_any:
+            # First framework that matched anywhere wins — don't fall through
+            # to other frameworks (e.g., if Django was found, don't also try
+            # Alembic in the same project).
             return
 
 
