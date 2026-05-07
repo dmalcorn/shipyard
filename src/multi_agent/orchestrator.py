@@ -39,11 +39,15 @@ import subprocess
 from collections.abc import Mapping
 from typing import Annotated, Any, TypedDict
 
-import yaml
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from src.audit_log.audit import get_logger
+from src.dev_container import (
+    ensure_docker_service_up,
+    find_compose_service_for_dir,
+    find_dev_compose_file,
+)
 from src.intake.checkpoint import clear_phase_checkpoint, save_phase_checkpoint
 from src.multi_agent.bmad_invoke import (
     TIMEOUT_LONG,
@@ -795,175 +799,9 @@ _MIGRATION_FRAMEWORKS: list[tuple[str, list[str], str]] = [
 ]
 
 
-_COMPOSE_FILE_CANDIDATES: tuple[str, ...] = (
-    "docker/docker-compose.dev.yml",
-    "docker/docker-compose.dev.yaml",
-    "docker-compose.dev.yml",
-    "docker-compose.dev.yaml",
-    "docker-compose.yml",
-    "docker-compose.yaml",
-)
-
-
-def _find_dev_compose_file(working_dir: str | None) -> str | None:
-    """Locate the dev docker-compose file by convention. Returns relative path or None."""
-    base = working_dir or "."
-    for candidate in _COMPOSE_FILE_CANDIDATES:
-        if os.path.isfile(os.path.join(base, candidate)):
-            return candidate
-    return None
-
-
-def _find_compose_service_for_dir(
-    compose_path: str,
-    target_search_dir: str,
-    working_dir: str | None,
-) -> str | None:
-    """Find which service in compose_path bind-mounts target_search_dir.
-
-    Parses the compose YAML and returns the service whose ``volumes:`` entry
-    has a host-side bind that resolves to the same directory as the migration
-    framework's marker file. Returns None if no service matches.
-    """
-    base = working_dir or "."
-    full_compose_path = os.path.join(base, compose_path)
-    compose_dir = os.path.dirname(full_compose_path) or base
-
-    try:
-        with open(full_compose_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError) as e:
-        logger.warning("Could not parse compose file %s: %s", full_compose_path, e)
-        return None
-
-    if not isinstance(data, dict):
-        return None
-    services = data.get("services") or {}
-    if not isinstance(services, dict):
-        return None
-
-    target_real = os.path.realpath(target_search_dir)
-
-    for service_name, spec in services.items():
-        if not isinstance(spec, dict):
-            continue
-        volumes = spec.get("volumes") or []
-        if not isinstance(volumes, list):
-            continue
-        for vol in volumes:
-            if not isinstance(vol, str):
-                continue
-            host_part = vol.split(":", 1)[0]
-            if not host_part:
-                continue
-            # Named volumes are bare identifiers (no path separators) and
-            # should be skipped — they don't bind a host directory.
-            if "/" not in host_part and "\\" not in host_part and not os.path.isabs(host_part):
-                continue
-            if os.path.isabs(host_part):
-                resolved = os.path.realpath(host_part)
-            else:
-                resolved = os.path.realpath(os.path.join(compose_dir, host_part))
-            if resolved == target_real:
-                return str(service_name)
-    return None
-
-
-def _docker_service_running(
-    compose_path: str,
-    service: str,
-    working_dir: str | None,
-) -> bool:
-    """Return True if the named service's container is in 'running' state.
-
-    'Running but unhealthy' still counts — ``docker compose exec`` works on any
-    running container, and we don't need the app's HTTP port to apply migrations.
-    """
-    try:
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_path, "ps", service,
-             "--format", "json"],
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("docker compose ps failed for %s: %s", service, e)
-        return False
-
-    if result.returncode != 0:
-        return False
-
-    output = result.stdout.strip()
-    if not output:
-        return False
-
-    # Compose emits either a JSON array or JSONL depending on version.
-    entries: list[Any] = []
-    try:
-        if output.startswith("["):
-            parsed = json.loads(output)
-            if isinstance(parsed, list):
-                entries = parsed
-        else:
-            for line in output.splitlines():
-                line_stripped = line.strip()
-                if line_stripped:
-                    entries.append(json.loads(line_stripped))
-    except json.JSONDecodeError:
-        return False
-
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        # `Service` is the compose service name; `Name` is the container name.
-        # Match either, since ps output shape varies.
-        if entry.get("Service") != service and entry.get("Name") != service:
-            continue
-        if entry.get("State") == "running":
-            return True
-    return False
-
-
-def _ensure_docker_service_up(
-    compose_path: str,
-    service: str,
-    working_dir: str | None,
-) -> bool:
-    """Ensure the named service is running, bringing it up via compose if needed.
-
-    Returns True if the service is (or becomes) running. Returns False if the
-    service can't be started — in which case the caller should fail loud rather
-    than silently fall back to host-side execution.
-    """
-    if _docker_service_running(compose_path, service, working_dir):
-        return True
-
-    print(
-        f"    [migrations] container '{service}' not running — "
-        f"starting via 'docker compose up -d {service}'"
-    )
-    try:
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_path, "up", "-d", service],
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=240,
-        )
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("docker compose up failed for %s: %s", service, e)
-        return False
-
-    if result.returncode != 0:
-        logger.warning(
-            "docker compose up returned %s for %s: %s",
-            result.returncode, service, (result.stderr or result.stdout)[:500],
-        )
-        return False
-
-    return _docker_service_running(compose_path, service, working_dir)
+# Docker-compose dev-stack helpers live in src.dev_container so the
+# stack adapters (which can't import from this module without a cycle)
+# can use the same dispatch logic. Imported above as module-level names.
 
 
 _MIGRATION_SEARCH_SUBDIRS: tuple[str, ...] = (
@@ -1019,9 +857,9 @@ def _process_migration_project(
     agent creates missing migrations as part of its implementation, and
     the target's own CI gate validates the result.
     """
-    compose_path = _find_dev_compose_file(working_dir)
+    compose_path = find_dev_compose_file(working_dir)
     service = (
-        _find_compose_service_for_dir(compose_path, search_dir, working_dir)
+        find_compose_service_for_dir(compose_path, search_dir, working_dir)
         if compose_path else None
     )
 
@@ -1038,7 +876,7 @@ def _process_migration_project(
             f"    [migrations] {label} detected in {search_dir}; "
             f"running inside container '{service}' via {compose_path}"
         )
-        if not _ensure_docker_service_up(compose_path, service, working_dir):
+        if not ensure_docker_service_up(compose_path, service, working_dir, log_prefix="migrations"):
             print(
                 f"    [migrations] WARNING: could not start '{service}' — "
                 f"skipping {search_dir} (fix the container, then re-run)"
