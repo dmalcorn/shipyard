@@ -214,6 +214,25 @@ The factory's orchestrator detects every `manage.py` (in `backend/`, `staff/`, e
 
 Why dev-only via env var: production deploys want explicit, staged migrations (the deploy script runs `migrate` once before swapping containers), not every replica racing to apply migrations on startup. Setting `RUN_MIGRATIONS_ON_START` only in the dev compose keeps the same image safe for both environments.
 
+### Recovery: when migrate-on-start hits `InconsistentMigrationHistory`
+
+The entrypoint runs `manage.py migrate --noinput`, which calls Django's `check_consistent_history()` first. If the dev DB carries stale applied-migration state — a migration was renamed, squashed, reordered during authoring, or applied out of dependency order during a rough bootstrap — that check raises `InconsistentMigrationHistory` and the entrypoint fails. The container exits, and any `docker compose exec` against it fails with `Error response from daemon: container ... is not running`.
+
+This is the same root cause [`ci-script-specification.md`](ci-script-specification.md) Phase 1b made hermetic via the SQLite-backed `migration_check.py` settings overlay (see [PawprintRecipes lessons-learned/003](https://github.com/dmalcorn/PawprintRecipes/blob/main/lessons-learned/003-migration-gate-ephemeral-db.md)). The CI gate validates files-on-disk against an ephemeral DB; the dev container's entrypoint, by design, validates against the **real** dev DB so it can self-heal on schema changes.
+
+That tradeoff means the dev DB will occasionally land in inconsistent state — most often after a story squashes or reorders migrations, or after the operator manually pokes the DB. **The recovery is to wipe the volume and let migrations rebuild fresh:**
+
+```bash
+docker compose -f docker/docker-compose.dev.yml down -v
+docker compose -f docker/docker-compose.dev.yml up -d
+```
+
+The `-v` removes the named Postgres volume; `up -d` starts the stack from a clean DB and the entrypoint applies all migrations in correct dependency order. This is the documented "reset" pattern from the Anti-patterns table below — the dev DB is scratch space; tests use SQLite (per `config.settings.test`) so nothing real is lost. After the reset, the entrypoint succeeds and `docker compose exec` works again.
+
+If the operator has dev-DB state they want to keep (rare during active story work), the alternative is to run migrations manually in the right order via `docker compose exec pawprint-backend python manage.py migrate <app_label>` for each app in dependency order, but `down -v` is faster and idempotent.
+
+When in doubt: `down -v && up -d`. Recovered from an `InconsistentMigrationHistory` entrypoint crash in PawprintRecipes Story 3-4 (2026-05-08) using exactly this recipe.
+
 ## Python dev tools in the container
 
 The CI script ([ci-script-specification.md](ci-script-specification.md#prerequisite-dev-tools-must-be-installed-in-the-container)) dispatches backend lint, typecheck, and tests **inside** the dev backend container. That only works if the container's Python env has the tools the CI script invokes — ruff, mypy, pytest (+ pytest-django, pytest-cov), and any other `python -m <tool>` you run.
