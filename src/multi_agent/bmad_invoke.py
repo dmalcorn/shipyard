@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 from src.intake.cost_tracker import add_cost
@@ -274,6 +275,35 @@ def _extract_agent_identification(output: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _parse_rate_limit_wait_seconds(output: str) -> int | None:
+    """Parse "You've hit your limit · resets HH:MMam/pm (...)" and return
+    seconds until the wall-clock reset time (in local time). The CLI's
+    timezone in parens matches the user's local timezone in practice, so
+    we don't need IANA tz data — datetime.now() gives the correct frame.
+    Returns None if the pattern isn't present or can't be parsed.
+    """
+    m = re.search(
+        r"resets\s+(\d{1,2}):(\d{2})\s*(am|pm)",
+        output,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    hour_12 = int(m.group(1))
+    minute = int(m.group(2))
+    ampm = m.group(3).lower()
+    if not (1 <= hour_12 <= 12 and 0 <= minute <= 59):
+        return None
+    hour_24 = hour_12 % 12
+    if ampm == "pm":
+        hour_24 += 12
+    now = datetime.now()
+    reset = now.replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+    if reset <= now:
+        reset = reset + timedelta(days=1)
+    return int((reset - now).total_seconds())
+
+
 def _build_bmad_prompt(
     agent_command: str,
     bmad_agent: str,
@@ -336,6 +366,7 @@ def invoke_bmad_agent(
     timeout: int = TIMEOUT_MEDIUM,
     extra_context: str = "",
     model: str | None = None,
+    _rate_limit_retries: int = 0,
 ) -> dict[str, Any]:
     """Invoke a BMAD agent via Claude CLI in an isolated session.
 
@@ -516,6 +547,49 @@ def invoke_bmad_agent(
     )
     if any(p in output for p in _AUTH_HALT_PATTERNS):
         match = next((p for p in _AUTH_HALT_PATTERNS if p in output), "")
+
+        # Rate-limit window with parseable reset time: sleep until the
+        # window lifts and retry the same invocation, instead of halting
+        # the pipeline. Capped at 2 retries and 6h sleep as safety bounds.
+        # Other auth patterns ("does not have access", "Please login")
+        # are revocations that need human intervention — fall through to
+        # the halt path below.
+        MAX_RATE_LIMIT_RETRIES = 2
+        MAX_WAIT_SECONDS = 6 * 3600
+        if "You've hit your limit" in output and _rate_limit_retries < MAX_RATE_LIMIT_RETRIES:
+            wait_s = _parse_rate_limit_wait_seconds(output)
+            if wait_s is not None and 0 < wait_s <= MAX_WAIT_SECONDS:
+                wait_s += 60  # buffer past the reset minute
+                wait_min = wait_s // 60
+                wake = (datetime.now() + timedelta(seconds=wait_s)).strftime("%H:%M:%S")
+                print(
+                    f"\n      [bmad] *** RATE LIMIT detected: '{match}'\n"
+                    f"      [bmad] *** Sleeping {wait_min} min until ~{wake} "
+                    f"(retry {_rate_limit_retries + 1}/{MAX_RATE_LIMIT_RETRIES}), "
+                    f"then re-running: {bmad_agent} {command}",
+                )
+                # force_quit_event lets a Ctrl+C abort the sleep cleanly
+                if force_quit_event.wait(timeout=wait_s):
+                    print(
+                        "      [bmad] Force-quit during rate-limit sleep — "
+                        "aborting retry.",
+                    )
+                    raise SystemExit(2)
+                print(
+                    f"      [bmad] *** Resuming after rate-limit wait — "
+                    f"re-invoking {bmad_agent} {command}",
+                )
+                return invoke_bmad_agent(
+                    bmad_agent=bmad_agent,
+                    command=command,
+                    tools=tools,
+                    working_dir=working_dir,
+                    timeout=timeout,
+                    extra_context=extra_context,
+                    model=model,
+                    _rate_limit_retries=_rate_limit_retries + 1,
+                )
+
         print(
             f"\n      [bmad] *** HALT: Anthropic auth/rate-limit signal "
             f"detected: '{match}'",
