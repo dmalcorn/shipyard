@@ -1604,15 +1604,39 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         logger.warning("Removing stale git index.lock")
         os.remove(lock_file)
 
-    # If the tree is already clean, the story's changes may have been
-    # committed by a prior run (legitimate resume) OR dev_story produced
-    # nothing (bug / pause-kill). Distinguish by checking git log for an
-    # actual "story {task_id} complete" commit — if none exists, the
-    # clean tree means no work was ever done, and we must fail.
+    # If the tree is already clean, three possibilities:
+    #   1. check_story marked dev_complete=True because the manifest says
+    #      the story is in review/approved/completed status. The factory
+    #      already trusted that signal upstream (skipped dev_story);
+    #      trust it here too and advance cleanly. Manual fix-up commits
+    #      from a prior run won't carry a canonical "story X-Y complete"
+    #      subject, so the prior-commit log search would miss them — but
+    #      the manifest's status field IS a reliable signal that work
+    #      was done.
+    #   2. A prior run committed the story under the canonical message
+    #      "story X-Y complete". Look that up via git log.
+    #   3. dev_story produced nothing legitimately (likely pause-kill).
+    #      This is the only case where we should fail.
     _, status_out = _run_bash(["git", "status", "--porcelain"], cwd=cwd)
     if not status_out.strip():
         base_task_id = task_id.replace("-retry", "")
         expected_msg = f"story {base_task_id} complete"
+
+        # Case 1: trust the manifest. check_story_exists_node sets
+        # dev_complete=True when story status is review/approved/completed.
+        if state.get("dev_complete"):
+            print(
+                f"    [git_commit] Tree is clean and check_story marked "
+                f"this story complete (status=review/approved/completed) "
+                f"— advancing without commit",
+            )
+            clear_phase_checkpoint(_get_working_dir(state) or ".")
+            return {
+                "pipeline_status": "completed",
+                "current_phase": "git_commit",
+            }
+
+        # Case 2: look for the canonical commit subject in recent history.
         _, log_out = _run_bash(
             ["git", "log", "-50", "--format=%s"],
             cwd=cwd,
@@ -1635,6 +1659,8 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
                 "pipeline_status": "completed",
                 "current_phase": "git_commit",
             }
+
+        # Case 3: clean tree, no manifest signal, no prior commit. Real failure.
         print(
             f"    [git_commit] Tree is clean AND no prior "
             f"'{expected_msg}' commit — dev_story produced nothing",

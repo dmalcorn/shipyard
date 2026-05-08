@@ -532,11 +532,18 @@ def epic_paused_node(state: EpicState) -> dict[str, Any]:
 def epic_halt_node(state: EpicState) -> dict[str, Any]:
     """Terminal node when a story fails in an unrecoverable phase.
 
-    Currently triggered by git_commit failures: the working tree is
-    dirty with uncommitted dev work and would contaminate every
-    subsequent story. Halt the epic and surface the reason so the
-    operator can fix the underlying issue (usually a pre-commit hook
-    rejection) and resume.
+    Triggered by git_commit failures returning pipeline_status='failed'.
+    Common causes:
+      - Clean tree, dev_complete=False, and no prior 'story X-Y complete'
+        commit found in git log → dev_story produced nothing (likely a
+        pause-kill).
+      - The actual `git commit` command failed (e.g. corrupted index,
+        disk full, missing identity config).
+
+    The specific reason lives in state['current_story_error'] and is
+    printed on the line below the halt message. Pre-commit hook rejection
+    no longer reaches this path: the factory commits with --no-verify;
+    target-repo pre-commit hooks are for human/IDE commits only.
     """
     epic_num = state.get("epic_num", "?")
     stories = state.get("stories", [])
@@ -549,7 +556,7 @@ def epic_halt_node(state: EpicState) -> dict[str, Any]:
 
     message = (
         f"Epic {epic_num} halted at story {story_id}: "
-        f"phase={failed_phase} failed with dirty working tree. "
+        f"phase={failed_phase} failed. "
         f"Fix the underlying issue in the target repo and resume."
     )
     logger.error(message)
