@@ -1623,11 +1623,16 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         expected_msg = f"story {base_task_id} complete"
 
         # Case 1: trust the manifest. check_story_exists_node sets
-        # dev_complete=True when story status is review/approved/completed.
-        if state.get("dev_complete"):
+        # dev_complete=True when story status is "review" or "done".
+        # When phase-resume bypasses check_story (jumping straight to
+        # git_commit per _RESUME_ENTRY_PHASES), state won't carry
+        # dev_complete — fall back to reading the manifest status
+        # directly so resume-after-manual-fix-up advances cleanly.
+        manifest_status = _find_story_status(cwd, task_id)
+        if state.get("dev_complete") or manifest_status in ("review", "done"):
+            source = "state.dev_complete=True" if state.get("dev_complete") else f"manifest status='{manifest_status}'"
             print(
-                f"    [git_commit] Tree is clean and check_story marked "
-                f"this story complete (status=review/approved/completed) "
+                f"    [git_commit] Tree is clean and {source} "
                 f"— advancing without commit",
             )
             clear_phase_checkpoint(_get_working_dir(state) or ".")
