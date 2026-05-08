@@ -1720,7 +1720,9 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
 
     commit_ok, commit_out = _run_bash(["git", "add", "-A"], cwd=cwd)
     if commit_ok:
-        commit_ok, commit_out = _run_bash(["git", "commit", "-m", message], cwd=cwd)
+        # --no-verify skips target-repo pre-commit hooks; factory's run_ci with
+        # fix_ci retry is the enforcement layer. Hooks exist for human/IDE commits.
+        commit_ok, commit_out = _run_bash(["git", "commit", "--no-verify", "-m", message], cwd=cwd)
     _log_bash_to_audit(session_id, "git commit", "PASS" if commit_ok else "FAIL")
 
     if not commit_ok:

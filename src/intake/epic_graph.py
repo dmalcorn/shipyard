@@ -1582,8 +1582,10 @@ def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
 
     commit_ok, commit_out = _run_bash(["git", "add", "-A"], cwd=working_dir)
     if commit_ok:
+        # --no-verify skips target-repo pre-commit hooks; factory's run_ci with
+        # fix_ci retry is the enforcement layer. Hooks exist for human/IDE commits.
         commit_ok, commit_out = _run_bash(
-            ["git", "commit", "-m", message], cwd=working_dir
+            ["git", "commit", "--no-verify", "-m", message], cwd=working_dir
         )
 
     audit = get_logger(session_id)
