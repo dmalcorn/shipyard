@@ -157,6 +157,17 @@ if ! python -c "from src.main import main" >/dev/null 2>&1; then
 fi
 echo "  ✓ Factory imports cleanly"
 
+# Test-collection smoke check: catches dark-test drift (a test file
+# referencing a renamed/removed symbol won't run, won't be reported, and
+# can stay broken for many commits — happened with aa370e7 → 16 commits
+# of dark tests on test_epic_graph.py before being noticed).
+if ! python -m pytest --collect-only -q tests/ >/dev/null 2>&1; then
+    echo "ERROR: pytest collection failed — a test file has broken imports." >&2
+    echo "       Run: python -m pytest --collect-only tests/" >&2
+    exit 73
+fi
+echo "  ✓ Test files collect cleanly"
+
 # Relay health (best-effort — warn but don't block).
 # Two-layer probe so a broken DB layer doesn't masquerade as healthy:
 #   1. /health returns body containing "status":"ok"  — FastAPI app is up

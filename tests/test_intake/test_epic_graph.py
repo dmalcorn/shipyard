@@ -9,7 +9,6 @@ import pytest
 
 from src.intake.epic_graph import (
     EpicState,
-    _files_changed_in_epic,
     advance_story_node,
     analyze_reviews_node,
     build_epic_graph,
@@ -107,12 +106,20 @@ class TestRouteAfterStoryResult:
     def test_completed(self) -> None:
         assert route_after_story_result({"current_story_status": "completed"}) == "next_story"
 
-    def test_failed_non_commit_continues(self) -> None:
-        # A failure in dev_story/code_review/run_ci still advances — only
-        # git_commit failures halt the epic.
+    def test_failed_run_ci_halts(self) -> None:
+        # run_ci exhaustion (4 cycles) leaves a dirty tree — halt so the
+        # operator can investigate before downstream stories are poisoned.
         state: EpicState = {
             "current_story_status": "failed",
             "current_story_failed_phase": "run_ci",
+        }
+        assert route_after_story_result(state) == "halt"
+
+    def test_failed_dev_story_continues(self) -> None:
+        # Transient failures in non-tree-mutating phases still advance.
+        state: EpicState = {
+            "current_story_status": "failed",
+            "current_story_failed_phase": "dev_story",
         }
         assert route_after_story_result(state) == "next_story"
 
@@ -240,7 +247,7 @@ class TestBuildEpicGraph:
 
 
 # ---------------------------------------------------------------------------
-# _files_changed_in_epic — git-history derivation
+# prepare_epic_reviews_node — directory preservation
 # ---------------------------------------------------------------------------
 
 
@@ -277,53 +284,8 @@ def epic_repo(tmp_path: Path) -> Path:
     return repo
 
 
-class TestFilesChangedInEpic:
-    """_files_changed_in_epic derives the epic's file list from git history."""
-
-    def test_collects_all_story_files_for_epic(self, epic_repo: Path) -> None:
-        files = _files_changed_in_epic(str(epic_repo), "3")
-        assert files == ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]
-
-    def test_excludes_other_epics(self, epic_repo: Path) -> None:
-        files = _files_changed_in_epic(str(epic_repo), "3")
-        assert "src/other.ts" not in files
-
-    def test_excludes_non_story_commits(self, epic_repo: Path) -> None:
-        files = _files_changed_in_epic(str(epic_repo), "3")
-        assert "README.md" not in files
-        assert "rebuild-status.md" not in files
-
-    def test_dedups_files_touched_by_multiple_stories(
-        self, epic_repo: Path,
-    ) -> None:
-        files = _files_changed_in_epic(str(epic_repo), "3")
-        assert files.count("src/a.ts") == 1
-
-    def test_empty_epic_num_returns_empty_list(self, tmp_path: Path) -> None:
-        assert _files_changed_in_epic(str(tmp_path), "") == []
-
-    def test_missing_repo_returns_empty_list(self, tmp_path: Path) -> None:
-        # Not a git repo — helper should fail gracefully, not raise.
-        assert _files_changed_in_epic(str(tmp_path), "3") == []
-
-
 class TestPrepareEpicReviewsNode:
-    """prepare_epic_reviews_node populates epic_files_modified from git."""
-
-    def test_populates_files_from_git(self, epic_repo: Path) -> None:
-        (epic_repo / "epic-reviews").mkdir()
-        state: EpicState = {
-            "target_dir": str(epic_repo),
-            "epic_num": "3",
-        }
-        result = prepare_epic_reviews_node(state)
-        assert result["epic_review_file_paths"] == []
-        assert result["epic_files_modified"] == [
-            "src/a.ts",
-            "src/b.ts",
-            "src/c.ts",
-            "src/d.ts",
-        ]
+    """prepare_epic_reviews_node directory-preservation behavior."""
 
     def test_preserves_prior_epic_files_in_reviews_dir(
         self, epic_repo: Path,

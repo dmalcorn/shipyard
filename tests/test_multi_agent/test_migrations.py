@@ -14,14 +14,15 @@ from unittest.mock import patch
 
 import pytest
 
-from src.multi_agent import orchestrator
-from src.multi_agent.orchestrator import (
-    _docker_service_running,
-    _ensure_docker_service_up,
-    _ensure_migrations,
-    _find_compose_service_for_dir,
-    _find_dev_compose_file,
+from src import dev_container
+from src.dev_container import (
+    docker_service_running,
+    ensure_docker_service_up,
+    find_compose_service_for_dir,
+    find_dev_compose_file,
 )
+from src.multi_agent import orchestrator
+from src.multi_agent.orchestrator import _ensure_migrations
 
 
 def _write_pawprint_compose(target_dir: Path) -> Path:
@@ -59,7 +60,7 @@ volumes:
 
 
 # ---------------------------------------------------------------------------
-# _find_dev_compose_file
+# find_dev_compose_file
 # ---------------------------------------------------------------------------
 
 
@@ -67,32 +68,32 @@ def test_find_dev_compose_file_finds_docker_dir(tmp_path: Path) -> None:
     docker_dir = tmp_path / "docker"
     docker_dir.mkdir()
     (docker_dir / "docker-compose.dev.yml").write_text("services: {}\n", encoding="utf-8")
-    assert _find_dev_compose_file(str(tmp_path)) == "docker/docker-compose.dev.yml"
+    assert find_dev_compose_file(str(tmp_path)) == "docker/docker-compose.dev.yml"
 
 
 def test_find_dev_compose_file_falls_back_to_root(tmp_path: Path) -> None:
     (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    assert _find_dev_compose_file(str(tmp_path)) == "docker-compose.yml"
+    assert find_dev_compose_file(str(tmp_path)) == "docker-compose.yml"
 
 
 def test_find_dev_compose_file_prefers_dev_over_plain(tmp_path: Path) -> None:
     (tmp_path / "docker-compose.dev.yml").write_text("services: {}\n", encoding="utf-8")
     (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    assert _find_dev_compose_file(str(tmp_path)) == "docker-compose.dev.yml"
+    assert find_dev_compose_file(str(tmp_path)) == "docker-compose.dev.yml"
 
 
 def test_find_dev_compose_file_returns_none_when_absent(tmp_path: Path) -> None:
-    assert _find_dev_compose_file(str(tmp_path)) is None
+    assert find_dev_compose_file(str(tmp_path)) is None
 
 
 # ---------------------------------------------------------------------------
-# _find_compose_service_for_dir
+# find_compose_service_for_dir
 # ---------------------------------------------------------------------------
 
 
 def test_find_compose_service_matches_bind_volume(tmp_path: Path) -> None:
     _write_pawprint_compose(tmp_path)
-    service = _find_compose_service_for_dir(
+    service = find_compose_service_for_dir(
         "docker/docker-compose.dev.yml",
         str(tmp_path / "backend"),
         str(tmp_path),
@@ -108,7 +109,7 @@ def test_find_compose_service_skips_named_volumes(tmp_path: Path) -> None:
     # the named volume `pgdata`
     pgdata_dir = tmp_path / "pgdata"
     pgdata_dir.mkdir()
-    service = _find_compose_service_for_dir(
+    service = find_compose_service_for_dir(
         "docker/docker-compose.dev.yml",
         str(pgdata_dir),
         str(tmp_path),
@@ -120,7 +121,7 @@ def test_find_compose_service_returns_none_when_no_match(tmp_path: Path) -> None
     _write_pawprint_compose(tmp_path)
     other_dir = tmp_path / "unrelated"
     other_dir.mkdir()
-    service = _find_compose_service_for_dir(
+    service = find_compose_service_for_dir(
         "docker/docker-compose.dev.yml",
         str(other_dir),
         str(tmp_path),
@@ -134,7 +135,7 @@ def test_find_compose_service_handles_unparseable_yaml(tmp_path: Path) -> None:
     (docker_dir / "docker-compose.dev.yml").write_text(
         "this is: not: valid: yaml: at all:\n  - [", encoding="utf-8"
     )
-    service = _find_compose_service_for_dir(
+    service = find_compose_service_for_dir(
         "docker/docker-compose.dev.yml",
         str(tmp_path / "backend"),
         str(tmp_path),
@@ -143,7 +144,7 @@ def test_find_compose_service_handles_unparseable_yaml(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _docker_service_running
+# docker_service_running
 # ---------------------------------------------------------------------------
 
 
@@ -160,54 +161,54 @@ def _mock_run(returncode: int = 0, stdout: str = "", stderr: str = "") -> Any:
 
 def test_docker_service_running_parses_jsonl(tmp_path: Path) -> None:
     output = json.dumps({"Service": "backend", "Name": "x-backend", "State": "running"})
-    with patch.object(orchestrator.subprocess, "run", return_value=_mock_run(stdout=output)):
-        assert _docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is True
+    with patch.object(dev_container.subprocess, "run", return_value=_mock_run(stdout=output)):
+        assert docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is True
 
 
 def test_docker_service_running_parses_array_format(tmp_path: Path) -> None:
     output = json.dumps([{"Service": "backend", "State": "running"}])
-    with patch.object(orchestrator.subprocess, "run", return_value=_mock_run(stdout=output)):
-        assert _docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is True
+    with patch.object(dev_container.subprocess, "run", return_value=_mock_run(stdout=output)):
+        assert docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is True
 
 
 def test_docker_service_running_false_when_state_not_running(tmp_path: Path) -> None:
     output = json.dumps({"Service": "backend", "State": "exited"})
-    with patch.object(orchestrator.subprocess, "run", return_value=_mock_run(stdout=output)):
-        assert _docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
+    with patch.object(dev_container.subprocess, "run", return_value=_mock_run(stdout=output)):
+        assert docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
 
 
 def test_docker_service_running_false_on_empty_output(tmp_path: Path) -> None:
-    with patch.object(orchestrator.subprocess, "run", return_value=_mock_run(stdout="")):
-        assert _docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
+    with patch.object(dev_container.subprocess, "run", return_value=_mock_run(stdout="")):
+        assert docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
 
 
 def test_docker_service_running_false_on_nonzero_exit(tmp_path: Path) -> None:
     with patch.object(
-        orchestrator.subprocess, "run",
+        dev_container.subprocess, "run",
         return_value=_mock_run(returncode=1, stderr="docker error"),
     ):
-        assert _docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
+        assert docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
 
 
 def test_docker_service_running_false_on_subprocess_error(tmp_path: Path) -> None:
     def raise_oserror(*_args: Any, **_kwargs: Any) -> Any:
         raise OSError("docker CLI not on PATH")
 
-    with patch.object(orchestrator.subprocess, "run", side_effect=raise_oserror):
-        assert _docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
+    with patch.object(dev_container.subprocess, "run", side_effect=raise_oserror):
+        assert docker_service_running("docker-compose.yml", "backend", str(tmp_path)) is False
 
 
 # ---------------------------------------------------------------------------
-# _ensure_docker_service_up
+# ensure_docker_service_up
 # ---------------------------------------------------------------------------
 
 
 def test_ensure_docker_service_up_short_circuits_when_running(tmp_path: Path) -> None:
     """If service already running, no `up` invocation should occur."""
     running_output = json.dumps({"Service": "backend", "State": "running"})
-    with patch.object(orchestrator.subprocess, "run") as mock_run:
+    with patch.object(dev_container.subprocess, "run") as mock_run:
         mock_run.return_value = _mock_run(stdout=running_output)
-        ok = _ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
+        ok = ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
     assert ok is True
     # Only the initial `ps` should have been called — not `up`
     invoked_commands = [tuple(call.args[0]) for call in mock_run.call_args_list]
@@ -223,8 +224,8 @@ def test_ensure_docker_service_up_brings_up_when_down(tmp_path: Path) -> None:
         _mock_run(returncode=0, stdout=""), # up: success
         _mock_run(stdout=running_output),   # 2nd ps: running
     ]
-    with patch.object(orchestrator.subprocess, "run", side_effect=call_results) as mock_run:
-        ok = _ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
+    with patch.object(dev_container.subprocess, "run", side_effect=call_results) as mock_run:
+        ok = ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
 
     assert ok is True
     invoked_commands = [tuple(call.args[0]) for call in mock_run.call_args_list]
@@ -239,8 +240,8 @@ def test_ensure_docker_service_up_returns_false_when_up_fails(tmp_path: Path) ->
         _mock_run(stdout=""),                                      # not running
         _mock_run(returncode=1, stderr="image build failure"),     # up fails
     ]
-    with patch.object(orchestrator.subprocess, "run", side_effect=call_results):
-        ok = _ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
+    with patch.object(dev_container.subprocess, "run", side_effect=call_results):
+        ok = ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
     assert ok is False
 
 
@@ -251,8 +252,8 @@ def test_ensure_docker_service_up_returns_false_when_still_down_after_up(tmp_pat
         _mock_run(returncode=0, stdout=""), # up: success
         _mock_run(stdout=""),               # still not running
     ]
-    with patch.object(orchestrator.subprocess, "run", side_effect=call_results):
-        ok = _ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
+    with patch.object(dev_container.subprocess, "run", side_effect=call_results):
+        ok = ensure_docker_service_up("docker-compose.yml", "backend", str(tmp_path))
     assert ok is False
 
 

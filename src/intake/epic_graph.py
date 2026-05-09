@@ -579,17 +579,21 @@ def epic_halt_node(state: EpicState) -> dict[str, Any]:
 def route_after_story_result(state: EpicState) -> str:
     """Route after processing a story result.
 
-    By default, advance to the next story — failed stories are recorded
-    but never block the rest of the epic. The exception is a git_commit
-    failure: that leaves the working tree dirty (dev files uncommitted)
-    and would contaminate every subsequent story, so we halt the epic
-    and let the operator fix the underlying issue (typically a
-    pre-commit hook rejection) before resuming.
+    By default, advance to the next story — failures in transient phases
+    (dev_story, code_review) are recorded and the epic continues.
+
+    The exceptions halt the epic so the operator can investigate:
+      - git_commit failure: leaves the working tree dirty, contaminating
+        every subsequent story.
+      - run_ci exhaustion (4 failed cycles): the dev agent has tried and
+        failed to fix CI four times, leaving ~30 minutes of uncommitted
+        edits in the tree. Continuing poisons downstream stories with
+        broken-and-uncommitted code (Epic 6 cascade, 2026-05-09).
     """
     status = state.get("current_story_status", "")
     failed_phase = state.get("current_story_failed_phase", "")
 
-    if status == "failed" and failed_phase == "git_commit":
+    if status == "failed" and failed_phase in ("git_commit", "run_ci"):
         return "halt"
 
     return "next_story"
