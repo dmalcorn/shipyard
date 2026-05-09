@@ -289,6 +289,144 @@ If all three check out, the operator can kick off the factory:
 python -m src.main --rebuild /path/to/<target>
 ```
 
+## Renaming a service does NOT change its internal hostname
+
+Railway's per-service `<name>.railway.internal` hostname is set at service-creation time and **does not update** when you rename the service. The dashboard tile and `RAILWAY_SERVICE_NAME` env var pick up the new name, but `RAILWAY_PRIVATE_DOMAIN` and the resolvable internal DNS entry stay locked to the original creation-time name forever.
+
+Observed during PawprintRecipes 2026-05-09: renamed `Postgres → pawprint-postgres`, `Redis → pawprint-redis`, `mailpit → pawprint-mailpit`, `Staff → pawprint-staff`, `PawprintRecipes → pawprint-backend` to match the dev `docker-compose.yml` naming. Service names in the dashboard now match dev exactly. **Hostnames did not.** `pawprint-postgres` is still reachable internally at `postgres.railway.internal`, never `pawprint-postgres.railway.internal`.
+
+**Implications when planning a rename:**
+
+- **Reference variables (`${{ServiceName.VAR}}`) follow the rename** — Railway tracks references by service name, so a `${{Postgres.DATABASE_URL}}` reference becomes invalid after rename and needs to be re-set as `${{pawprint-postgres.DATABASE_URL}}`. The new reference resolves to the same URL as before (because the underlying hostname didn't change).
+- **Hardcoded internal hostnames stay valid** — env vars like `SMTP_HOST=mailpit.railway.internal` keep working post-rename. Don't "helpfully" update them to the new service name; the new hostname doesn't exist and you'll break the consumer.
+- **The only way to actually align hostnames** is to delete the service and recreate it with the desired name. Destructive (loses data on Postgres, Redis volumes, etc.). Not worth it for cosmetic alignment with a dev compose.
+- **Recommended posture:** rename for dashboard ergonomics only when it's genuinely valuable; accept that internal hostname URLs will keep referencing the original names.
+
+The `serviceUpdate` mutation for the rename itself is straightforward:
+
+```bash
+RAILWAY_TOKEN=$(python -c "import json; print(json.load(open(r'C:\\Users\\<user>\\.railway\\config.json'))['user']['token'])")
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $RAILWAY_TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"mutation { serviceUpdate(id: \"<svc-id>\", input: { name: \"<new-name>\" }) { id name } }"}'
+```
+
+Returns `{"data":{"serviceUpdate":{"id":"...","name":"new-name"}}}` on success.
+
+## A failed first build can lock a service into Railpack permanently
+
+If a new service's first deploy attempts to build via Railpack (Railway's auto-detection layer) and fails, **subsequent deploys of that service ignore Dockerfile config** — even after explicitly setting `RAILWAY_DOCKERFILE_PATH`, setting `dockerfilePath` on the service instance via GraphQL, and switching `builder` between RAILPACK / NIXPACKS / etc. The Railpack-default decision sticks for the lifetime of the service.
+
+Symptom: build logs say `using build driver railpack-v0.23.0` followed by `Railpack could not determine how to build the app.` even though the env vars and serviceInstance config look correct (and identical to a peer service that builds the Dockerfile fine). Compare via:
+
+```bash
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $RAILWAY_TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"query { service(id: \"<svc-id>\") { serviceInstances { edges { node { builder dockerfilePath } } } } }"}'
+```
+
+If the configs match a working sibling and Railpack still runs, the service is stuck.
+
+**Fix: delete and recreate the service with env vars baked in at creation time.** Use the `serviceCreate` mutation directly so the Dockerfile env var is present *before* the first build runs:
+
+```bash
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $RAILWAY_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation Create($input: ServiceCreateInput!) { serviceCreate(input: $input) { id name } }",
+    "variables": {
+      "input": {
+        "projectId": "<project-id>",
+        "environmentId": "<env-id>",
+        "name": "<service-name>",
+        "source": { "repo": "<owner/repo>" },
+        "branch": "main",
+        "variables": {
+          "RAILWAY_DOCKERFILE_PATH": "docker/Dockerfile.<svc>",
+          "OTHER_VAR": "..."
+        }
+      }
+    }
+  }'
+```
+
+Observed during PawprintRecipes 2026-05-09: pawprint-web created via dashboard, first build hit Railpack, ~45 min of trying to override the decision via `serviceInstanceUpdate` mutations and env var changes failed. Deleting and recreating with `variables` set in `serviceCreate` worked on the first try.
+
+**Lesson:** when creating a new service that needs a Dockerfile, prefer `serviceCreate` with `variables` over the dashboard's "+ Create → GitHub Repo" flow. The dashboard flow does not let you set env vars before the first auto-deploy kicks off, and that auto-deploy can poison the service.
+
+## Container PORT mismatch: Railway sets `PORT=8080`, your domain may target `3000`
+
+Railway injects a `PORT` env var into the container — defaulting to `8080` when not set. Frameworks that respect `PORT` (Next.js `next start`, gunicorn with `--bind 0.0.0.0:$PORT`, etc.) will then listen on 8080. But the public domain's `targetPort` (set by `railway domain --port <n>`) is whatever you specified, often the dev port.
+
+Symptom: container logs cleanly show `Ready` / `Listening at`, but the public URL returns 404 on every route. The container is listening on port A; Railway's edge is routing to port B; nothing on port B.
+
+Fix: set `PORT` to match the `targetPort` you generated:
+
+```bash
+railway variables --service <svc> --set "PORT=3000"   # match your domain's targetPort
+```
+
+Or alternatively: harden the framework's CMD to ignore `PORT` and always bind to a fixed port (e.g. `gunicorn ... --bind 0.0.0.0:8000`), then set the domain's `targetPort` to match. Either approach works; pick one and stay consistent.
+
+Observed during PawprintRecipes 2026-05-09: pawprint-web's `next start` bound to 8080 (Railway's default `PORT`), domain targeted 3000, every route returned 404 from the framework even though the container was healthy.
+
+## Railway's private network is IPv6-only — Node.js fetch won't reach it by default
+
+Inter-service communication on `*.railway.internal` traverses Railway's private network, which **does not route IPv4** between services. Containers must communicate over IPv6. This works automatically for most language runtimes (Python's `requests`, Go's `net/http`, etc.) because they honor the OS resolver.
+
+**Node.js is the exception.** Node 18+ defaults to `verbatim` DNS ordering, but Next.js's SSR fetch (and any code using `undici`) frequently picks the IPv4 result and times out. Setting `NODE_OPTIONS=--dns-result-order=ipv6first` does **not** fix it — undici manages its own connection layer and ignores that flag.
+
+Symptom (from Next.js SSR logs):
+
+```
+[TypeError: fetch failed] {
+  [cause]: [Error [ConnectTimeoutError]: Connect Timeout Error
+    (attempted addresses: 10.165.73.201:8000, timeout: 10000ms)]
+}
+```
+
+Note `attempted addresses` shows only an IPv4 address. The backend is reachable on its IPv6 address but undici never tries it.
+
+**Pragmatic workaround: route SSR fetches through the consumer's public URL.** Slower (the request goes Railway-edge → service instead of service-to-service direct), but reliable across redeploys and DNS changes:
+
+```bash
+# On the Next.js service:
+railway variables --service pawprint-web --set \
+  "INTERNAL_API_URL=https://<backend-public-domain>"
+```
+
+Then in code: SSR uses `INTERNAL_API_URL`, browser uses `NEXT_PUBLIC_API_URL` — both point at the public backend URL. Defeats the privacy benefit of internal networking but unblocks the deploy.
+
+**Cleaner alternative (not yet validated):** force gunicorn / your backend to bind `[::]:8000` (IPv6 dual-stack) and use a custom undici dispatcher with `family: 6`. More code, more fragile under framework upgrades.
+
+Observed during PawprintRecipes 2026-05-09: backend gunicorn on `0.0.0.0:8000` (IPv4 only inside the container), Next.js `fetch('http://pawprintrecipes.railway.internal:8000/...')` consistently timed out on IPv4. Pointing `INTERNAL_API_URL` at the public domain fixed every SSR route.
+
+## `railway domain --port` may silently no-op
+
+`railway domain --service <s> --port <n>` returns the generated URL on success, but the `--port` value is **not always persisted** to the underlying `serviceDomain.targetPort`. Symptom: the public URL returns `502 Bad Gateway` from `railway-edge` (header `X-Railway-Fallback: true`) even though the container's server logs `Listening at: http://0.0.0.0:<port>` cleanly — Railway's edge can't tell which port to route to and falls back.
+
+Observed during PawprintRecipes Staff service setup 2026-05-09: passed `--port 8001`, got the domain back, edge returned 502 until `targetPort` was set via GraphQL.
+
+**Verify after every `railway domain --port`** (the CLI does not surface `targetPort` — only the dashboard or GraphQL does):
+
+```bash
+RAILWAY_TOKEN=$(python -c "import json; print(json.load(open(r'C:\\Users\\<user>\\.railway\\config.json'))['user']['token'])")
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $RAILWAY_TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"query { service(id: \"<service-id>\") { serviceInstances { edges { node { domains { serviceDomains { id domain targetPort } } } } } } }"}' \
+  | python -m json.tool
+```
+
+If `targetPort` is `null`, fix it via the `serviceDomainUpdate` mutation. All four fields are required even though only `targetPort` is changing:
+
+```bash
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $RAILWAY_TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"mutation { serviceDomainUpdate(input: { serviceDomainId: \"<dom-id>\", domain: \"<domain>\", environmentId: \"<env-id>\", serviceId: \"<svc-id>\", targetPort: <port> }) }"}'
+```
+
+Returns `{"data":{"serviceDomainUpdate":true}}` on success; the edge picks up the new port within ~5 seconds.
+
 ## Common silent-success modes (don't be fooled)
 
 | Symptom | Reality | Action |
