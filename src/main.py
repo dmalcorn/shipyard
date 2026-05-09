@@ -393,6 +393,8 @@ def _run_rebuild_cli(
     from src.intake.epic_graph import set_epic_model_config
     from src.intake.pause import request_pause, reset_pause
     from src.multi_agent.orchestrator import (
+        set_ci_bash_timeout,
+        set_epic_ci_bash_timeout,
         set_fix_pre_existing,
         set_model_config,
         set_story_ci_enabled,
@@ -432,6 +434,16 @@ def _run_rebuild_cli(
     if skip_story_ci or not ci_config.get("story_level", True):
         set_story_ci_enabled(False)
         print("  Story-level CI runs: DISABLED (commits proceed without CI gate)")
+
+    # CI bash timeouts (story = single-story scope; epic = full consolidated suite)
+    story_ci_timeout = int(ci_config.get("bash_timeout_seconds", 300))
+    epic_ci_timeout = int(ci_config.get("epic_bash_timeout_seconds", 1800))
+    set_ci_bash_timeout(story_ci_timeout)
+    set_epic_ci_bash_timeout(epic_ci_timeout)
+    print(
+        f"  CI bash timeouts: story={story_ci_timeout}s, "
+        f"epic={epic_ci_timeout}s"
+    )
 
     # Prompt for CI-fix scope behavior (greenfield default: fix everything).
     # YAML value is the default; operator is prompted every run so the

@@ -112,6 +112,8 @@ def set_story_reviews_enabled(enabled: bool) -> None:
 
 _STORY_CI_ENABLED: bool = True
 _FIX_PRE_EXISTING: bool = True
+_CI_BASH_TIMEOUT: int = 300
+_EPIC_CI_BASH_TIMEOUT: int = 1800
 
 
 def get_story_ci_enabled() -> bool:
@@ -140,6 +142,28 @@ def set_fix_pre_existing(enabled: bool) -> None:
     """Enable or disable fixing pre-existing CI errors."""
     global _FIX_PRE_EXISTING  # noqa: PLW0603
     _FIX_PRE_EXISTING = enabled
+
+
+def get_ci_bash_timeout() -> int:
+    """Wall-clock timeout (seconds) for the story-level CI bash command."""
+    return _CI_BASH_TIMEOUT
+
+
+def set_ci_bash_timeout(seconds: int) -> None:
+    """Override the story-level CI bash timeout."""
+    global _CI_BASH_TIMEOUT  # noqa: PLW0603
+    _CI_BASH_TIMEOUT = seconds
+
+
+def get_epic_ci_bash_timeout() -> int:
+    """Wall-clock timeout (seconds) for the epic-level CI bash command."""
+    return _EPIC_CI_BASH_TIMEOUT
+
+
+def set_epic_ci_bash_timeout(seconds: int) -> None:
+    """Override the epic-level CI bash timeout."""
+    global _EPIC_CI_BASH_TIMEOUT  # noqa: PLW0603
+    _EPIC_CI_BASH_TIMEOUT = seconds
 
 
 def _model_for(node: str) -> str | None:
@@ -771,29 +795,33 @@ def _ensure_dependencies(working_dir: str | None) -> None:
 # ImproperlyConfigured, container races) rather than actual pending model
 # changes. The auto-generate step never caught a real case and produced ~36
 # false-positive warnings, so it was removed.
-_MIGRATION_FRAMEWORKS: list[tuple[str, list[str], str]] = [
+_MIGRATION_FRAMEWORKS: list[tuple[str, list[str], list[str], str]] = [
     # Django — manage.py in project root or common subdirs
     (
         "manage.py",
         ["python", "manage.py", "makemigrations", "--check", "--dry-run"],
+        ["python", "manage.py", "migrate", "--noinput"],
         "Django",
     ),
     # Alembic (Flask / FastAPI / SQLAlchemy)
     (
         "alembic.ini",
         ["alembic", "check"],
+        ["alembic", "upgrade", "head"],
         "Alembic",
     ),
     # Prisma (Node.js)
     (
         "prisma/schema.prisma",
         ["npx", "prisma", "migrate", "status"],
+        ["npx", "prisma", "migrate", "deploy"],
         "Prisma",
     ),
     # Diesel (Rust)
     (
         "diesel.toml",
         ["diesel", "migration", "pending"],
+        ["diesel", "migration", "run"],
         "Diesel",
     ),
 ]
@@ -843,19 +871,31 @@ def _process_migration_project(
     search_dir: str,
     marker: str,
     check_cmd: list[str],
+    apply_cmd: list[str],
     label: str,
     working_dir: str | None,
 ) -> None:
-    """Run the migration check for a single project's marker file.
+    """Run the migration check + apply for a single project's marker file.
+
+    Two distinct steps:
+
+    1. **Check** validates files-on-disk against the model code. For Django,
+       runs against a hermetic SQLite settings overlay (when available) so
+       the dev DB's applied-migration history doesn't trigger spurious
+       ``InconsistentMigrationHistory``. Detects "model changed but no
+       migration file committed" — the dev_story agent's job to fix.
+    2. **Apply** runs ``migrate``/``upgrade head``/``migrate deploy``/
+       ``migration run`` against the **real dev DB** (no hermetic overlay).
+       Idempotent — no-op when the DB is already up to date. Catches
+       "migration file committed but never applied," which is invisible to
+       the check above and silently breaks Phase 4 e2e tests in the
+       target's ci.sh (which hit the dev stack rather than the test stack).
 
     Dispatches into the container when a compose service bind-mounts
     ``search_dir``; otherwise runs on the host. Bring-up failure is logged
     as a warning and the project is skipped — but the caller may still
-    process other projects.
-
-    Reports up-to-date or pending; does not auto-generate. The dev_story
-    agent creates missing migrations as part of its implementation, and
-    the target's own CI gate validates the result.
+    process other projects. Apply failures log a warning and continue;
+    the downstream story-CI / epic-CI gate is the authoritative signal.
     """
     compose_path = find_dev_compose_file(working_dir)
     service = (
@@ -888,26 +928,29 @@ def _process_migration_project(
             "exec", "-T", service,
         ]
         check_cmd_full = exec_prefix + effective_check
+        apply_cmd_full = exec_prefix + list(apply_cmd)
         run_cwd: str | None = working_dir
     else:
         print(f"    [migrations] {label} detected in {search_dir} (host-side)")
         check_cmd_full = effective_check
+        apply_cmd_full = list(apply_cmd)
         run_cwd = search_dir
 
     passed, output = _run_bash(check_cmd_full, cwd=run_cwd)
 
     if passed:
-        print(f"    [migrations] {label} migrations up to date for {search_dir}")
+        print(f"    [migrations] {label} files-on-disk check passed for {search_dir}")
+        _apply_pending_migrations(label, search_dir, apply_cmd_full, run_cwd)
         return
 
     # Django UI-only services (e.g., a staff panel that proxies to a backend
     # API) have no DATABASES setting, so makemigrations errors before it can
-    # even check for pending changes. Skip cleanly instead of treating it as
-    # "pending."
+    # even check for pending changes. Skip cleanly — no apply either, since
+    # there's no DB to apply against.
     if "ImproperlyConfigured" in output and "DATABASES" in output:
         print(
             f"    [migrations] {search_dir} has no DATABASES configured "
-            f"(UI-only service?) — skipping migration check"
+            f"(UI-only service?) — skipping migration check + apply"
         )
         return
 
@@ -915,9 +958,12 @@ def _process_migration_project(
     # its implementation. We just surface the signal so the operator can spot
     # missed migrations from a prior story. Truncate output to 2000 chars
     # (was 500 previously, which often cut tracebacks off mid-stack).
+    # Skip apply — applying when the model/file delta is unresolved would
+    # fail or, worse, half-apply and leave the dev DB in an undefined state.
     print(
         f"    [migrations] WARNING: {label} check reports pending changes "
-        f"in {search_dir} — dev_story agent should create them.",
+        f"in {search_dir} — dev_story agent should create them. "
+        f"Skipping apply step until files are committed.",
     )
     logger.warning(
         "Migration check reported pending for %s in %s. Output:\n%s",
@@ -925,12 +971,46 @@ def _process_migration_project(
     )
 
 
+def _apply_pending_migrations(
+    label: str,
+    search_dir: str,
+    apply_cmd_full: list[str],
+    run_cwd: str | None,
+) -> None:
+    """Apply any committed-but-unapplied migrations to the dev DB.
+
+    Idempotent: a no-op when the dev DB is already up to date. Failures
+    log a warning and return — the downstream CI gate is authoritative.
+    """
+    passed, output = _run_bash(apply_cmd_full, cwd=run_cwd)
+    if passed:
+        print(f"    [migrations] {label} apply completed for {search_dir}")
+        return
+    print(
+        f"    [migrations] WARNING: {label} apply failed for {search_dir} — "
+        f"dev DB may be missing schema changes that the e2e suite needs.",
+    )
+    logger.warning(
+        "Migration apply failed for %s in %s. Output:\n%s",
+        label, search_dir, output[:2000],
+    )
+
+
 def _ensure_migrations(working_dir: str | None) -> None:
-    """Check for pending database migrations and auto-generate if needed.
+    """Validate migration files-on-disk AND apply pending ones to the dev DB.
+
+    Two-step per project: (1) ``makemigrations --check`` style validation that
+    every model change has a committed migration file, (2) ``migrate`` style
+    apply of any committed-but-unapplied migrations to the real dev DB. Step 2
+    is what was missing previously — the per-story CI runs against the test
+    stack (its own DB / SQLite migrations_sqlite path) and never noticed when
+    a migration file was committed but not applied to the dev DB. Phase 4 e2e
+    in the target's ci.sh hits the dev stack and breaks silently when the
+    schema lags.
 
     Detects the migration framework from marker files. When a dev docker-compose
     file is present and a service bind-mounts the framework's source directory,
-    the migration commands run *inside* the container — so the host doesn't need
+    both commands run *inside* the container — so the host doesn't need
     Django/Postgres/etc. installed and reachable. The container is started via
     ``docker compose up -d`` first if it isn't already running. On bring-up
     failure the project is skipped with a warning rather than silently falling
@@ -938,14 +1018,14 @@ def _ensure_migrations(working_dir: str | None) -> None:
 
     Monorepos with multiple framework projects (e.g., a Django ``backend/`` and a
     separate Django ``staff/`` Django app) are all processed within the same
-    framework pass — each project's migrations get checked independently.
+    framework pass — each project's migrations get checked + applied independently.
 
     For non-Dockerized targets (no compose file or no matching service), commands
     run on the host as before.
     """
     base = working_dir or "."
 
-    for marker, check_cmd, label in _MIGRATION_FRAMEWORKS:
+    for marker, check_cmd, apply_cmd, label in _MIGRATION_FRAMEWORKS:
         search_dirs = [base]
         for subdir in _MIGRATION_SEARCH_SUBDIRS:
             candidate = os.path.join(base, subdir)
@@ -959,7 +1039,7 @@ def _ensure_migrations(working_dir: str | None) -> None:
                 continue
             handled_any = True
             _process_migration_project(
-                search_dir, marker, check_cmd, label, working_dir,
+                search_dir, marker, check_cmd, apply_cmd, label, working_dir,
             )
 
         if handled_any:
@@ -1554,7 +1634,7 @@ def run_ci_node(state: OrchestratorState) -> dict[str, Any]:
         "bash", "-c",
         f"set -o pipefail; {inner} 2>&1 | tee {shlex.quote(log_rel)}",
     ]
-    passed, output = _run_bash(tee_cmd, cwd=working_dir)
+    passed, output = _run_bash(tee_cmd, cwd=working_dir, timeout=_CI_BASH_TIMEOUT)
 
     # Fall back to the log file if capture returned empty or the
     # "Command execution failed: object of type 'NoneType'..." guard

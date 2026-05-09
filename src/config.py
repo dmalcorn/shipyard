@@ -77,17 +77,28 @@ def get_reviews_config(config: dict[str, Any]) -> dict[str, bool]:
     return {k: bool(v) for k, v in reviews.items()}
 
 
-def get_ci_config(config: dict[str, Any]) -> dict[str, bool]:
+def get_ci_config(config: dict[str, Any]) -> dict[str, Any]:
     """Extract ci section from config.
 
-    Returns:
-        Dict with CI flags (e.g. ``{"story_level": True}``).
-        Missing keys default to True (CI enabled).
+    Returns a heterogeneous dict — boolean flags
+    (``story_level``, ``fix_pre_existing_errors``) plus integer
+    timeouts (``bash_timeout_seconds``, ``epic_bash_timeout_seconds``).
+    Callers should read the keys they need with their own defaults.
     """
     ci = config.get("ci", {})
     if not isinstance(ci, dict):
         return {}
-    return {k: bool(v) for k, v in ci.items()}
+    int_keys = {"bash_timeout_seconds", "epic_bash_timeout_seconds"}
+    out: dict[str, Any] = {}
+    for k, v in ci.items():
+        if k in int_keys:
+            try:
+                out[k] = int(v)
+            except (TypeError, ValueError):
+                logger.warning("ci.%s is not an integer (%r) — ignoring", k, v)
+        else:
+            out[k] = bool(v)
+    return out
 
 
 def save_ci_fix_pre_existing(

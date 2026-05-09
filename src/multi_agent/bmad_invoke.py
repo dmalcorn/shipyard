@@ -831,6 +831,7 @@ def invoke_ci_with_fix(
     fix_timeout: int = TIMEOUT_LONG,
     scope_hint: str = "",
     fix_pre_existing: bool = True,
+    bash_timeout: int = 300,
 ) -> dict[str, Any]:
     """Run CI via bash, invoking BMAD dev agent only on failure.
 
@@ -851,6 +852,9 @@ def invoke_ci_with_fix(
             agent is told to fix every error CI reports. When False
             (brownfield-rebuild mode), a scope constraint tells the
             agent to ignore failures outside ``scope_hint``.
+        bash_timeout: Wall-clock seconds before the CI subprocess is
+            killed. Per-attempt; the retry loop runs up to
+            ``max_attempts`` of these.
 
     Returns:
         Dict with keys: passed (bool), ci_output (str), ci_output_path (str),
@@ -868,7 +872,7 @@ def invoke_ci_with_fix(
                 ci_command,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=bash_timeout,
                 cwd=cwd,
                 encoding="utf-8",
                 errors="replace",
@@ -878,7 +882,10 @@ def invoke_ci_with_fix(
                 ci_output += "\n" + result.stderr
             passed = result.returncode == 0
         except subprocess.TimeoutExpired:
-            ci_output = f"CI command timed out after 300s: {' '.join(ci_command)}"
+            ci_output = (
+                f"CI command timed out after {bash_timeout}s: "
+                f"{' '.join(ci_command)}"
+            )
             passed = False
         except Exception as e:
             ci_output = f"CI command failed: {e}"
