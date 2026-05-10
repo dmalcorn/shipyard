@@ -1,6 +1,6 @@
 # How to Capture Console Messages Locally
 
-**Status:** Reference doc. Not implemented as of 2026-05-08 — captures findings from a log-infrastructure audit so the decision can be made later.
+**Status:** **Implemented** as of 2026-05-09 via wrapper scripts (Option A — see Recommendation section). Use `scripts/run-shipyard.{sh,ps1}` for fresh runs and `scripts/resume-shipyard.{sh,ps1}` for resumes; both `tee` console output to `logs/console/run-<UTC-timestamp>.log` automatically. The rest of this doc explains the design space and why Option A won.
 
 ## Why this exists
 
@@ -104,11 +104,43 @@ def write(self, data):
 
 **When to pick:** You want belt-and-suspenders — the relay is your primary archive but the local file is your insurance against Railway outages, and you want zero capture drift between them.
 
-## Recommendation when the decision is made
+## Recommendation (decision: 2026-05-09)
 
-Default to **Option A (shell `tee`)**. It's a one-line change to whatever launches shipyard, zero code change, captures everything (including subprocess output the relay client doesn't see), and gives you a per-run timestamped file in `logs/console/`. Add `logs/console/` to `.gitignore` if it isn't already covered.
+**Implemented Option A (shell `tee`) via wrapper scripts.** The plain shell-tee approach has the obvious "operator must remember the redirect" failure mode, so the implementation is a pair of foolproof wrapper scripts:
 
-If you ever find yourself reaching for Option C, it means Option A failed you in a specific way — at that point write down which way and pick C with eyes open. Don't pre-engineer C.
+- **`scripts/run-shipyard.{sh,ps1}` `<target-dir> [extra args]`** — fresh factory run against the given target, with console capture.
+- **`scripts/resume-shipyard.{sh,ps1} [extra args]`** — resume the most-recently-set-up target. Reads the target from `shipyard/factory.yaml`'s `target.dir` (which `scripts/preflight.sh` rewrites on every fresh setup), so no operator memory required.
+
+Both scripts:
+1. Anchor to the shipyard root regardless of invocation cwd.
+2. `mkdir -p logs/console`.
+3. Print the target dir and the log path before launching, so the operator sees where to look for the captured output.
+4. Run `python -m src.main --rebuild <target> [--resume] [extra args]` with `2>&1 | tee` to a per-run file `logs/console/{run|resume}-<UTC-timestamp>.log`.
+5. Forward extra arguments (e.g. `--no-story-reviews`) to `python -m src.main`.
+
+Operators should invoke shipyard via these scripts rather than `python -m src.main` directly. The plain `python -m src.main` invocation still works for ad-hoc runs but won't produce a local capture file.
+
+`logs/console/` lives under `logs/` which is already gitignored in shipyard's `.gitignore`, so capture files never land in version control. **No .gitignore change was required.**
+
+### Disk usage caveat
+
+A multi-day epic build (e.g. PawprintRecipes' 169-story Phase 1) easily produces 200-500MB of console output across the run, sometimes 1GB+. The `logs/console/` folder grows unbounded. The chosen retention policy is "keep forever, sweep manually" — disk is cheap, and there's no automated rotation. Sweep when it bothers you (typically after a successful run analysis is done):
+
+```bash
+# Wipe everything
+rm logs/console/*.log
+
+# Keep just the last 5 runs
+ls -t logs/console/*.log | tail -n +6 | xargs -r rm
+```
+
+### Folder separation from relay-extract downloads
+
+`scripts/extract_log.py` (the relay-archive retrieval tool) takes the output path as a positional argument — there's no default location. Convention: pass `logs/extracts/<session-id>.json` so relay dumps live alongside but separate from local captures. Both folders are covered by the existing `logs/` gitignore rule.
+
+### Promote to Option C if Option A fails you
+
+If you ever find a specific scenario where the wrapper scripts fail to capture (e.g. background/detached factory runs that bypass the wrapper, programmatic invocation of `python -m src.main`), promote to Option C — tee inside `_RelayWriter`. At that point write down the specific failure mode that motivated it. Don't pre-engineer.
 
 ## Open questions to resolve before implementing
 
@@ -118,8 +150,13 @@ If you ever find yourself reaching for Option C, it means Option A failed you in
 
 3. **Capture scope.** Should each child agent (BMAD agents, Claude Code subprocess, Cursor, etc.) get its own file, or should they all flow into one big file per run? The relay already interleaves them — if local files match, they should too. Option A naturally produces one file per run; B and C give you flexibility.
 
-## Pointers (current code, for the future implementer)
+## Pointers
 
+### Implementation
+- Wrapper scripts (Option A): `scripts/run-shipyard.{sh,ps1}` and `scripts/resume-shipyard.{sh,ps1}`
+- Captured output: `logs/console/{run|resume}-<UTC-timestamp>.log` (gitignored)
+
+### Future-implementer references for Option B / C if you ever promote
 - Relay client and stdout teeing: `src/log_relay.py`, `src/web_relay.py`
 - Logging setup: `src/main.py` (around `logging.basicConfig()`)
 - Existing partial sinks (so you know what's already covered):
@@ -127,4 +164,4 @@ If you ever find yourself reaching for Option C, it means Option A failed you in
   - `src/audit_log/audit.py` (writes `logs/session-{id}.md`)
   - `src/intake/checkpoint.py`
   - `src/intake/rebuild_graph.py` (writes `rebuild-status.md`)
-- Retrieval from Railway: `scripts/extract_log.py`
+- Retrieval from Railway: `scripts/extract_log.py` (writes wherever you point it; convention: `logs/extracts/<session-id>.json`)
