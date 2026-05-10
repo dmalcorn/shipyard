@@ -14,7 +14,7 @@ from src.intake.epic_graph import (
     batch_commit_node,
     build_epic_graph,
     epic_complete_node,
-    epic_error_node,
+    epic_halt_node,
     prepare_batch_review_node,
     prepare_epic_reviews_node,
     process_story_result_node,
@@ -331,13 +331,21 @@ class TestRouteAfterEpicArchitect:
 
 
 class TestRouteAfterEpicCi:
-    """route_after_epic_ci routes pass or error."""
+    """route_after_epic_ci routes pass or halt (no longer 'error')."""
 
     def test_pass(self) -> None:
         assert route_after_epic_ci({"epic_test_passed": True}) == "pass"
 
-    def test_error(self) -> None:
-        assert route_after_epic_ci({"epic_test_passed": False}) == "error"
+    def test_halt_on_fail(self) -> None:
+        # Replaced the legacy "error" return — failures now route to
+        # epic_halt so the run stops with state preserved for operator
+        # inspection instead of silently advancing to the next epic.
+        assert route_after_epic_ci({"epic_test_passed": False}) == "halt"
+
+    def test_default_unset_routes_to_halt(self) -> None:
+        # Defensive: an unset epic_test_passed routes to halt (safer
+        # than silently committing on missing CI signal).
+        assert route_after_epic_ci({}) == "halt"
 
 
 # ---------------------------------------------------------------------------
@@ -353,19 +361,48 @@ class TestEpicCompleteNode:
         assert result["epic_status"] == "completed"
 
 
-class TestEpicErrorNode:
-    """epic_error_node sets status and error."""
+class TestEpicHaltNode:
+    """epic_halt_node renders scope-specific halt messages."""
 
-    def test_sets_failed(self) -> None:
+    def test_epic_ci_failure_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Exhausted epic-CI failure produces a halt that names the epic
+        # explicitly and tells the operator to fix and resume.
         state: EpicState = {
-            "epic_num": "1",
-            "epic_name": "Auth",
-            "epic_last_ci_output": "ruff failed",
-            "epic_last_test_output": "2 tests failed",
+            "epic_num": "6",
+            "current_story_failed_phase": "epic_ci",
+            "current_story_error": "ruff failed: 12 errors",
         }
-        result = epic_error_node(state)
-        assert result["epic_status"] == "failed"
-        assert "Epic 1" in result["error"]
+        result = epic_halt_node(state)
+        captured = capsys.readouterr()
+        assert "Epic 6 CI failed" in result["error"]
+        assert "Epic 6 CI failed" in captured.out
+        assert result["epic_status"] == "paused"
+
+    def test_batch_ci_failure_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        state: EpicState = {
+            "epic_num": "6",
+            "batch_num": 2,
+            "current_story_failed_phase": "batch_ci",
+            "current_story_error": "ruff failed",
+        }
+        result = epic_halt_node(state)
+        captured = capsys.readouterr()
+        assert "Epic 6 batch 2 CI failed" in captured.out
+        assert result["epic_status"] == "paused"
+
+    def test_story_phase_failure_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        state: EpicState = {
+            "epic_num": "6",
+            "stories": [{"story_id": "3", "story_name": "Login"}],
+            "story_index": 0,
+            "current_story_failed_phase": "git_commit",
+            "current_story_error": "index lock",
+        }
+        result = epic_halt_node(state)
+        captured = capsys.readouterr()
+        assert "halted at story 3" in captured.out
+        assert "phase=git_commit" in captured.out
+        assert result["epic_status"] == "paused"
 
 
 # ---------------------------------------------------------------------------
@@ -390,11 +427,12 @@ class TestBuildEpicGraph:
             # Story loop
             "select_story", "run_story", "process_result", "advance_story",
             "epic_paused", "epic_halt",
-            # Epic-end pipeline
+            # Epic-end pipeline (epic_error_node removed 2026-05-09 —
+            # CI failure now routes to epic_halt for operator handoff)
             "prepare_epic_reviews", "epic_review_node", "collect_epic_reviews",
             "analyze_reviews", "fix_category_a",
             "epic_architect", "epic_fix", "epic_ci",
-            "epic_git_commit", "epic_error", "epic_complete",
+            "epic_git_commit", "epic_complete",
             # Mid-epic batch pipeline (Group 3)
             "prepare_batch_review", "batch_review", "analyze_batch_review",
             "fix_batch_category_a", "batch_architect", "batch_fix",

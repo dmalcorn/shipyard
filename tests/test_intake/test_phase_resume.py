@@ -437,7 +437,7 @@ def _stubs() -> dict[str, MagicMock]:
         "prepare_epic_reviews_node", "collect_epic_reviews_node",
         "analyze_reviews_node", "fix_category_a_node",
         "epic_architect_node", "epic_fix_node", "epic_ci_node",
-        "epic_git_commit_node", "epic_error_node", "epic_complete_node",
+        "epic_git_commit_node", "epic_complete_node",
     ]
     stubs = {n: MagicMock(return_value={}, __name__=n) for n in names}
     # Return values that route forward through the happy path.

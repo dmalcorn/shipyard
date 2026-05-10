@@ -634,6 +634,16 @@ def epic_halt_node(state: EpicState) -> dict[str, Any]:
             f"Working tree contains uncommitted batch-fix attempts. "
             f"Resolve manually and resume."
         )
+    elif failed_phase == "epic_ci":
+        # Epic-end CI exhaustion: same shape as batch_ci above but at
+        # epic scope. Replaces the legacy epic_error_node terminal
+        # which silently let the run advance to the next epic.
+        message = (
+            f"Epic {epic_num} CI failed after architect-driven fixes. "
+            f"Working tree contains uncommitted epic-fix attempts. "
+            f"Resolve manually and resume — re-running epic_ci will "
+            f"verify the fix landed before advancing."
+        )
     else:
         story_entry = stories[story_index] if story_index < len(stories) else {}
         story_id = story_entry.get("story_id", "?")
@@ -1976,6 +1986,15 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
 
     Uses resolve_ci_command() with no story_id so the full CI pipeline
     runs (lint + typecheck + all tests), not just the test suite.
+
+    On failure (4 attempts exhausted) the node sets
+    ``current_story_failed_phase = "epic_ci"`` so ``epic_halt_node``
+    renders a scope-specific halt message and ``route_after_epic`` in
+    rebuild_graph ends the run with state preserved for operator
+    inspection — instead of silently advancing to the next epic, which
+    is what the prior ``epic_error_node`` path used to do (gap surfaced
+    2026-05-09 when an Epic 6 epic-CI exhaustion blew through into
+    Epic 7 story 1 unannounced).
     """
     epic_num = state.get("epic_num", "")
     scope = ReviewScope(epic_num=epic_num)
@@ -1987,13 +2006,19 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
         scope_hint=f"epic {scope.epic_num}" if scope.epic_num else "",
         audit_label="epic CI",
     )
-    if result["test_passed"]:
-        _save_epic_phase(state, "epic_ci")
-    return {
+    updates: dict[str, Any] = {
         "epic_test_passed": result["test_passed"],
         "epic_last_ci_output": result["last_ci_output"],
         "epic_files_modified": result["files_modified"],
     }
+    if result["test_passed"]:
+        _save_epic_phase(state, "epic_ci")
+    else:
+        updates["current_story_failed_phase"] = "epic_ci"
+        updates["current_story_error"] = (
+            result["last_ci_output"][-2000:] if result["last_ci_output"] else ""
+        )
+    return updates
 
 
 def batch_ci_node(state: EpicState) -> dict[str, Any]:
@@ -2152,10 +2177,20 @@ def route_after_batch_ci(state: EpicState) -> str:
 
 
 def route_after_epic_ci(state: EpicState) -> str:
-    """Route after epic CI: pass → commit, fail → error."""
+    """Route after epic CI: pass → commit, fail → halt the run.
+
+    Symmetric with :func:`route_after_batch_ci`. A 4-attempt CI
+    exhaustion at epic-end means the architect-driven fixes couldn't
+    get the codebase green; the operator should investigate before the
+    factory advances into the next epic. The legacy "error → terminal
+    epic_error_node" path silently advanced to the next epic, which
+    masked real CI breakage during the Epic 6 → Epic 7 transition on
+    2026-05-09. Routing to ``epic_halt`` instead preserves uncommitted
+    fix attempts and surfaces a clear halt message.
+    """
     if state.get("epic_test_passed", False):
         return "pass"
-    return "error"
+    return "halt"
 
 
 # Map of resume-phase name → target node in the epic graph. Jumping to
@@ -2256,26 +2291,6 @@ def route_on_epic_entry(state: EpicState) -> str:
     return "select_story"
 
 
-def epic_error_node(state: EpicState) -> dict[str, Any]:
-    """Mark epic as failed with error details."""
-    epic_num = state.get("epic_num", "")
-    last_ci = state.get("epic_last_ci_output", "")
-    last_test = state.get("epic_last_test_output", "")
-
-    error = (
-        f"Epic {epic_num} post-processing failed.\n"
-        f"Last CI output: {last_ci[:2000]}\n"
-        f"Last test output: {last_test[:2000]}"
-    )
-
-    logger.error("Epic post-processing failed: Epic %s", epic_num)
-
-    return {
-        "epic_status": "failed",
-        "error": error,
-    }
-
-
 def epic_complete_node(state: EpicState) -> dict[str, Any]:
     """Mark epic as completed."""
     working_dir = state.get("target_dir") or "."
@@ -2315,7 +2330,8 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
         → has_category_b → epic_architect → route
             → needs_fix → epic_fix → epic_ci → route
                 → pass → epic_git_commit → epic_complete → END
-                → error → epic_error → END
+                → halt → epic_halt → END (CI exhausted; operator
+                                          investigates and resumes)
             → no_fix → epic_ci
         → no_category_b → epic_ci
 
@@ -2342,7 +2358,6 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("epic_fix", epic_fix_node)
     graph.add_node("epic_ci", epic_ci_node)
     graph.add_node("epic_git_commit", epic_git_commit_node)
-    graph.add_node("epic_error", epic_error_node)
     graph.add_node("epic_complete", epic_complete_node)
 
     # --- Mid-epic batch nodes (Group 3) ---
@@ -2433,16 +2448,18 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
 
     graph.add_edge("epic_fix", "epic_ci")
 
-    # Route after CI: pass → commit, fail → error
+    # Route after CI: pass → commit, fail → halt (operator investigates).
+    # Symmetric with batch_ci routing — see route_after_epic_ci docstring
+    # for the rationale (replaces the legacy epic_error_node terminal
+    # path that silently advanced to the next epic on CI exhaustion).
     graph.add_conditional_edges(
         "epic_ci",
         route_after_epic_ci,
-        {"pass": "epic_git_commit", "error": "epic_error"},
+        {"pass": "epic_git_commit", "halt": "epic_halt"},
     )
 
     graph.add_edge("epic_git_commit", "epic_complete")
     graph.add_edge("epic_complete", END)
-    graph.add_edge("epic_error", END)
 
     # --- Mid-epic batch edges (Group 3) ---
     graph.add_edge("prepare_batch_review", "batch_review")
