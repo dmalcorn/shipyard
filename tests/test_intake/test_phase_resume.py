@@ -26,11 +26,11 @@ from src.intake.epic_graph import (
     REVIEW_BMAD_FILENAME_TEMPLATE,
     REVIEW_CLAUDE_FILENAME_TEMPLATE,
     REVIEW_MIN_CONTENT_CHARS,
-    _epic_artifact_path,
     build_epic_runner,
     collect_epic_reviews_node,
     route_on_epic_entry,
 )
+from src.intake.review_scope import ReviewScope
 from src.multi_agent.orchestrator import (
     _RESUME_ENTRY_PHASES,
     build_orchestrator_graph,
@@ -49,7 +49,7 @@ class TestStoryRouter:
         assert route_on_entry({}) == "check_story"
         assert route_on_entry({"resume_from_phase": ""}) == "check_story"
 
-    @pytest.mark.parametrize("phase", ["code_review", "run_ci", "git_commit"])
+    @pytest.mark.parametrize("phase", ["run_ci", "git_commit"])
     def test_valid_phase_hints_are_honoured(self, phase: str) -> None:
         assert route_on_entry({"resume_from_phase": phase}) == phase
 
@@ -86,6 +86,95 @@ class TestEpicRouter:
             route_on_epic_entry({"resume_from_epic_phase": "epic_reviews"})
             == "select_story"
         )
+
+    def test_batch_phase_takes_precedence_over_epic_phase(self) -> None:
+        # Step 11: a halt mid-batch must finish the batch before the
+        # epic-end review runs. resume_from_batch_phase wins over
+        # resume_from_epic_phase when both are set.
+        state = {
+            "resume_from_batch_phase": "batch_ci",
+            "resume_from_epic_phase": "epic_ci",
+        }
+        assert route_on_epic_entry(state) == "batch_ci"
+
+    @pytest.mark.parametrize(
+        "phase,target",
+        [
+            ("analyze_batch_review", "analyze_batch_review"),
+            ("fix_batch_category_a", "fix_batch_category_a"),
+            ("batch_architect", "batch_architect"),
+            ("batch_fix", "batch_fix"),
+            ("batch_ci", "batch_ci"),
+            ("batch_commit", "batch_commit"),
+        ],
+    )
+    def test_batch_resume_targets(self, phase: str, target: str) -> None:
+        assert (
+            route_on_epic_entry({"resume_from_batch_phase": phase}) == target
+        )
+
+    def test_batch_review_is_not_a_resume_target(self) -> None:
+        # batch_review's atomic recovery is "re-run the batch from
+        # prepare_batch_review" — it's deliberately not a resume target.
+        assert (
+            route_on_epic_entry({"resume_from_batch_phase": "batch_review"})
+            == "select_story"
+        )
+
+
+class TestBatchPhaseCheckpoint:
+    """Save / load / clear of the new batch-phase.json checkpoint."""
+
+    def test_save_load_roundtrip(self, tmp_path: Path) -> None:
+        from src.intake.checkpoint import (
+            load_batch_phase_checkpoint,
+            save_batch_phase_checkpoint,
+        )
+        save_batch_phase_checkpoint(
+            "s1", str(tmp_path), epic_num="6", batch_num=2,
+            completed_phase="batch_architect",
+        )
+        ckpt = load_batch_phase_checkpoint(str(tmp_path))
+        assert ckpt is not None
+        assert ckpt["session_id"] == "s1"
+        assert ckpt["epic_num"] == "6"
+        assert ckpt["batch_num"] == 2
+        assert ckpt["completed_phase"] == "batch_architect"
+        assert ckpt["next_phase"] == "batch_fix"
+
+    def test_completed_phase_at_end_returns_empty_next(
+        self, tmp_path: Path,
+    ) -> None:
+        from src.intake.checkpoint import (
+            load_batch_phase_checkpoint,
+            save_batch_phase_checkpoint,
+        )
+        save_batch_phase_checkpoint(
+            "s1", str(tmp_path), epic_num="6", batch_num=1,
+            completed_phase="batch_commit",
+        )
+        ckpt = load_batch_phase_checkpoint(str(tmp_path))
+        assert ckpt is not None
+        assert ckpt["next_phase"] == ""
+
+    def test_clear_removes_file(self, tmp_path: Path) -> None:
+        from src.intake.checkpoint import (
+            clear_batch_phase_checkpoint,
+            load_batch_phase_checkpoint,
+            save_batch_phase_checkpoint,
+        )
+        save_batch_phase_checkpoint(
+            "s1", str(tmp_path), epic_num="6", batch_num=1,
+            completed_phase="batch_review",
+        )
+        assert load_batch_phase_checkpoint(str(tmp_path)) is not None
+        clear_batch_phase_checkpoint(str(tmp_path))
+        assert load_batch_phase_checkpoint(str(tmp_path)) is None
+
+    def test_load_missing_file_returns_none(self, tmp_path: Path) -> None:
+        from src.intake.checkpoint import load_batch_phase_checkpoint
+
+        assert load_batch_phase_checkpoint(str(tmp_path)) is None
 
     def test_unknown_phase_falls_through(self) -> None:
         assert (
@@ -149,14 +238,12 @@ class TestStoryGraphResumeE2E:
 
     @patch("src.multi_agent.orchestrator.git_commit_node")
     @patch("src.multi_agent.orchestrator.run_ci_node")
-    @patch("src.multi_agent.orchestrator.code_review_node")
     @patch("src.multi_agent.orchestrator.dev_story_node")
     @patch("src.multi_agent.orchestrator.check_story_exists_node")
     def test_resume_at_run_ci_skips_upstream_nodes(
         self,
         mock_check: MagicMock,
         mock_dev: MagicMock,
-        mock_review: MagicMock,
         mock_ci: MagicMock,
         mock_commit: MagicMock,
     ) -> None:
@@ -176,20 +263,17 @@ class TestStoryGraphResumeE2E:
 
         assert not mock_check.called, "check_story must not run on resume"
         assert not mock_dev.called, "dev_story must not run on resume-to-run_ci"
-        assert not mock_review.called, "code_review must be skipped"
         assert mock_ci.called, "run_ci must execute"
         assert mock_commit.called, "git_commit must execute after CI passes"
 
     @patch("src.multi_agent.orchestrator.git_commit_node")
     @patch("src.multi_agent.orchestrator.run_ci_node")
-    @patch("src.multi_agent.orchestrator.code_review_node")
     @patch("src.multi_agent.orchestrator.dev_story_node")
     @patch("src.multi_agent.orchestrator.check_story_exists_node")
     def test_resume_at_git_commit_only_runs_commit(
         self,
         mock_check: MagicMock,
         mock_dev: MagicMock,
-        mock_review: MagicMock,
         mock_ci: MagicMock,
         mock_commit: MagicMock,
     ) -> None:
@@ -203,7 +287,6 @@ class TestStoryGraphResumeE2E:
 
         assert not mock_check.called
         assert not mock_dev.called
-        assert not mock_review.called
         assert not mock_ci.called, (
             "run_ci must NOT re-run when resuming at git_commit"
         )
@@ -211,14 +294,12 @@ class TestStoryGraphResumeE2E:
 
     @patch("src.multi_agent.orchestrator.git_commit_node")
     @patch("src.multi_agent.orchestrator.run_ci_node")
-    @patch("src.multi_agent.orchestrator.code_review_node")
     @patch("src.multi_agent.orchestrator.dev_story_node")
     @patch("src.multi_agent.orchestrator.check_story_exists_node")
     def test_no_hint_runs_check_story_path(
         self,
         mock_check: MagicMock,
         mock_dev: MagicMock,
-        mock_review: MagicMock,
         mock_ci: MagicMock,
         mock_commit: MagicMock,
     ) -> None:
@@ -227,7 +308,6 @@ class TestStoryGraphResumeE2E:
             "dev_complete": True,  # skip dev_story via story-status gate
             "current_phase": "check_story",
         }
-        mock_review.return_value = {"current_phase": "code_review"}
         mock_ci.return_value = {
             "test_passed": True,
             "ci_cycle_count": 1,
@@ -243,7 +323,6 @@ class TestStoryGraphResumeE2E:
         graph.invoke(_make_story_state(""))
 
         assert mock_check.called, "check_story must run when no hint present"
-        assert mock_review.called
         assert mock_ci.called
         assert mock_commit.called
 
@@ -257,7 +336,7 @@ class TestStalePhaseCheckpoint:
     """run_story_node must clear checkpoints that don't match current story."""
 
     def test_matching_checkpoint_returns_next_phase(self, tmp_path: Path) -> None:
-        save_phase_checkpoint("s1", str(tmp_path), "5-5", "code_review")
+        save_phase_checkpoint("s1", str(tmp_path), "5-5", "dev_story")
         ckpt = load_phase_checkpoint(str(tmp_path))
         assert ckpt is not None
         assert ckpt["next_phase"] == "run_ci"
@@ -265,7 +344,7 @@ class TestStalePhaseCheckpoint:
         assert ckpt["session_id"] == "s1"
 
     def test_stale_session_id_is_detected(self, tmp_path: Path) -> None:
-        save_phase_checkpoint("old-session", str(tmp_path), "5-5", "code_review")
+        save_phase_checkpoint("old-session", str(tmp_path), "5-5", "dev_story")
         ckpt = load_phase_checkpoint(str(tmp_path))
         assert ckpt is not None
         # Caller in run_story_node compares session_id explicitly.
@@ -403,7 +482,8 @@ class TestEpicGraphResumeE2E:
     def _write_review(
         self, target_dir: Path, template: str, epic_num: str, content: str,
     ) -> Path:
-        path = Path(_epic_artifact_path(template, epic_num, str(target_dir)))
+        scope = ReviewScope(epic_num=epic_num)
+        path = Path(scope.artifact_path(template, str(target_dir)))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path

@@ -287,3 +287,79 @@ class TestBuildRebuildGraph:
         graph = build_rebuild_graph()
         compiled = graph.compile()
         assert compiled is not None
+
+
+class TestPromptStoryReviews:
+    """The renamed batch-review toggle prompt at startup (Step 13a).
+
+    The prompt text now says "story-batch" rather than "story-level" but
+    the underlying CLI flag (--no-story-reviews) and config key
+    (reviews.story_level) keep their backwards-compatible names.
+    """
+
+    def test_disabled_state_branch_skips_input(
+        self, monkeypatch: Any, capsys: Any,
+    ) -> None:
+        from src.intake.rebuild_graph import _prompt_story_reviews
+        from src.multi_agent.orchestrator import (
+            get_batch_reviews_enabled,
+            set_batch_reviews_enabled,
+        )
+
+        # Pre-disable (simulates --no-story-reviews or factory.yaml).
+        original = get_batch_reviews_enabled()
+        try:
+            set_batch_reviews_enabled(False)
+            # If the prompt tried to call input(), this monkeypatch would
+            # raise; verifying it's never called confirms the disabled
+            # branch short-circuits the input() call.
+            def _fail_on_input(_prompt: str = "") -> str:
+                raise AssertionError("input() must NOT be called when toggle is off")
+
+            monkeypatch.setattr("builtins.input", _fail_on_input)
+            _prompt_story_reviews()
+            captured = capsys.readouterr().out
+            assert "Story-batch code reviews: DISABLED" in captured
+        finally:
+            set_batch_reviews_enabled(original)
+
+    def test_enabled_state_yes_keeps_toggle_on(
+        self, monkeypatch: Any, capsys: Any,
+    ) -> None:
+        from src.intake.rebuild_graph import _prompt_story_reviews
+        from src.multi_agent.orchestrator import (
+            get_batch_reviews_enabled,
+            set_batch_reviews_enabled,
+        )
+
+        original = get_batch_reviews_enabled()
+        try:
+            set_batch_reviews_enabled(True)
+            monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+            _prompt_story_reviews()
+            assert get_batch_reviews_enabled() is True
+            captured = capsys.readouterr().out
+            assert "Story-batch code reviews: ENABLED" in captured
+        finally:
+            set_batch_reviews_enabled(original)
+
+    def test_enabled_state_n_disables_toggle(
+        self, monkeypatch: Any, capsys: Any,
+    ) -> None:
+        from src.intake.rebuild_graph import _prompt_story_reviews
+        from src.multi_agent.orchestrator import (
+            get_batch_reviews_enabled,
+            set_batch_reviews_enabled,
+        )
+
+        original = get_batch_reviews_enabled()
+        try:
+            set_batch_reviews_enabled(True)
+            monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+            _prompt_story_reviews()
+            assert get_batch_reviews_enabled() is False
+            captured = capsys.readouterr().out
+            assert "Story-batch code reviews: DISABLED" in captured
+            assert "epic-end review still active" in captured
+        finally:
+            set_batch_reviews_enabled(original)

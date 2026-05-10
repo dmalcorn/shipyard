@@ -23,7 +23,9 @@ import pytest
 
 from src.intake.review_sieve import (
     Finding,
+    _classify_batch_token,
     append_deferred_work,
+    parse_batch_review,
     parse_bmad_review,
     parse_claude_review,
     render_analysis_file,
@@ -1096,3 +1098,214 @@ class TestEpic9SyntheticEdgeCases:
         assert len(findings) == 1
         assert findings[0].ident == "P1"
         assert findings[0].title.startswith("this is a plain description")
+
+
+# ---------------------------------------------------------------------------
+# Batch parser (Step 10 of the batch-review redesign)
+# ---------------------------------------------------------------------------
+
+
+_BATCH_REVIEW_SAMPLE = """---
+agent_role: reviewer
+task_id: epic-6-batch-2-review
+review_scope: batch
+---
+
+# Epic 6 batch 2 Code Review
+
+## Summary
+Some overview.
+
+## Findings
+
+### 1. Missing import in user_view.py
+- **Story:** 6-3
+- **File:** `backend/user_view.py`
+- **Issue:** `session` is referenced but never imported.
+- **Category:** patch
+- **Action:** Add `from flask import session` near the top.
+
+### 2. Auth flow bypasses CSRF
+- **Story:** 6-4
+- **File:** `backend/auth.py`
+- **Issue:** Routes accept POST without csrf_token verification.
+- **Category:** decision needed
+- **Action:** Decide whether CSRF is required for this endpoint.
+
+### 3. Pre-existing typing issue
+- **Story:** 6-5
+- **File:** `backend/types.py`
+- **Issue:** TypedDict missing total=False.
+- **Category:** deferred
+- **Action:** Pre-existing, capture for later.
+"""
+
+
+class TestClassifyBatchToken:
+    @pytest.mark.parametrize(
+        "token,expected",
+        [
+            ("patch", "patch"),
+            ("PATCH", "patch"),
+            ("simple patch", "patch"),
+            ("decision needed", "decision-needed"),
+            ("decision-needed", "decision-needed"),
+            ("requires decision", "decision-needed"),
+            ("decision required", "decision-needed"),
+            ("defer", "defer"),
+            ("deferred", "defer"),
+            ("should defer", "defer"),
+            ("", "decision-needed"),
+            ("nonsense vocab", "decision-needed"),  # default escalates to architect
+        ],
+    )
+    def test_token_classification(self, token: str, expected: str) -> None:
+        assert _classify_batch_token(token) == expected
+
+    @pytest.mark.parametrize(
+        "token",
+        ["dismiss", "dismissed", "reject", "rejected", "drop", "drop this"],
+    )
+    def test_dismiss_tokens_drop_finding(self, token: str) -> None:
+        assert _classify_batch_token(token) is None
+
+
+class TestParseBatchReview:
+    def test_three_canonical_categories_parse(self) -> None:
+        findings = parse_batch_review(_BATCH_REVIEW_SAMPLE)
+        assert len(findings) == 3
+        assert findings[0].category == "patch"
+        assert findings[1].category == "decision-needed"
+        assert findings[2].category == "defer"
+        assert all(f.source == "bmad" for f in findings)
+
+    def test_file_paths_extracted(self) -> None:
+        findings = parse_batch_review(_BATCH_REVIEW_SAMPLE)
+        files = [f.file for f in findings]
+        assert files == [
+            "backend/user_view.py",
+            "backend/auth.py",
+            "backend/types.py",
+        ]
+
+    def test_drift_vocabulary_substring_match(self) -> None:
+        content = """## Findings
+
+### 1. Drift case
+- **Category:** simple patch needed
+- **File:** `a.py`
+
+### 2. Another drift
+- **Category:** requires architect decision
+- **File:** `b.py`
+
+### 3. Should be deferred
+- **Category:** should defer to next sprint
+- **File:** `c.py`
+"""
+        findings = parse_batch_review(content)
+        assert len(findings) == 3
+        assert findings[0].category == "patch"
+        assert findings[1].category == "decision-needed"
+        assert findings[2].category == "defer"
+
+    def test_dismiss_findings_are_dropped(self) -> None:
+        content = """## Findings
+
+### 1. Real patch
+- **Category:** patch
+- **File:** `a.py`
+
+### 2. Dismissed
+- **Category:** dismiss
+- **File:** `b.py`
+
+### 3. Real defer
+- **Category:** deferred
+- **File:** `c.py`
+"""
+        findings = parse_batch_review(content)
+        assert {f.ident for f in findings} == {"1", "3"}
+
+    def test_unknown_token_defaults_to_decision_needed(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        content = """## Findings
+
+### 1. Has unknown category
+- **Category:** xyzzyzzy
+- **File:** `a.py`
+"""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="src.intake.review_sieve"):
+            findings = parse_batch_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "decision-needed"
+        assert any("Unknown batch-review category" in r.message for r in caplog.records)
+
+    def test_missing_category_defaults_to_decision_needed(self) -> None:
+        content = """## Findings
+
+### 1. No category line at all
+- **File:** `a.py`
+- **Issue:** something
+- **Action:** do something
+"""
+        findings = parse_batch_review(content)
+        assert len(findings) == 1
+        assert findings[0].category == "decision-needed"
+
+    def test_empty_content_returns_empty_list(self) -> None:
+        # Verified 2026-05-09 by the design doc: sieve_reviews(content, "")
+        # must be safe — both parsers iterate splitlines() which handles
+        # empty input as a single empty list.
+        assert parse_batch_review("") == []
+
+    def test_findings_outside_findings_section_ignored(self) -> None:
+        content = """## Summary
+
+### 1. This should not parse
+- **Category:** patch
+- **File:** `a.py`
+
+## Findings
+
+### 2. This should parse
+- **Category:** patch
+- **File:** `b.py`
+"""
+        findings = parse_batch_review(content)
+        assert len(findings) == 1
+        assert findings[0].ident == "2"
+
+
+class TestSieveReviewsBatchIntegration:
+    def test_single_file_invocation_with_batch_format(self) -> None:
+        # Pass batch content as bmad_content with empty claude_content;
+        # sieve_reviews routes the new-format findings through bmad-side
+        # bucket logic.
+        result = sieve_reviews(_BATCH_REVIEW_SAMPLE, "")
+        assert len(result.cat_a) == 1     # patch
+        assert len(result.cat_b) == 1     # decision-needed
+        assert len(result.defer) == 1     # deferred
+        assert result.cat_a[0].ident == "1"
+        assert result.cat_b[0].ident == "2"
+        assert result.defer[0].ident == "3"
+
+    def test_legacy_bmad_format_still_works_after_batch_parser_added(self) -> None:
+        # Regression check: adding parse_batch_review to sieve_reviews
+        # must not double-count or break the legacy **[ident]** format.
+        legacy = """### PATCH Findings
+
+**[P1]** Legacy patch finding here
+
+### DEFER Findings
+
+**[D1]** Legacy defer finding
+"""
+        result = sieve_reviews(legacy, "")
+        idents = sorted(f.ident for f in result.bmad_findings)
+        assert idents == ["D1", "P1"]
+        assert len(result.cat_a) == 1
+        assert len(result.defer) == 1

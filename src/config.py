@@ -77,6 +77,54 @@ def get_reviews_config(config: dict[str, Any]) -> dict[str, bool]:
     return {k: bool(v) for k, v in reviews.items()}
 
 
+def get_story_batch_size(
+    config: dict[str, Any] | None = None,
+    fallback: int = 4,
+) -> int:
+    """Return ``review.story_batch_size`` from factory.yaml.
+
+    Reads the ``review`` (singular) top-level section, distinct from
+    the existing ``reviews`` (plural) section that gates story-level
+    reviews. ``0`` disables the batch trigger entirely; any positive
+    value is the every-N-stories trigger threshold.
+
+    Args:
+        config: Pre-loaded config dict. If None, loads factory.yaml
+            from the current working directory on each call. Reading
+            on every call is intentional: the operator may edit
+            factory.yaml mid-run and the next ``route_next_story``
+            call should pick up the new value.
+        fallback: Default value when the key is missing or unparseable.
+
+    Returns:
+        Non-negative integer. Negative values from config are clamped
+        to ``0`` (with a warning); non-integer values fall back to
+        ``fallback``.
+    """
+    if config is None:
+        config = load_factory_config()
+    review = config.get("review", {})
+    if not isinstance(review, dict):
+        return fallback
+    raw = review.get("story_batch_size", fallback)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "review.story_batch_size is not an integer (%r) — using default %d",
+            raw,
+            fallback,
+        )
+        return fallback
+    if value < 0:
+        logger.warning(
+            "review.story_batch_size %d < 0 — clamping to 0 (disabled)",
+            value,
+        )
+        return 0
+    return value
+
+
 def get_ci_config(config: dict[str, Any]) -> dict[str, Any]:
     """Extract ci section from config.
 

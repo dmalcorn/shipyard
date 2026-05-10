@@ -118,6 +118,17 @@ _BMAD_SECTION_HEADING = re.compile(r"^(#{2,3})\s+(.+?)\s*$")
 _CLAUDE_FINDING_HEADING = re.compile(r"^###\s+(\d+)\.\s+(.*?)\s*$")
 _CLAUDE_FIELD_LINE = re.compile(r"^\s*-\s*\*\*(?P<key>[A-Za-z /]+):\*\*\s*(?P<value>.*)$")
 
+# Batch-reviewer field line: ``- **Category:** patch`` (or
+# ``decision needed``, ``deferred``, etc.) The new mid-epic batch
+# reviewer prompt asks for this exact field-line shape rather than the
+# legacy inline ``[patch]`` tags or ``### PATCH Findings`` headings.
+# Per Step 10 of the batch-review redesign, this field is the
+# authoritative category source for batch findings.
+_BATCH_CATEGORY_FIELD = re.compile(
+    r"^\s*-\s*\*\*Category:\*\*\s*(?P<value>.*)$",
+    re.IGNORECASE,
+)
+
 
 def _classify_bmad_heading(heading_text: str) -> str | None:
     """Return the BMAD category a section heading belongs to, or None.
@@ -167,6 +178,47 @@ def _extract_inline_bmad_category(text: str) -> str | None:
     raw = match.group(1).lower()
     # Normalize "decision needed" and "decision-needed" to the canonical form.
     return "decision-needed" if raw.startswith("decision") else raw
+
+
+def _classify_batch_token(token: str) -> str | None:
+    """Map a batch-reviewer category token to a sieve bucket.
+
+    Drift-tolerant substring matching per Step 10 — the existing
+    epic-end sieve took ~6 iterations to handle the BMAD reviewer's
+    word choices, and the same drift is expected for the batch
+    vocabulary. Resolution order:
+
+    - dismiss / reject / drop → ``None`` (caller drops the finding)
+    - patch substring         → ``"patch"`` (cat_a)
+    - defer substring         → ``"defer"`` (covers ``defer`` and ``deferred``)
+    - decision substring      → ``"decision-needed"`` (cat_b)
+    - empty token             → ``"decision-needed"`` (escalate-to-architect default)
+    - unknown                 → ``"decision-needed"`` with a warning logged
+
+    Defaulting unknown tokens to escalate-to-architect (cat_b) is
+    safer than auto-patch (cat_a) when the reviewer's vocabulary
+    drifts: an architect can review and dismiss noise; an auto-patch
+    of an unclear finding can break the build.
+    """
+    text = token.strip().lower()
+    if not text:
+        return "decision-needed"
+    # Order matters: a finding that says "dismiss as decided" should
+    # drop, not classify. Check dismiss/reject/drop first.
+    if "dismiss" in text or "reject" in text or "drop" in text:
+        return None
+    if "patch" in text:
+        return "patch"
+    if "defer" in text:
+        return "defer"
+    if "decision" in text:
+        return "decision-needed"
+    logger.warning(
+        "Unknown batch-review category token %r — defaulting to "
+        "decision-needed (escalate-to-architect)",
+        token,
+    )
+    return "decision-needed"
 
 
 def _parse_bmad_table_row(raw: str) -> tuple[str, str, str] | None:
@@ -534,6 +586,99 @@ def parse_claude_review(content: str) -> list[Finding]:
     return findings
 
 
+def parse_batch_review(content: str) -> list[Finding]:
+    """Parse a mid-epic batch reviewer's output into findings.
+
+    The batch reviewer prompt asks for Claude-template-shaped numbered
+    sections (``### 1. Title``) under a ``## Findings`` heading, with
+    a per-finding ``- **Category:** patch | decision needed | deferred``
+    field line. Distinct from :func:`parse_bmad_review` (which expects
+    ``**[ident]**`` items) and :func:`parse_claude_review` (which
+    classifies by ``**Severity:**`` instead of ``**Category:**``).
+
+    Findings are emitted with ``source="bmad"`` so the
+    :func:`sieve_reviews` BMAD-side bucket logic routes them through
+    the same ``patch | defer | decision-needed | dismiss`` rules used
+    by the legacy BMAD parser. Tokens are mapped via
+    :func:`_classify_batch_token` (drift-tolerant substring match).
+    """
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    in_findings_section = False
+    pending: Finding | None = None
+    body_buffer: list[str] = []
+
+    def flush() -> None:
+        nonlocal pending, body_buffer
+        if pending is None:
+            return
+        if pending.ident in seen:
+            pending = None
+            body_buffer = []
+            return
+        if not pending.category:
+            # No Category field on the bullets — default to escalate.
+            pending.category = "decision-needed"
+        pending.body = "\n".join(body_buffer).strip()
+        seen.add(pending.ident)
+        findings.append(pending)
+        pending = None
+        body_buffer = []
+
+    for raw in content.splitlines():
+        stripped = raw.strip()
+
+        if stripped.startswith("## "):
+            flush()
+            in_findings_section = stripped.lower().startswith("## findings")
+            continue
+
+        if not in_findings_section:
+            continue
+
+        heading = _CLAUDE_FINDING_HEADING.match(raw)
+        if heading:
+            flush()
+            pending = Finding(
+                source="bmad",
+                ident=heading.group(1),
+                title=heading.group(2).strip(),
+                category="",
+            )
+            continue
+
+        if pending is None:
+            continue
+
+        cat_match = _BATCH_CATEGORY_FIELD.match(raw)
+        if cat_match:
+            bucket = _classify_batch_token(cat_match.group("value"))
+            if bucket is None:
+                # dismiss / reject — drop this finding entirely.
+                pending = None
+                body_buffer = []
+                continue
+            pending.category = bucket
+            body_buffer.append(raw)
+            continue
+
+        # Reuse Claude's generic field-line regex for File extraction.
+        field_match = _CLAUDE_FIELD_LINE.match(raw)
+        if field_match:
+            key = field_match.group("key").strip().lower()
+            value = field_match.group("value").strip()
+            if key == "file":
+                pending.file = _strip_backticks(value)
+            body_buffer.append(raw)
+            continue
+
+        body_buffer.append(raw)
+
+    flush()
+    return findings
+
+
 def _extract_first_backticked_path(text: str) -> str:
     """Return the first backticked token that looks like a file path.
 
@@ -574,11 +719,29 @@ def sieve_reviews(bmad_content: str, claude_content: str) -> SieveResult:
     - BMAD ``dismiss`` → dropped
     - Claude ``minor`` → Category A
     - Claude ``major`` / ``critical`` → Category B
+
+    Two BMAD parsers run on ``bmad_content`` and their findings are
+    concatenated:
+
+    - :func:`parse_bmad_review` for the legacy ``**[ident]**`` shape
+      emitted by epic-end BMAD reviewers.
+    - :func:`parse_batch_review` for the new mid-epic batch shape with
+      Claude-style numbered headings + ``**Category:**`` field lines.
+
+    The two formats use orthogonal heading patterns (legacy uses
+    ``### Patch Findings`` text headings or ``**[P1]**`` items; batch
+    uses ``### 1. Title`` numbered headings) so cross-counting is
+    unlikely. Items are deduped by ``(source, ident)`` as a safety net.
     """
     result = SieveResult()
 
     try:
-        result.bmad_findings = parse_bmad_review(bmad_content)
+        legacy_bmad = parse_bmad_review(bmad_content)
+        batch_bmad = parse_batch_review(bmad_content)
+        seen_keys = {(f.source, f.ident) for f in legacy_bmad}
+        result.bmad_findings = legacy_bmad + [
+            f for f in batch_bmad if (f.source, f.ident) not in seen_keys
+        ]
     except Exception as e:  # pragma: no cover — defensive
         logger.exception("BMAD review parse failed")
         result.parse_errors.append(f"bmad: {e}")

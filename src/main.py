@@ -377,7 +377,7 @@ def _run_rebuild_cli(
     target_dir: str,
     resume: bool = False,
     *,
-    skip_story_reviews: bool = False,
+    skip_batch_reviews: bool = False,
     skip_story_ci: bool = False,
 ) -> None:
     """Run the rebuild loop from CLI with interactive intervention."""
@@ -393,12 +393,12 @@ def _run_rebuild_cli(
     from src.intake.epic_graph import set_epic_model_config
     from src.intake.pause import request_pause, reset_pause
     from src.multi_agent.orchestrator import (
+        set_batch_reviews_enabled,
         set_ci_bash_timeout,
         set_epic_ci_bash_timeout,
         set_fix_pre_existing,
         set_model_config,
         set_story_ci_enabled,
-        set_story_reviews_enabled,
     )
 
     # Normalize path to OS-native format (resolves mixed separators from
@@ -423,11 +423,14 @@ def _run_rebuild_cli(
             {k: v for k, v in model_config.items() if v}
         }")
 
-    # Apply review configuration (CLI flag overrides factory.yaml)
+    # Apply review configuration (CLI flag overrides factory.yaml).
+    # The CLI flag and config key keep their ``story``-flavoured names
+    # for backwards compatibility, but they now gate the mid-epic batch
+    # pipeline (per-story review was removed in the batch-review redesign).
     reviews_config = get_reviews_config(config)
-    if skip_story_reviews or not reviews_config.get("story_level", True):
-        set_story_reviews_enabled(False)
-        print("  Story-level code reviews: DISABLED (epic reviews still active)")
+    if skip_batch_reviews or not reviews_config.get("story_level", True):
+        set_batch_reviews_enabled(False)
+        print("  Story-batch code reviews: DISABLED (epic-end review still active)")
 
     # Apply CI configuration (CLI flag overrides factory.yaml)
     ci_config = get_ci_config(config)
@@ -645,7 +648,7 @@ def main() -> None:
     parser.add_argument(
         "--no-story-reviews",
         action="store_true",
-        help="Skip story-level code reviews (epic reviews still run)",
+        help="Disable mid-epic batch code reviews (epic-end review still runs).",
     )
     parser.add_argument(
         "--no-story-ci",
@@ -666,7 +669,7 @@ def main() -> None:
         _run_rebuild_cli(
             args.rebuild,
             resume=args.resume,
-            skip_story_reviews=args.no_story_reviews,
+            skip_batch_reviews=args.no_story_reviews,
             skip_story_ci=args.no_story_ci,
         )
     else:

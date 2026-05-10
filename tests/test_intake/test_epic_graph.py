@@ -11,11 +11,15 @@ from src.intake.epic_graph import (
     EpicState,
     advance_story_node,
     analyze_reviews_node,
+    batch_commit_node,
     build_epic_graph,
     epic_complete_node,
     epic_error_node,
+    prepare_batch_review_node,
     prepare_epic_reviews_node,
     process_story_result_node,
+    route_after_batch_architect,
+    route_after_batch_ci,
     route_after_category_a,
     route_after_epic_architect,
     route_after_epic_ci,
@@ -85,6 +89,40 @@ class TestProcessStoryResultNode:
         # Failed stories are recorded but never abort the epic
         assert "epic_status" not in result
 
+    def test_completed_story_increments_batch_counter(self) -> None:
+        # Only completed stories count toward the batch trigger — failed
+        # stories' work is uncommitted, so there's nothing to review.
+        state: EpicState = {
+            "epic_num": "6",
+            "epic_name": "Auth",
+            "stories": [{"story_id": "3", "story_name": "Login"}],
+            "story_index": 0,
+            "current_story_status": "completed",
+            "stories_completed": 0,
+            "stories_failed": 0,
+            "stories_in_current_batch": 2,
+            "current_batch_story_ids": ["6-1", "6-2"],
+        }
+        result = process_story_result_node(state)
+        assert result["stories_in_current_batch"] == 3
+        assert result["current_batch_story_ids"] == ["6-1", "6-2", "6-3"]
+
+    def test_failed_story_does_not_increment_batch_counter(self) -> None:
+        state: EpicState = {
+            "epic_num": "6",
+            "epic_name": "Auth",
+            "stories": [{"story_id": "3", "story_name": "Login"}],
+            "story_index": 0,
+            "current_story_status": "failed",
+            "stories_completed": 0,
+            "stories_failed": 0,
+            "stories_in_current_batch": 2,
+            "current_batch_story_ids": ["6-1", "6-2"],
+        }
+        result = process_story_result_node(state)
+        assert "stories_in_current_batch" not in result
+        assert "current_batch_story_ids" not in result
+
 
 class TestAdvanceStoryNode:
     """advance_story_node increments index."""
@@ -141,7 +179,7 @@ class TestRouteAfterStoryResult:
 
 
 class TestRouteNextStory:
-    """route_next_story checks if more stories remain."""
+    """route_next_story checks if more stories remain or a batch should fire."""
 
     def test_more_stories(self) -> None:
         # After advance_story_node: story_index is 1, 2 stories remain
@@ -158,6 +196,118 @@ class TestRouteNextStory:
             "story_index": 1,
         }
         assert route_next_story(state) == "epic_done"
+
+    def test_batch_boundary_fires_at_threshold(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("src.intake.epic_graph.get_story_batch_size", lambda: 4)
+        state: EpicState = {
+            "stories": [{"story": str(i)} for i in range(8)],
+            "story_index": 4,  # 4 completed; 4 remain
+            "stories_in_current_batch": 4,
+        }
+        assert route_next_story(state) == "batch_boundary"
+
+    def test_batch_below_threshold_returns_more_stories(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("src.intake.epic_graph.get_story_batch_size", lambda: 4)
+        state: EpicState = {
+            "stories": [{"story": str(i)} for i in range(8)],
+            "story_index": 3,
+            "stories_in_current_batch": 3,
+        }
+        assert route_next_story(state) == "more_stories"
+
+    def test_batch_size_zero_disables_trigger(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("src.intake.epic_graph.get_story_batch_size", lambda: 0)
+        state: EpicState = {
+            "stories": [{"story": str(i)} for i in range(8)],
+            "story_index": 4,
+            "stories_in_current_batch": 99,  # would normally fire
+        }
+        assert route_next_story(state) == "more_stories"
+
+    def test_master_toggle_disables_trigger(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Step 13a: any of the three opt-out paths (CLI flag, config key,
+        # interactive prompt) flips _BATCH_REVIEWS_ENABLED to False, which
+        # suppresses the batch pipeline entirely regardless of size config.
+        monkeypatch.setattr("src.intake.epic_graph.get_story_batch_size", lambda: 4)
+        monkeypatch.setattr("src.intake.epic_graph.get_batch_reviews_enabled", lambda: False)
+        state: EpicState = {
+            "stories": [{"story": str(i)} for i in range(8)],
+            "story_index": 4,
+            "stories_in_current_batch": 4,  # would fire if toggle were on
+        }
+        assert route_next_story(state) == "more_stories"
+
+    def test_batch_aligned_epic_end_short_circuits_to_epic_done(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Edge case 4 in the design doc: epic_size % batch_size == 0
+        # must NOT fire a redundant final batch — epic-end review covers
+        # the remaining stories anyway.
+        monkeypatch.setattr("src.intake.epic_graph.get_story_batch_size", lambda: 4)
+        state: EpicState = {
+            "stories": [{"story": str(i)} for i in range(8)],
+            "story_index": 8,  # all stories done
+            "stories_in_current_batch": 4,
+        }
+        assert route_next_story(state) == "epic_done"
+
+    def test_eight_story_epic_with_batch_size_four_fires_once(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # 8-story epic, batch_size=4 → exactly one batch (after story 4).
+        monkeypatch.setattr("src.intake.epic_graph.get_story_batch_size", lambda: 4)
+
+        # After story 4: batch_boundary
+        assert route_next_story({
+            "stories": [{"story": str(i)} for i in range(8)],
+            "story_index": 4,
+            "stories_in_current_batch": 4,
+        }) == "batch_boundary"
+
+        # After story 8 with reset counter: epic_done (no second batch).
+        assert route_next_story({
+            "stories": [{"story": str(i)} for i in range(8)],
+            "story_index": 8,
+            "stories_in_current_batch": 4,  # would fire if any stories remained
+        }) == "epic_done"
+
+    def test_eleven_story_epic_with_batch_size_four_fires_twice(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # 11-story epic, batch_size=4 → two batches (after 4 and 8).
+        # Stories 9, 10, 11 fold into the epic-end review (no third batch).
+        monkeypatch.setattr("src.intake.epic_graph.get_story_batch_size", lambda: 4)
+
+        # After story 4: batch_boundary
+        assert route_next_story({
+            "stories": [{"story": str(i)} for i in range(11)],
+            "story_index": 4,
+            "stories_in_current_batch": 4,
+        }) == "batch_boundary"
+
+        # After story 8: batch_boundary (counter reset to 0 after first
+        # batch, then accumulated to 4 again across stories 5-8).
+        assert route_next_story({
+            "stories": [{"story": str(i)} for i in range(11)],
+            "story_index": 8,
+            "stories_in_current_batch": 4,
+        }) == "batch_boundary"
+
+        # After story 11: epic_done (counter reset, only 3 stories
+        # accumulated, below threshold AND no stories remain).
+        assert route_next_story({
+            "stories": [{"story": str(i)} for i in range(11)],
+            "story_index": 11,
+            "stories_in_current_batch": 3,
+        }) == "epic_done"
 
 
 class TestRouteAfterCategoryA:
@@ -233,17 +383,73 @@ class TestBuildEpicGraph:
         assert compiled is not None
 
     def test_has_expected_nodes(self) -> None:
-        """Graph contains all expected nodes."""
+        """Graph contains all expected nodes (story loop + epic-end + batch)."""
         graph = build_epic_graph()
         node_names = set(graph.nodes.keys())
         expected = {
+            # Story loop
             "select_story", "run_story", "process_result", "advance_story",
+            "epic_paused", "epic_halt",
+            # Epic-end pipeline
             "prepare_epic_reviews", "epic_review_node", "collect_epic_reviews",
             "analyze_reviews", "fix_category_a",
             "epic_architect", "epic_fix", "epic_ci",
             "epic_git_commit", "epic_error", "epic_complete",
+            # Mid-epic batch pipeline (Group 3)
+            "prepare_batch_review", "batch_review", "analyze_batch_review",
+            "fix_batch_category_a", "batch_architect", "batch_fix",
+            "batch_ci", "batch_commit",
         }
         assert expected.issubset(node_names), f"Missing: {expected - node_names}"
+
+    def test_batch_pipeline_linear_edges_wired(self) -> None:
+        """Linear edges in the mid-epic batch path point at the right targets."""
+        graph = build_epic_graph()
+        edges = graph.edges
+        # Linear (unconditional) edges in the batch pipeline.
+        assert ("prepare_batch_review", "batch_review") in edges
+        assert ("batch_review", "analyze_batch_review") in edges
+        assert ("analyze_batch_review", "fix_batch_category_a") in edges
+        assert ("batch_fix", "batch_ci") in edges
+        # After a successful batch commit, the loop resumes at select_story.
+        assert ("batch_commit", "select_story") in edges
+
+    def test_batch_pipeline_conditional_branches_wired(self) -> None:
+        """Conditional routers in the batch path are registered."""
+        graph = build_epic_graph()
+        # ``branches`` is a dict[node_name -> {branch_id -> Branch}].
+        branches = graph.branches
+        # advance_story has the new "batch_boundary" branch destination.
+        advance_branch_targets: set[str] = set()
+        for branch in branches.get("advance_story", {}).values():
+            ends = branch.ends or {}
+            advance_branch_targets.update(ends.values())
+        assert "prepare_batch_review" in advance_branch_targets
+
+        # fix_batch_category_a routes through the shared route_after_category_a
+        # router but with the batch pipeline's edge map (architect / ci targets).
+        fbca_targets: set[str] = set()
+        for branch in branches.get("fix_batch_category_a", {}).values():
+            ends = branch.ends or {}
+            fbca_targets.update(ends.values())
+        assert "batch_architect" in fbca_targets
+        assert "batch_ci" in fbca_targets
+
+        # batch_architect routes via route_after_batch_architect.
+        ba_targets: set[str] = set()
+        for branch in branches.get("batch_architect", {}).values():
+            ends = branch.ends or {}
+            ba_targets.update(ends.values())
+        assert "batch_fix" in ba_targets
+        assert "batch_ci" in ba_targets
+
+        # batch_ci routes pass→batch_commit, halt→epic_halt.
+        bci_targets: set[str] = set()
+        for branch in branches.get("batch_ci", {}).values():
+            ends = branch.ends or {}
+            bci_targets.update(ends.values())
+        assert "batch_commit" in bci_targets
+        assert "epic_halt" in bci_targets
 
 
 # ---------------------------------------------------------------------------
@@ -425,3 +631,141 @@ class TestAnalyzeReviewsNodeFilenameResolution:
         assert "Epic 5" in (
             reviews_dir / "epic-5-analysis.md"
         ).read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Mid-epic batch nodes (Group 3 + 4)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareBatchReviewNode:
+    """prepare_batch_review_node increments batch_num and builds story payload."""
+
+    def test_first_batch_increments_batch_num_to_one(self, tmp_path: Path) -> None:
+        # Edge case 5: batch_num initialized to 0 in run_epic_node, bumped
+        # to 1 here so the first batch's filenames carry "batch-1".
+        state: EpicState = {
+            "target_dir": str(tmp_path),
+            "epic_num": "6",
+            "stories": [
+                {"story_id": "1", "story_name": "Login"},
+                {"story_id": "2", "story_name": "Logout"},
+            ],
+            "current_batch_story_ids": ["6-1", "6-2"],
+            "batch_num": 0,
+        }
+        result = prepare_batch_review_node(state)
+        assert result["batch_num"] == 1
+        assert len(result["batch_review_stories"]) == 2
+        assert result["batch_review_stories"][0]["task_id"] == "6-1"
+        assert result["batch_review_stories"][0]["story_name"] == "Login"
+        assert result["batch_review_stories"][1]["task_id"] == "6-2"
+
+    def test_second_batch_increments_batch_num_to_two(self, tmp_path: Path) -> None:
+        state: EpicState = {
+            "target_dir": str(tmp_path),
+            "epic_num": "6",
+            "stories": [
+                {"story_id": str(i), "story_name": f"Story {i}"} for i in range(1, 9)
+            ],
+            "current_batch_story_ids": ["6-5", "6-6", "6-7", "6-8"],
+            "batch_num": 1,
+        }
+        result = prepare_batch_review_node(state)
+        assert result["batch_num"] == 2
+        assert {s["task_id"] for s in result["batch_review_stories"]} == {
+            "6-5", "6-6", "6-7", "6-8",
+        }
+
+    def test_pending_task_id_not_in_stories_logged_and_skipped(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        state: EpicState = {
+            "target_dir": str(tmp_path),
+            "epic_num": "6",
+            "stories": [{"story_id": "1", "story_name": "Login"}],
+            "current_batch_story_ids": ["6-1", "6-99"],  # 6-99 doesn't exist
+            "batch_num": 0,
+        }
+        with caplog.at_level(logging.WARNING, logger="src.intake.epic_graph"):
+            result = prepare_batch_review_node(state)
+        assert len(result["batch_review_stories"]) == 1
+        assert result["batch_review_stories"][0]["task_id"] == "6-1"
+        assert any("6-99" in r.message for r in caplog.records)
+
+    def test_resets_per_batch_output_fields(self, tmp_path: Path) -> None:
+        # Each new batch starts fresh — leftover state from a prior batch
+        # (review file path, fix plan path, ci result) must not leak.
+        state: EpicState = {
+            "target_dir": str(tmp_path),
+            "epic_num": "6",
+            "stories": [{"story_id": "1", "story_name": "Login"}],
+            "current_batch_story_ids": ["6-1"],
+            "batch_num": 1,
+        }
+        result = prepare_batch_review_node(state)
+        assert result["batch_review_file_path"] == ""
+        assert result["batch_fix_plan_path"] == ""
+        assert result["batch_fixes_needed"] is False
+        assert result["batch_test_passed"] is False
+        assert result["batch_last_ci_output"] == ""
+
+
+class TestBatchCommitNode:
+    """batch_commit_node resets batch counters so the next batch starts fresh."""
+
+    def test_resets_batch_counter_after_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Stub out the actual git commit — we're testing the reset logic.
+        monkeypatch.setattr(
+            "src.intake.epic_graph._commit_review_fixes",
+            lambda state, *, commit_message, audit_label: True,
+        )
+        state: EpicState = {
+            "target_dir": str(tmp_path),
+            "epic_num": "6",
+            "batch_num": 2,
+            "stories_in_current_batch": 4,
+            "current_batch_story_ids": ["6-5", "6-6", "6-7", "6-8"],
+        }
+        result = batch_commit_node(state)
+        assert result["stories_in_current_batch"] == 0
+        assert result["current_batch_story_ids"] == []
+        # batch_num is NOT reset — it monotonically increases for filename
+        # disambiguation across batches in the same epic.
+        assert "batch_num" not in result
+
+
+class TestRouteAfterBatchArchitect:
+    """route_after_batch_architect routes by batch_fixes_needed (not epic_)."""
+
+    def test_needs_fix(self) -> None:
+        assert route_after_batch_architect({"batch_fixes_needed": True}) == "needs_fix"
+
+    def test_no_fix(self) -> None:
+        assert route_after_batch_architect({"batch_fixes_needed": False}) == "no_fix"
+
+    def test_does_not_read_epic_fixes_needed(self) -> None:
+        # The epic-end and batch architect must not share state — a batch
+        # with no fixes must skip batch_fix even if epic_fixes_needed is
+        # set to True from a prior epic-end run.
+        state = {"batch_fixes_needed": False, "epic_fixes_needed": True}
+        assert route_after_batch_architect(state) == "no_fix"
+
+
+class TestRouteAfterBatchCi:
+    """route_after_batch_ci routes by batch_test_passed."""
+
+    def test_pass(self) -> None:
+        assert route_after_batch_ci({"batch_test_passed": True}) == "pass"
+
+    def test_halt(self) -> None:
+        assert route_after_batch_ci({"batch_test_passed": False}) == "halt"
+
+    def test_default_unset_routes_to_halt(self) -> None:
+        # Defensive: an unset batch_test_passed routes to halt (safer
+        # than silently committing on missing CI signal).
+        assert route_after_batch_ci({}) == "halt"

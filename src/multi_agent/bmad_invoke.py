@@ -108,7 +108,7 @@ TOOLS_CI_FIX = (
     f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},"
     f"{_BASH_GIT_READONLY},Bash(bash *),Skill"
 )
-TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite"
+TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite,Skill"
 TOOLS_CI_GENERATE = f"{_BASE_TOOLS},Skill"
 
 

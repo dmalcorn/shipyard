@@ -2,8 +2,7 @@
 
 Implements the per-story build pipeline as a LangGraph StateGraph:
 
-  check_story → check_dev → [dev_story] → code_review →
-  run_ci → [fix_ci] → git_commit → END
+  check_story → check_dev → [dev_story] → run_ci → [fix_ci] → git_commit → END
 
 The dev_story node combines story creation and implementation into a
 single BMAD dev agent invocation. This mirrors the upstream BMAD v6.3.0
@@ -11,6 +10,10 @@ change where the SM agent was removed and the dev agent handles both
 story creation (CS) and development (DS). The combined invocation reads
 planning artifacts once and carries context forward, improving coherence
 and reducing redundant token consumption.
+
+Per-story code review was removed in the batch-review redesign
+(2026-05-09); review now happens at mid-epic batch boundaries and
+epic-end. See ``epic_graph.py`` for the batch and epic-end pipelines.
 
 Key design principles:
   1. Bash first, LLM on failure — CI runs as bash nodes,
@@ -29,7 +32,6 @@ epic_graph.py as post-epic processing, not here.
 
 from __future__ import annotations
 
-import json
 import logging
 import operator
 import os
@@ -54,7 +56,6 @@ from src.multi_agent.bmad_invoke import (
     TIMEOUT_MEDIUM,
     TOOLS_CI_FIX,
     TOOLS_CI_GENERATE,
-    TOOLS_CODE_REVIEW,
     TOOLS_DEV,
     invoke_bmad_agent,
 )
@@ -78,7 +79,6 @@ MAX_CI_CYCLES = 4
 # Override via set_model_config() (called from factory.yaml loader).
 _MODEL_CONFIG: dict[str, str | None] = {
     "dev_story": "claude-sonnet-4-6",
-    "code_review": "claude-sonnet-4-6",
     "fix_ci": "claude-sonnet-4-6",
 }
 
@@ -89,21 +89,26 @@ def set_model_config(config: dict[str, str | None]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story-level review toggle
+# Batch-review toggle (renamed from _STORY_REVIEWS_ENABLED in the
+# batch-review redesign, 2026-05-09). The CLI flag
+# (``--no-story-reviews``), the ``reviews.story_level`` config key, and
+# the interactive ``[Y/n]`` startup prompt all flow into this single
+# boolean. When False, the mid-epic batch pipeline is gated off in
+# ``route_next_story`` (epic-end review still runs regardless).
 # ---------------------------------------------------------------------------
 
-_STORY_REVIEWS_ENABLED: bool = True
+_BATCH_REVIEWS_ENABLED: bool = True
 
 
-def get_story_reviews_enabled() -> bool:
-    """Return whether story-level code reviews are enabled."""
-    return _STORY_REVIEWS_ENABLED
+def get_batch_reviews_enabled() -> bool:
+    """Return whether mid-epic batch code reviews are enabled."""
+    return _BATCH_REVIEWS_ENABLED
 
 
-def set_story_reviews_enabled(enabled: bool) -> None:
-    """Enable or disable story-level code reviews."""
-    global _STORY_REVIEWS_ENABLED  # noqa: PLW0603
-    _STORY_REVIEWS_ENABLED = enabled
+def set_batch_reviews_enabled(enabled: bool) -> None:
+    """Enable or disable mid-epic batch code reviews."""
+    global _BATCH_REVIEWS_ENABLED  # noqa: PLW0603
+    _BATCH_REVIEWS_ENABLED = enabled
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +517,7 @@ def route_after_story_check(state: OrchestratorState) -> str:
 # deliberately not a target: the story-status gate in
 # check_story_exists_node handles that case by reading the story
 # file's actual status rather than trusting a checkpoint.
-_RESUME_ENTRY_PHASES = {"code_review", "run_ci", "git_commit"}
+_RESUME_ENTRY_PHASES = {"run_ci", "git_commit"}
 
 
 def route_on_entry(state: OrchestratorState) -> str:
@@ -591,48 +596,6 @@ def dev_story_node(state: OrchestratorState) -> dict[str, Any]:
     _save_phase(state, "dev_story")
     return {
         "current_phase": "dev_story",
-        "files_modified": result.get("files_modified", []),
-    }
-
-
-def code_review_node(state: OrchestratorState) -> dict[str, Any]:
-    """Invoke BMAD DEV agent for code review with auto-fix."""
-    task_id = state.get("task_id", "")
-    working_dir = _get_working_dir(state)
-
-    if not _STORY_REVIEWS_ENABLED:
-        print(f"\n>>> [code_review] Skipped for {task_id} (story reviews disabled)")
-        _save_phase(state, "code_review")
-        return {"current_phase": "code_review"}
-
-    print(f"\n>>> [code_review] Invoking bmad-agent-dev CR for {task_id}")
-
-    result = invoke_bmad_agent(
-        bmad_agent="bmad-agent-dev",
-        command=f"code review for story {task_id}",
-        tools=TOOLS_CODE_REVIEW,
-        working_dir=working_dir,
-        timeout=TIMEOUT_MEDIUM,
-        model=_model_for("code_review"),
-        extra_context=(
-            "When the code review workflow asks what to do with issues, "
-            "automatically choose to fix them. No waiting for user input."
-        ),
-    )
-
-    print(f"    [code_review] Done: success={result['success']}")
-
-    if not result["success"]:
-        return {
-            "current_phase": "code_review",
-            "pipeline_status": "failed",
-            "error": f"code_review failed (exit={result['exit_code']}): {result['output'][:500]}",
-            "files_modified": result.get("files_modified", []),
-        }
-
-    _save_phase(state, "code_review")
-    return {
-        "current_phase": "code_review",
         "files_modified": result.get("files_modified", []),
     }
 
@@ -1985,12 +1948,14 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     """Build the story orchestrator pipeline as a StateGraph.
 
     Pipeline (happy path):
-    check_story → [dev_story] → code_review → run_ci → git_commit
+    check_story → [dev_story] → run_ci → git_commit
     (dev_story creates + implements in one invocation; skipped if status is review/done)
 
     Failure routing:
-    - check_review has P1/P2 → fix_review → code_review
     - run_ci fail → fix_ci → run_ci retry (up to MAX_CI_CYCLES)
+
+    Per-story code review was removed in the batch-review redesign;
+    review now happens at mid-epic batch boundaries and epic-end.
 
     Returns:
         Uncompiled StateGraph ready for .compile().
@@ -2002,7 +1967,6 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
 
     # --- LLM nodes (BMAD agent invocations) ---
     graph.add_node("dev_story", dev_story_node)
-    graph.add_node("code_review", code_review_node)
     graph.add_node("fix_ci", fix_ci_node)
 
     # --- Bash nodes (no LLM) ---
@@ -2015,15 +1979,14 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     # --- Edges ---
 
     # Entry: if the epic graph loaded a phase.json matching this story,
-    # jump directly to the next unfinished phase (code_review / run_ci /
-    # git_commit). Otherwise fall through to check_story for the normal
-    # story-status gate.
+    # jump directly to the next unfinished phase (run_ci / git_commit).
+    # Otherwise fall through to check_story for the normal story-status
+    # gate.
     graph.add_conditional_edges(
         START,
         route_on_entry,
         {
             "check_story": "check_story",
-            "code_review": "code_review",
             "run_ci": "run_ci",
             "git_commit": "git_commit",
         },
@@ -2031,19 +1994,12 @@ def build_orchestrator_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_conditional_edges(
         "check_story",
         route_after_story_check,
-        {"skip": "code_review", "dev": "dev_story"},
+        {"skip": "run_ci", "dev": "dev_story"},
     )
 
-    # Dev story (create + implement) → code review (fail → error)
+    # Dev story (create + implement) → CI (fail → error)
     graph.add_conditional_edges(
         "dev_story",
-        route_after_llm_node,
-        {"continue": "code_review", "error": "error_handler"},
-    )
-
-    # Code review → CI (fail → error)
-    graph.add_conditional_edges(
-        "code_review",
         route_after_llm_node,
         {"continue": "run_ci", "error": "error_handler"},
     )

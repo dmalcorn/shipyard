@@ -25,10 +25,24 @@ target:
   dir: "C:\\absolute\\path\\to\\TargetName"   # Windows: double-backslashes
 
 # Review configuration.
-# Set story_level to false to skip per-story code reviews
-# (epic-level reviews still run after all stories complete).
+# Set story_level to false to skip the mid-epic batch code-review
+# pipeline (epic-end review still runs after all stories complete).
+# The CLI flag --no-story-reviews and the interactive [Y/n] startup
+# prompt feed the same toggle — any of the three opt-out paths
+# disables batch reviews for the run.
 reviews:
   story_level: true
+
+# Batch-review pipeline. Fires every N successfully-completed stories
+# within an epic, interrupting story cascades before they snowball into
+# epic-end. Default 4: review fires after stories 4, 8, 12, ... ;
+# leftover stories (e.g. 9-11 in an 11-story epic) fold into the
+# regular epic-end review, no redundant final batch.
+#   0 disables the trigger (epic-end review only — equivalent to the
+#     pre-2026-05-09 behavior).
+#   N >= 1 fires the batch pipeline every N completed stories.
+review:
+  story_batch_size: 4
 
 # CI configuration.
 # Set story_level to false to skip per-story CI runs
@@ -46,12 +60,20 @@ ci:
 models:
   # Story-level nodes (orchestrator.py)
   dev_story: claude-sonnet-4-6
-  code_review: claude-sonnet-4-6
   fix_ci: claude-sonnet-4-6
 
-  # Epic-level nodes (epic_graph.py)
+  # Epic-end nodes (epic_graph.py)
   epic_review: claude-sonnet-4-6
   epic_analysis: claude-sonnet-4-6
   epic_fix_cat_a: claude-sonnet-4-6
   epic_architect: claude-opus-4-6
   epic_fix_dev: claude-sonnet-4-6
+
+  # Mid-epic batch nodes (epic_graph.py). Mirror epic-end defaults out
+  # of the box; tune separately to (e.g.) drop batch review to haiku
+  # while keeping epic-end review on sonnet.
+  epic_batch_review: claude-sonnet-4-6
+  epic_batch_analysis: claude-sonnet-4-6
+  epic_batch_fix_cat_a: claude-sonnet-4-6
+  epic_batch_architect: claude-opus-4-6
+  epic_batch_fix_dev: claude-sonnet-4-6

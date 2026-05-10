@@ -28,7 +28,9 @@ from langgraph.graph.state import CompiledStateGraph
 
 from src.intake.backlog import load_backlog
 from src.intake.checkpoint import (
+    clear_batch_phase_checkpoint,
     clear_epic_phase_checkpoint,
+    load_batch_phase_checkpoint,
     load_epic_phase_checkpoint,
 )
 from src.intake.cost_tracker import get_invocation_count, get_total_cost
@@ -37,10 +39,10 @@ from src.intake.pause import is_pause_requested
 from src.multi_agent.orchestrator import (
     _detect_project_type,
     generate_ci_script,
+    get_batch_reviews_enabled,
     get_story_ci_enabled,
-    get_story_reviews_enabled,
+    set_batch_reviews_enabled,
     set_story_ci_enabled,
-    set_story_reviews_enabled,
 )
 from src.pipeline_tracker import update_story_progress
 
@@ -90,6 +92,13 @@ class RebuildState(TypedDict, total=False):
     resume_stories_failed: int
     resume_total_interventions: int
     resume_story_results: list[dict[str, Any]]
+
+    # Batch-pipeline resume support. The rolling session.json
+    # checkpoint persists these so a hard kill mid-batch resumes with
+    # the correct counter and pending-batch story-id list.
+    resume_stories_in_current_batch: int
+    resume_current_batch_story_ids: list[str]
+    resume_batch_num: int
 
 
 # ---------------------------------------------------------------------------
@@ -277,23 +286,26 @@ def preflight_check_node(state: RebuildState) -> dict[str, Any]:
 
 
 def _prompt_story_reviews() -> None:
-    """Ask the operator whether to run story-level code reviews.
+    """Ask the operator whether to run mid-epic batch code reviews.
 
     Skips the prompt if reviews were already disabled via --no-story-reviews
     or factory.yaml (the CLI sets the flag before the graph runs).
+    The CLI flag and config key keep their original ``story``-flavoured
+    names for backwards compatibility, but they now gate the batch
+    pipeline (per-story review was removed in the batch-review redesign).
     """
-    if not get_story_reviews_enabled():
-        print("  Story-level code reviews: DISABLED (set by CLI/config)")
+    if not get_batch_reviews_enabled():
+        print("  Story-batch code reviews: DISABLED (set by CLI/config)")
         return
     try:
-        answer = input("\nRun story-level code reviews? [Y/n] ").strip().lower()
+        answer = input("\nRun story-batch code reviews? [Y/n] ").strip().lower()
     except (EOFError, KeyboardInterrupt, OSError):
         answer = ""
     if answer in ("n", "no"):
-        set_story_reviews_enabled(False)
-        print("  Story-level code reviews: DISABLED (epic reviews still active)")
+        set_batch_reviews_enabled(False)
+        print("  Story-batch code reviews: DISABLED (epic-end review still active)")
     else:
-        print("  Story-level code reviews: ENABLED")
+        print("  Story-batch code reviews: ENABLED")
 
 
 def _prompt_story_ci() -> None:
@@ -392,6 +404,15 @@ def load_backlog_node(state: RebuildState) -> dict[str, Any]:
             "stories_failed": state.get("resume_stories_failed", 0),
             "total_interventions": state.get("resume_total_interventions", 0),
             "resume_story_index": resume_story_index,
+            # Forward batch-resume fields so run_epic_node can seed
+            # EpicState with them on the first epic after resume.
+            "resume_stories_in_current_batch": state.get(
+                "resume_stories_in_current_batch", 0,
+            ),
+            "resume_current_batch_story_ids": state.get(
+                "resume_current_batch_story_ids", [],
+            ),
+            "resume_batch_num": state.get("resume_batch_num", 0),
             "pipeline_status": "running",
             "start_time": time.time(),
         }
@@ -703,6 +724,52 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
             )
             clear_epic_phase_checkpoint(abs_target_dir)
 
+    # Mid-epic batch phase resume: if a batch-phase.json from a prior
+    # run of this exact (session_id, epic_num) exists, pass the next
+    # unfinished batch phase down. Takes precedence over the epic-end
+    # resume — a halt mid-batch must re-enter the batch pipeline before
+    # the epic-end review runs. Stale checkpoints get cleared.
+    resume_from_batch_phase = ""
+    resume_batch_num_ckpt = 0
+    batch_ckpt = load_batch_phase_checkpoint(abs_target_dir)
+    if batch_ckpt:
+        ckpt_session = batch_ckpt.get("session_id", "")
+        ckpt_epic = batch_ckpt.get("epic_num", "")
+        if ckpt_session == session_id and ckpt_epic == epic["epic_num"]:
+            resume_from_batch_phase = batch_ckpt.get("next_phase", "") or ""
+            resume_batch_num_ckpt = int(batch_ckpt.get("batch_num", 0))
+            if resume_from_batch_phase:
+                print(
+                    f"    [run_epic] Batch phase checkpoint found for "
+                    f"epic {epic['epic_num']} batch {resume_batch_num_ckpt}: "
+                    f"resuming at {resume_from_batch_phase}",
+                )
+        else:
+            logger.info(
+                "Stale batch-phase checkpoint cleared "
+                "(ckpt=%s/epic-%s, current=%s/epic-%s)",
+                ckpt_session, ckpt_epic, session_id, epic["epic_num"],
+            )
+            clear_batch_phase_checkpoint(abs_target_dir)
+
+    # Seed batch-pipeline state from session.json. Only the first epic
+    # after a resume gets these values — subsequent epics start clean.
+    is_first_epic_after_resume = (
+        epic_index == state.get("resume_epic_index", 0)
+        and state.get("resume_story_index", 0) > 0
+    )
+    if is_first_epic_after_resume:
+        seed_stories_in_current_batch = state.get("resume_stories_in_current_batch", 0)
+        seed_current_batch_story_ids = list(state.get("resume_current_batch_story_ids", []))
+        seed_batch_num = max(
+            state.get("resume_batch_num", 0),
+            resume_batch_num_ckpt,
+        )
+    else:
+        seed_stories_in_current_batch = 0
+        seed_current_batch_story_ids = []
+        seed_batch_num = 0
+
     epic_input: EpicState = {
         "session_id": session_id,
         "target_dir": abs_target_dir,
@@ -726,6 +793,20 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
         "epic_test_passed": False,
         "epic_last_test_output": "",
         "epic_last_ci_output": "",
+        # Batch-review state. ``batch_num`` is seeded from session.json
+        # / batch-phase.json on the first epic after a resume, otherwise
+        # starts at 0 and is bumped to 1 inside ``prepare_batch_review_node``
+        # before the first batch fires (per design doc edge case 5 —
+        # avoids off-by-one on the first batch's filenames).
+        "stories_in_current_batch": seed_stories_in_current_batch,
+        "current_batch_story_ids": seed_current_batch_story_ids,
+        "batch_num": seed_batch_num,
+        "batch_review_stories": [],
+        "batch_review_file_path": "",
+        "batch_fix_plan_path": "",
+        "batch_fixes_needed": False,
+        "batch_test_passed": False,
+        "batch_last_ci_output": "",
         "epic_status": "running",
         "error": "",
         # Rebuild-level context for story-level checkpointing
@@ -735,6 +816,7 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
         "rebuild_prior_interventions": state.get("total_interventions", 0),
         "rebuild_prior_results": state.get("all_story_results", []),
         "resume_from_epic_phase": resume_from_epic_phase,
+        "resume_from_batch_phase": resume_from_batch_phase,
     }
 
     compiled_epic = build_epic_runner()

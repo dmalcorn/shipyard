@@ -22,13 +22,21 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from src.audit_log.audit import get_logger
+from src.config import get_story_batch_size
 from src.intake.checkpoint import (
+    clear_batch_phase_checkpoint,
     clear_epic_phase_checkpoint,
     clear_phase_checkpoint,
     load_phase_checkpoint,
+    save_batch_phase_checkpoint,
     save_epic_phase_checkpoint,
 )
 from src.intake.pause import is_pause_requested
+from src.intake.review_scope import (
+    EPIC_REVIEWS_DIR,
+    ReviewScope,
+    reviews_path,
+)
 from src.intake.review_sieve import (
     SieveResult,
     append_deferred_work,
@@ -41,9 +49,11 @@ from src.multi_agent.bmad_invoke import (
     TIMEOUT_MEDIUM,
     TOOLS_DEV,
     TOOLS_REVIEW_READONLY,
+    get_rate_limit_sleep_seconds,
     invoke_bmad_agent,
     invoke_ci_with_fix,
     invoke_claude_cli,
+    reset_rate_limit_sleep_counter,
 )
 from src.multi_agent.orchestrator import (
     OrchestratorState,
@@ -51,13 +61,10 @@ from src.multi_agent.orchestrator import (
     _ensure_migrations,
     _run_bash,
     build_orchestrator,
+    get_batch_reviews_enabled,
     get_epic_ci_bash_timeout,
     get_fix_pre_existing,
     resolve_ci_command,
-)
-from src.multi_agent.bmad_invoke import (
-    get_rate_limit_sleep_seconds,
-    reset_rate_limit_sleep_counter,
 )
 from src.pipeline_tracker import update_story_progress
 
@@ -85,11 +92,22 @@ MAX_EPIC_FIX_CYCLES = 2
 # ---------------------------------------------------------------------------
 
 _EPIC_MODEL_CONFIG: dict[str, str | None] = {
+    # Epic-end pipeline. The architect runs on opus because Cat B
+    # findings are design-level decisions; everyone else is sonnet.
     "epic_review": "claude-sonnet-4-6",
     "epic_analysis": "claude-sonnet-4-6",
     "epic_fix_cat_a": "claude-sonnet-4-6",
     "epic_architect": "claude-opus-4-6",
     "epic_fix_dev": "claude-sonnet-4-6",
+    # Mid-epic batch pipeline. Mirrors the epic-end defaults so behavior
+    # is identical out of the box; the parallel keys exist so operators
+    # can tune batch independently of epic-end (e.g. drop batch review
+    # to haiku to cut cost while keeping epic-end on sonnet).
+    "epic_batch_review": "claude-sonnet-4-6",
+    "epic_batch_analysis": "claude-sonnet-4-6",
+    "epic_batch_fix_cat_a": "claude-sonnet-4-6",
+    "epic_batch_architect": "claude-opus-4-6",
+    "epic_batch_fix_dev": "claude-sonnet-4-6",
 }
 
 
@@ -102,21 +120,22 @@ def _epic_model_for(node: str) -> str | None:
     """Return the model override for a given epic node, or None for default."""
     return _EPIC_MODEL_CONFIG.get(node)
 
-# Epic-level review directories (separate from story-level)
-EPIC_REVIEWS_DIR = "epic-reviews"
+# Epic-level review directories (separate from story-level).
+# EPIC_REVIEWS_DIR is sourced from src.intake.review_scope so review
+# consumers don't have to depend on this module.
 
-# All epic-reviews/ artifacts are epic-numbered so multiple epics can
-# coexist in the directory without clobbering each other. When a later
-# epic needs to reference earlier epic's findings, or a re-run has to
-# recover work that was missed, the files are identified by epic number
-# in their name rather than by position in time.
-EPIC_FIX_PLAN_FILENAME_TEMPLATE = "epic-{epic_num}-fix-plan.md"
-REVIEW_BMAD_FILENAME_TEMPLATE = "epic-{epic_num}-review-bmad.md"
-REVIEW_CLAUDE_FILENAME_TEMPLATE = "epic-{epic_num}-review-claude.md"
-ANALYSIS_FILENAME_TEMPLATE = "epic-{epic_num}-analysis.md"
-CATEGORY_A_PLAN_FILENAME_TEMPLATE = "epic-{epic_num}-category-a-fix-plan.md"
-CATEGORY_B_REVIEW_FILENAME_TEMPLATE = "epic-{epic_num}-category-b-architect-review.md"
-CATEGORY_A_DONE_FILENAME_TEMPLATE = "epic-{epic_num}-category-a-fix-done.md"
+# All epic-reviews/ artifacts are scope-tagged so multiple epics — and
+# multiple mid-epic batches — can coexist in the directory without
+# clobbering each other. The ``{scope}`` placeholder is filled in via
+# ``ReviewScope.artifact_path``, expanding to ``epic-{N}`` for epic-end
+# reviews and ``epic-{N}-batch-{B}`` for mid-epic batch reviews.
+FIX_PLAN_FILENAME_TEMPLATE = "{scope}-fix-plan.md"
+REVIEW_BMAD_FILENAME_TEMPLATE = "{scope}-review-bmad.md"
+REVIEW_CLAUDE_FILENAME_TEMPLATE = "{scope}-review-claude.md"
+ANALYSIS_FILENAME_TEMPLATE = "{scope}-analysis.md"
+CATEGORY_A_PLAN_FILENAME_TEMPLATE = "{scope}-category-a-fix-plan.md"
+CATEGORY_B_REVIEW_FILENAME_TEMPLATE = "{scope}-category-b-architect-review.md"
+CATEGORY_A_DONE_FILENAME_TEMPLATE = "{scope}-category-a-fix-done.md"
 
 # Minimum size (in characters) for a review file to be considered a
 # real review rather than an empty stub or a preamble-only LLM failure.
@@ -186,6 +205,25 @@ class EpicState(TypedDict, total=False):
     category_a_fixes_applied: bool
     has_category_b_items: bool
 
+    # Mid-epic batch review state. Tracks the rolling batch counter and
+    # the stories in the current pending batch. Reset to 0/[] in
+    # ``batch_commit_node`` after each batch completes; ``batch_num``
+    # counts up monotonically (1, 2, ...) across the epic for filename
+    # disambiguation. ``stories_in_current_batch`` increments only when
+    # ``current_story_status == "completed"`` — failed stories don't
+    # count toward the batch trigger because their work is uncommitted.
+    stories_in_current_batch: int
+    current_batch_story_ids: list[str]
+    batch_num: int
+    # Per-batch outputs (mirror existing epic-level fields, reused via
+    # ReviewScope so the same nodes service both scopes).
+    batch_review_stories: list[dict[str, str]]
+    batch_review_file_path: str
+    batch_fix_plan_path: str
+    batch_fixes_needed: bool
+    batch_test_passed: bool
+    batch_last_ci_output: str
+
     # Control
     epic_status: str  # running|completed|failed|aborted
     error: str
@@ -202,6 +240,10 @@ class EpicState(TypedDict, total=False):
     # Non-empty = jump past the story loop and earlier post-processing
     # phases directly to this phase. Empty = normal entry.
     resume_from_epic_phase: str
+    # Phase-level resume for the mid-epic batch pipeline. Takes
+    # precedence over ``resume_from_epic_phase`` — a halt inside a
+    # batch must finish the batch before the epic-end review runs.
+    resume_from_batch_phase: str
 
 
 class EpicReviewNodeInput(TypedDict):
@@ -476,6 +518,18 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
         "stories_failed": stories_failed,
     }
 
+    # Batch counter: only completed stories count toward a batch. A
+    # failed story's dev work is uncommitted, so there's nothing for a
+    # batch reviewer to look at. ``current_batch_story_ids`` accumulates
+    # the task_ids of completed stories pending review; both fields are
+    # reset in ``batch_commit_node`` after a batch fires.
+    if status == "completed":
+        task_id = f"{epic_num}-{story_id}" if epic_num else story_id
+        prior_count = state.get("stories_in_current_batch", 0)
+        prior_ids = state.get("current_batch_story_ids", [])
+        updates["stories_in_current_batch"] = prior_count + 1
+        updates["current_batch_story_ids"] = prior_ids + [task_id]
+
     if status != "completed":
         logger.warning("Story %s (%s) failed — continuing to next story", story_id, story_name)
 
@@ -491,6 +545,18 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
 
         all_results = prior_results + state.get("story_results", []) + [result_entry]
 
+        # Note ``stories_in_current_batch`` and ``current_batch_story_ids``
+        # haven't yet been bumped for THIS story — the bump lives in the
+        # ``updates`` dict above and lands in graph state after this node
+        # returns. The resume snapshot must reflect the post-bump values
+        # to avoid double-counting on resume.
+        post_batch_count = state.get("stories_in_current_batch", 0)
+        post_batch_ids = list(state.get("current_batch_story_ids", []))
+        if status == "completed":
+            task_id = f"{epic_num}-{story_id}" if epic_num else story_id
+            post_batch_count += 1
+            post_batch_ids.append(task_id)
+
         resume_state = {
             "session_id": state.get("session_id", ""),
             "target_dir": target_dir,
@@ -500,6 +566,9 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
             "resume_stories_failed": prior_failed + stories_failed,
             "resume_total_interventions": prior_interventions + state.get("total_interventions", 0),
             "resume_story_results": all_results,
+            "resume_stories_in_current_batch": post_batch_count,
+            "resume_current_batch_story_ids": post_batch_ids,
+            "resume_batch_num": state.get("batch_num", 0),
         }
         session_file = os.path.join(target_dir, "checkpoints/session.json")
         os.makedirs(os.path.dirname(session_file), exist_ok=True)
@@ -533,13 +602,14 @@ def epic_paused_node(state: EpicState) -> dict[str, Any]:
 def epic_halt_node(state: EpicState) -> dict[str, Any]:
     """Terminal node when a story fails in an unrecoverable phase.
 
-    Triggered by git_commit failures returning pipeline_status='failed'.
-    Common causes:
+    Triggered by git_commit / run_ci failures during the story loop, or
+    by ``batch_ci`` exhaustion mid-epic. Common causes:
       - Clean tree, dev_complete=False, and no prior 'story X-Y complete'
         commit found in git log → dev_story produced nothing (likely a
         pause-kill).
       - The actual `git commit` command failed (e.g. corrupted index,
         disk full, missing identity config).
+      - Batch-level CI exhausted retries after architect-driven fixes.
 
     The specific reason lives in state['current_story_error'] and is
     printed on the line below the halt message. Pre-commit hook rejection
@@ -552,14 +622,26 @@ def epic_halt_node(state: EpicState) -> dict[str, Any]:
     failed_phase = state.get("current_story_failed_phase", "?")
     error = state.get("current_story_error", "")
 
-    story_entry = stories[story_index] if story_index < len(stories) else {}
-    story_id = story_entry.get("story_id", "?")
+    if failed_phase == "batch_ci":
+        # Batch-CI exhaustion: the architect-driven batch fixes failed
+        # CI even after the retry-and-fix loop. Render a scope-specific
+        # halt message per the design doc's halt-behavior section.
+        batch_num = state.get("batch_num", 0)
+        scope = ReviewScope(epic_num=str(epic_num), batch_num=batch_num)
+        message = (
+            f"{scope.prose_label} CI failed after architect-driven fixes. "
+            f"Working tree contains uncommitted batch-fix attempts. "
+            f"Resolve manually and resume."
+        )
+    else:
+        story_entry = stories[story_index] if story_index < len(stories) else {}
+        story_id = story_entry.get("story_id", "?")
+        message = (
+            f"Epic {epic_num} halted at story {story_id}: "
+            f"phase={failed_phase} failed. "
+            f"Fix the underlying issue in the target repo and resume."
+        )
 
-    message = (
-        f"Epic {epic_num} halted at story {story_id}: "
-        f"phase={failed_phase} failed. "
-        f"Fix the underlying issue in the target repo and resume."
-    )
     logger.error(message)
     print(f"\n*** HALT: {message}")
     if error:
@@ -600,13 +682,20 @@ def route_after_story_result(state: EpicState) -> str:
 
 
 def route_next_story(state: EpicState) -> str:
-    """Route to next story, epic post-processing, or pause.
+    """Route to next story, epic post-processing, batch review, or pause.
 
     Called after advance_story_node has already incremented story_index,
     so story_index is the index of the *next* story to run.
 
-    If a graceful pause has been requested (via Ctrl+C signal handler),
-    returns "paused" instead of continuing to the next story.
+    Routing precedence:
+      1. Pause requested → ``paused``.
+      2. No more stories → ``epic_done`` (epic-end review pipeline).
+         Note: this MUST be checked before the batch trigger so a
+         batch-aligned epic end (e.g. 8 stories with batch_size=4) does
+         not fire a redundant final batch — the epic-end review will
+         cover the remaining stories anyway.
+      3. Stories remaining AND batch counter at threshold → ``batch_boundary``.
+      4. Otherwise → ``more_stories``.
     """
     if is_pause_requested():
         logger.info("Pause requested — stopping after completed story")
@@ -615,9 +704,22 @@ def route_next_story(state: EpicState) -> str:
     stories = state.get("stories", [])
     story_index = state.get("story_index", 0)
 
-    if story_index < len(stories):
-        return "more_stories"
-    return "epic_done"
+    if story_index >= len(stories):
+        return "epic_done"
+
+    # Master gate: ``get_batch_reviews_enabled()`` is False when the
+    # operator opted out via ``--no-story-reviews``, factory.yaml's
+    # ``reviews.story_level: false``, or "n" at the interactive prompt.
+    # Any of those paths suppresses the entire batch pipeline regardless
+    # of ``review.story_batch_size``.
+    if (
+        get_batch_reviews_enabled()
+        and (batch_size := get_story_batch_size()) > 0
+        and state.get("stories_in_current_batch", 0) >= batch_size
+    ):
+        return "batch_boundary"
+
+    return "more_stories"
 
 
 # ---------------------------------------------------------------------------
@@ -629,37 +731,13 @@ def _ensure_epic_reviews_dir(working_dir: str | None = None) -> None:
     """Ensure the epic-reviews/ directory exists.
 
     Does NOT wipe existing contents — every artifact in this directory
-    is named with an epic number (see :func:`_epic_artifact_path`), so
-    running a later epic (or re-running an earlier one) cannot clobber
-    a prior epic's output. Wiping would destroy that history.
+    is scope-tagged via :class:`ReviewScope`, so running a later epic
+    (or re-running an earlier one, or an additional mid-epic batch)
+    cannot clobber a prior scope's output. Wiping would destroy that
+    history.
     """
     reviews_dir = os.path.join(working_dir, EPIC_REVIEWS_DIR) if working_dir else EPIC_REVIEWS_DIR
     os.makedirs(reviews_dir, exist_ok=True)
-
-
-def _reviews_path(filename: str, working_dir: str | None = None) -> str:
-    reviews_dir = os.path.join(working_dir, EPIC_REVIEWS_DIR) if working_dir else EPIC_REVIEWS_DIR
-    return os.path.join(reviews_dir, filename)
-
-
-def _epic_artifact_path(
-    template: str,
-    epic_num: str | int,
-    working_dir: str | None = None,
-) -> str:
-    """Resolve a templated epic-reviews/ filename to an absolute path.
-
-    ``template`` must contain the ``{epic_num}`` placeholder — this is
-    how every artifact in ``epic-reviews/`` ties itself to its source
-    epic so a later epic's run can't overwrite it.
-    """
-    filename = template.format(epic_num=epic_num)
-    return _reviews_path(filename, working_dir=working_dir)
-
-
-def _epic_fix_plan_path(epic_num: str | int, working_dir: str | None = None) -> str:
-    """Absolute path to the fix plan for a specific epic."""
-    return _epic_artifact_path(EPIC_FIX_PLAN_FILENAME_TEMPLATE, epic_num, working_dir)
 
 
 def _parse_fix_plan(content: str) -> tuple[bool, int]:
@@ -755,16 +833,17 @@ def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     """
     working_dir = state.get("target_dir") or None
     epic_num = state.get("epic_num", "")
+    scope = ReviewScope(epic_num=epic_num)
     stories = state.get("stories", [])
     _ensure_epic_reviews_dir(working_dir=working_dir)
 
-    excluded = _doc_only_task_ids(stories, epic_num)
+    excluded = _doc_only_task_ids(stories, scope.epic_num)
     in_scope: list[dict[str, str]] = []
     for s in stories:
         sid = s.get("story_id", "")
         if not sid:
             continue
-        task_id = f"{epic_num}-{sid}"
+        task_id = f"{scope.epic_num}-{sid}"
         if task_id in excluded:
             continue
         in_scope.append({
@@ -776,12 +855,78 @@ def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     logger.info(
         "prepare_epic_reviews: epic=%s stories_in_scope=%d "
         "(excluded %d doc-only/polish: %s)",
-        epic_num, len(in_scope), len(excluded),
+        scope.epic_num, len(in_scope), len(excluded),
         sorted(excluded) if excluded else "[]",
     )
     return {
         "epic_review_file_paths": [],
         "epic_review_stories": in_scope,
+    }
+
+
+def prepare_batch_review_node(state: EpicState) -> dict[str, Any]:
+    """Build the in-scope story list for a mid-epic batch review.
+
+    Unlike :func:`prepare_epic_reviews_node`, this node does NOT exclude
+    doc-only spike or integration-polish stories — every story that
+    completed in the current batch gets reviewed. The spike/polish
+    exclusion is an epic-shape concern (first/last stories of an epic);
+    a batch is just N consecutive completed stories and has no special
+    structural roles.
+
+    Increments ``batch_num`` from 0→1 (or 1→2, etc.) so subsequent
+    artifact filenames carry the correct ``epic-{N}-batch-{B}`` label.
+    The increment happens here rather than in ``run_epic_node`` so a
+    resume that re-enters this node mid-batch picks up the right
+    scope (the rolling session.json checkpoint persists batch_num
+    across kills — see Step 11 in the design doc).
+    """
+    working_dir = state.get("target_dir") or None
+    epic_num = state.get("epic_num", "")
+    stories = state.get("stories", [])
+    pending_task_ids = list(state.get("current_batch_story_ids", []))
+    new_batch_num = state.get("batch_num", 0) + 1
+    scope = ReviewScope(epic_num=epic_num, batch_num=new_batch_num)
+    _ensure_epic_reviews_dir(working_dir=working_dir)
+
+    # Look up each pending task_id against the epic's stories list to
+    # rebuild the {story_id, story_name, task_id} review payload the
+    # reviewer prompt expects.
+    by_task_id: dict[str, dict[str, str]] = {}
+    for s in stories:
+        sid = s.get("story_id", "")
+        if not sid:
+            continue
+        task_id = f"{epic_num}-{sid}" if epic_num else sid
+        by_task_id[task_id] = {
+            "story_id": sid,
+            "story_name": s.get("story_name", ""),
+            "task_id": task_id,
+        }
+
+    in_scope: list[dict[str, str]] = []
+    for tid in pending_task_ids:
+        entry = by_task_id.get(tid)
+        if entry is not None:
+            in_scope.append(entry)
+        else:
+            logger.warning(
+                "prepare_batch_review: task_id %s in batch but not in stories list",
+                tid,
+            )
+
+    logger.info(
+        "prepare_batch_review: %s stories_in_scope=%d (batch_size=%d)",
+        scope.prose_label, len(in_scope), len(pending_task_ids),
+    )
+    return {
+        "batch_num": new_batch_num,
+        "batch_review_stories": in_scope,
+        "batch_review_file_path": "",
+        "batch_fix_plan_path": "",
+        "batch_fixes_needed": False,
+        "batch_test_passed": False,
+        "batch_last_ci_output": "",
     }
 
 
@@ -823,6 +968,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
     reviewer_type = state["reviewer_type"]
     task_id = state["task_id"]
     epic_num = state.get("epic_num", "")
+    scope = ReviewScope(epic_num=epic_num)
     stories_to_review = state["stories_to_review"]
     working_dir = state.get("working_dir") or None
 
@@ -864,12 +1010,12 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         # methodology owners improve the workflow on their cadence, and
         # any pre-processing we do here would race that. We just hand
         # over the story list and let the skill do its job.
-        output_filename = REVIEW_BMAD_FILENAME_TEMPLATE.format(epic_num=epic_num)
+        output_filename = REVIEW_BMAD_FILENAME_TEMPLATE.format(scope=scope.label)
         result = invoke_bmad_agent(
             bmad_agent="bmad-agent-dev",
             command=(
                 f"Run the bmad-code-review skill across the following "
-                f"stories from Epic {epic_num}. The skill defines the "
+                f"stories from {scope.prose_label}. The skill defines the "
                 f"review workflow — follow it as authored, do not "
                 f"deviate.\n\n"
                 f"Stories to review:\n{stories_list}\n\n"
@@ -909,10 +1055,10 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         # story (read the story spec, find the commit, review the diff
         # against acceptance criteria) — keeping minimal prescription so
         # behavior stays comparable to the BMAD reviewer's output shape.
-        output_filename = REVIEW_CLAUDE_FILENAME_TEMPLATE.format(epic_num=epic_num)
+        output_filename = REVIEW_CLAUDE_FILENAME_TEMPLATE.format(scope=scope.label)
         prompt = (
             f"You are an expert code reviewer. Review the code changes for "
-            f"the following Epic {epic_num} stories:\n\n"
+            f"the following {scope.prose_label} stories:\n\n"
             f"{stories_list}\n\n"
             f"You're free to review the stories individually, in batches, "
             f"or all together. Within an epic, stories are usually closely "
@@ -950,7 +1096,7 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         )
 
     # Write the review file from captured output (agent is read-only)
-    output_path = _reviews_path(output_filename, working_dir=working_dir)
+    output_path = reviews_path(output_filename, working_dir=working_dir)
     output_text = result.get("output", "")
     try:
         with open(output_path, "w", encoding="utf-8") as f:
@@ -961,6 +1107,120 @@ def epic_review_node(state: EpicReviewNodeInput) -> dict[str, Any]:
         logger.exception("Failed to write %s review to %s", reviewer_type, output_path)
 
     return {"epic_review_file_paths": [output_path]}
+
+
+def batch_review_node(state: EpicState) -> dict[str, Any]:
+    """Single-reviewer mid-epic batch code review.
+
+    Unlike the epic-end review (which fans out to BMAD + Claude in
+    parallel), the batch review uses one BMAD reviewer. The new
+    reviewer prompt asks for the cleaner ``patch | decision needed |
+    deferred`` vocabulary; the deterministic sieve translates those
+    tokens to the existing internal bucket types (cat_a / cat_b /
+    defer) downstream.
+    """
+    epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    scope = ReviewScope(epic_num=epic_num, batch_num=batch_num)
+    stories_to_review = state.get("batch_review_stories", [])
+    working_dir = state.get("target_dir") or None
+
+    if not stories_to_review:
+        logger.warning(
+            "No in-scope stories for %s — skipping batch review", scope.prose_label,
+        )
+        return {"batch_review_file_path": ""}
+
+    stories_list = "\n".join(
+        f"- {s['task_id']}: {s['story_name']}" for s in stories_to_review
+    )
+    story_ids = [s["task_id"] for s in stories_to_review]
+    timestamp = datetime.now(UTC).isoformat()
+    task_id = f"{scope.label}-review"
+
+    review_format = (
+        f"Use this exact output format:\n\n"
+        f"---\n"
+        f"agent_role: reviewer\n"
+        f"task_id: {task_id}\n"
+        f"timestamp: {timestamp}\n"
+        f"input_stories: [{', '.join(story_ids)}]\n"
+        f"reviewer_type: bmad\n"
+        f"review_scope: batch\n"
+        f"---\n\n"
+        f"# {scope.prose_label} Code Review\n\n"
+        f"## Summary\n"
+        f"{{1-2 sentence overview}}\n\n"
+        f"## Findings\n\n"
+        f"### 1. {{Finding title}}\n"
+        f"- **Story:** {{task_id}}\n"
+        f"- **File:** {{relative path}}\n"
+        f"- **Issue:** {{description}}\n"
+        f"- **Category:** {{patch | decision needed | deferred}}\n"
+        f"- **Action:** {{recommended fix, or rationale for decision-needed/deferred}}\n\n"
+        f"Use exactly these three categories: patch, decision needed, deferred.\n"
+        f"- **patch** = mechanical fix with one clear correct path "
+        f"(e.g. typo, missing import, style violation)\n"
+        f"- **decision needed** = real issue, multiple valid approaches "
+        f"or design implications — needs architect input\n"
+        f"- **deferred** = pre-existing issue not caused by these "
+        f"stories; worth recording but not addressing now\n\n"
+        f"Output your review as your final response. Do NOT write any files."
+    )
+
+    output_filename = REVIEW_BMAD_FILENAME_TEMPLATE.format(scope=scope.label)
+    result = invoke_bmad_agent(
+        bmad_agent="bmad-agent-dev",
+        command=(
+            f"Run the bmad-code-review skill across the following "
+            f"stories from {scope.prose_label}. The skill defines the "
+            f"review workflow — follow it as authored, do not "
+            f"deviate.\n\n"
+            f"Stories to review:\n{stories_list}\n\n"
+            f"You're free to review the stories individually, in "
+            f"batches, or all together. Within a batch, stories are "
+            f"usually closely related; reviewing them holistically "
+            f"often surfaces cross-story consistency issues (naming "
+            f"drift, contract mismatches, integration gaps) that a "
+            f"strict story-by-story pass would miss. Use your "
+            f"judgment about how to group your review.\n\n"
+            f"Consolidate findings into a single report using the "
+            f"format below. Group findings by story and add a final "
+            f"section for cross-story integration issues.\n\n"
+            f"{review_format}\n\n"
+            f"OUTPUT HANDLING — READ CAREFULLY:\n"
+            f"- Output your complete review as your FINAL message "
+            f"to the console. The runtime captures your last console "
+            f"output and writes it to the review file automatically. "
+            f"You do NOT need to, and MUST NOT, write any file yourself.\n"
+            f"- Do NOT call Write, Edit, or any other file-creation "
+            f"tool. File writes are blocked in this environment.\n"
+            f"- If you attempt a Write/Edit and it fails, STOP "
+            f"immediately. Do NOT try workarounds like Bash heredocs, "
+            f"cp, touch, printf, python, or node — they will all "
+            f"fail. Proceed directly to outputting your full review "
+            f"as your final console message."
+        ),
+        tools=TOOLS_REVIEW_READONLY,
+        working_dir=working_dir,
+        timeout=TIMEOUT_MEDIUM,
+        model=_epic_model_for("epic_batch_review"),
+    )
+
+    output_path = reviews_path(output_filename, working_dir=working_dir)
+    output_text = result.get("output", "")
+    try:
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(output_text)
+        logger.info(
+            "%s batch review written to %s (%d chars)",
+            scope.prose_label, output_path, len(output_text),
+        )
+    except Exception:
+        logger.exception("Failed to write batch review to %s", output_path)
+
+    _save_batch_phase(state, "batch_review")
+    return {"batch_review_file_path": output_path}
 
 
 def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
@@ -981,9 +1241,10 @@ def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     """
     working_dir = state.get("target_dir") or None
     epic_num = state.get("epic_num", "")
+    scope = ReviewScope(epic_num=epic_num)
     review_paths = [
-        ("BMAD", _epic_artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, epic_num, working_dir)),
-        ("Claude", _epic_artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num, working_dir)),
+        ("BMAD", scope.artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, working_dir)),
+        ("Claude", scope.artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, working_dir)),
     ]
     valid_paths: list[str] = []
     problems: list[str] = []
@@ -1004,7 +1265,7 @@ def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
 
     if problems:
         message = (
-            f"Epic {epic_num} review collection failed — "
+            f"{scope.prose_label} review collection failed — "
             f"{len(problems)} reviewer(s) produced unusable output:\n  - "
             + "\n  - ".join(problems)
             + "\n\nThis usually means a reviewer LLM call aborted before "
@@ -1019,6 +1280,64 @@ def collect_epic_reviews_node(state: EpicState) -> dict[str, Any]:
     return {"epic_review_file_paths": valid_paths}
 
 
+def _analyze_reviews(
+    scope: ReviewScope, state: EpicState, *, review_paths: list[str],
+) -> dict[str, Any]:
+    """Sieve reviewer findings into cat_a / cat_b / defer; LLM fallback on drift.
+
+    Generic helper used by both the epic-end and mid-epic batch
+    analysis nodes. Returns the same dict shape both wrappers consume:
+    ``{"analysis_path", "category_a_fix_plan_path",
+    "category_b_review_path", "has_category_b_items"}``.
+    """
+    working_dir = state.get("target_dir") or None
+
+    analysis_path = scope.artifact_path(ANALYSIS_FILENAME_TEMPLATE, working_dir)
+    cat_a_path = scope.artifact_path(CATEGORY_A_PLAN_FILENAME_TEMPLATE, working_dir)
+    cat_b_path = scope.artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, working_dir)
+    bmad_path = scope.artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, working_dir)
+    claude_path = scope.artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, working_dir)
+
+    sieve_result = _run_review_sieve(
+        bmad_path=bmad_path,
+        claude_path=claude_path,
+        epic_num=scope.epic_num,
+        analysis_path=analysis_path,
+        cat_a_path=cat_a_path,
+        cat_b_path=cat_b_path,
+        working_dir=working_dir,
+    )
+
+    if sieve_result is not None:
+        logger.info(
+            "%s sieve: bmad=%d claude=%d cat_a=%d cat_b=%d defer=%d",
+            scope.prose_label,
+            len(sieve_result.bmad_findings),
+            len(sieve_result.claude_findings),
+            len(sieve_result.cat_a),
+            len(sieve_result.cat_b),
+            len(sieve_result.defer),
+        )
+        return {
+            "analysis_path": analysis_path,
+            "category_a_fix_plan_path": cat_a_path,
+            "category_b_review_path": cat_b_path,
+            "has_category_b_items": bool(sieve_result.cat_b),
+        }
+
+    logger.warning(
+        "%s sieve produced no findings — falling back to analyze-reviews agent",
+        scope.prose_label,
+    )
+    return _analyze_reviews_agent_fallback(
+        review_paths=review_paths,
+        analysis_path=analysis_path,
+        cat_a_path=cat_a_path,
+        cat_b_path=cat_b_path,
+        working_dir=working_dir,
+    )
+
+
 def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
     """Route reviewer findings into Category A / Category B / deferred buckets.
 
@@ -1031,56 +1350,26 @@ def analyze_reviews_node(state: EpicState) -> dict[str, Any]:
     exception), invoke the legacy analyze-reviews agent. Belt and
     suspenders during transition.
     """
-    working_dir = state.get("target_dir") or None
-    review_paths = state.get("epic_review_file_paths", [])
     epic_num = state.get("epic_num", "")
-
-    analysis_path = _epic_artifact_path(ANALYSIS_FILENAME_TEMPLATE, epic_num, working_dir)
-    cat_a_path = _epic_artifact_path(CATEGORY_A_PLAN_FILENAME_TEMPLATE, epic_num, working_dir)
-    cat_b_path = _epic_artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, epic_num, working_dir)
-
-    bmad_path = _epic_artifact_path(REVIEW_BMAD_FILENAME_TEMPLATE, epic_num, working_dir)
-    claude_path = _epic_artifact_path(REVIEW_CLAUDE_FILENAME_TEMPLATE, epic_num, working_dir)
-
-    sieve_result = _run_review_sieve(
-        bmad_path=bmad_path,
-        claude_path=claude_path,
-        epic_num=epic_num,
-        analysis_path=analysis_path,
-        cat_a_path=cat_a_path,
-        cat_b_path=cat_b_path,
-        working_dir=working_dir,
-    )
-
-    if sieve_result is not None:
-        logger.info(
-            "Review sieve: bmad=%d claude=%d cat_a=%d cat_b=%d defer=%d",
-            len(sieve_result.bmad_findings),
-            len(sieve_result.claude_findings),
-            len(sieve_result.cat_a),
-            len(sieve_result.cat_b),
-            len(sieve_result.defer),
-        )
-        _save_epic_phase(state, "epic_analysis")
-        return {
-            "analysis_path": analysis_path,
-            "category_a_fix_plan_path": cat_a_path,
-            "category_b_review_path": cat_b_path,
-            "has_category_b_items": bool(sieve_result.cat_b),
-        }
-
-    logger.warning(
-        "Review sieve produced no findings — falling back to analyze-reviews agent",
-    )
-    fallback_result = _analyze_reviews_agent_fallback(
-        review_paths=review_paths,
-        analysis_path=analysis_path,
-        cat_a_path=cat_a_path,
-        cat_b_path=cat_b_path,
-        working_dir=working_dir,
-    )
+    scope = ReviewScope(epic_num=epic_num)
+    review_paths = state.get("epic_review_file_paths", [])
+    result = _analyze_reviews(scope, state, review_paths=review_paths)
     _save_epic_phase(state, "epic_analysis")
-    return fallback_result
+    return result
+
+
+def analyze_batch_review_node(state: EpicState) -> dict[str, Any]:
+    """Sieve the single mid-epic batch review into cat_a/cat_b/defer."""
+    epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    scope = ReviewScope(epic_num=epic_num, batch_num=batch_num)
+    review_paths: list[str] = []
+    batch_review_file = state.get("batch_review_file_path", "")
+    if batch_review_file:
+        review_paths.append(batch_review_file)
+    result = _analyze_reviews(scope, state, review_paths=review_paths)
+    _save_batch_phase(state, "analyze_batch_review")
+    return result
 
 
 def _run_review_sieve(
@@ -1249,78 +1538,77 @@ def _analyze_reviews_agent_fallback(
     }
 
 
-def fix_category_a_node(state: EpicState) -> dict[str, Any]:
-    """Apply Category A (obvious) fixes immediately via dev agent.
+def _fix_category_a(
+    scope: ReviewScope, state: EpicState, *, model_key: str,
+) -> dict[str, Any]:
+    """Apply Category A (obvious) fixes via BMAD dev agent.
 
-    Any fix that can't be applied cleanly gets appended to the
-    Category B file for architect review.
+    Generic-keys helper. Returns
+    ``{"category_a_fixes_applied", "has_category_b_items", "files_modified"}``.
+    The wrappers translate to scope-specific state keys (and add
+    epic-end-only phase checkpointing).
     """
     working_dir = state.get("target_dir") or None
-    epic_num = state.get("epic_num", "")
     cat_a_path = state.get(
         "category_a_fix_plan_path",
-        _epic_artifact_path(CATEGORY_A_PLAN_FILENAME_TEMPLATE, epic_num, working_dir),
+        scope.artifact_path(CATEGORY_A_PLAN_FILENAME_TEMPLATE, working_dir),
     )
     cat_b_path = state.get(
         "category_b_review_path",
-        _epic_artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, epic_num, working_dir),
+        scope.artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, working_dir),
     )
-    done_path = _epic_artifact_path(CATEGORY_A_DONE_FILENAME_TEMPLATE, epic_num, working_dir)
+    done_path = scope.artifact_path(CATEGORY_A_DONE_FILENAME_TEMPLATE, working_dir)
 
-    # Skip if no Category A plan exists or is empty
     if not os.path.exists(cat_a_path):
         logger.info("No Category A fix plan found — skipping")
-        _save_epic_phase(state, "epic_category_a")
-        return {"category_a_fixes_applied": False}
+        return {
+            "category_a_fixes_applied": False,
+            "has_category_b_items": state.get("has_category_b_items", False),
+            "files_modified": [],
+        }
 
     try:
         with open(cat_a_path, encoding="utf-8") as f:
             cat_a_content = f.read()
         if "no category a" in cat_a_content.lower():
             logger.info("No Category A items — skipping")
-            _save_epic_phase(state, "epic_category_a")
-            return {"category_a_fixes_applied": False}
+            return {
+                "category_a_fixes_applied": False,
+                "has_category_b_items": state.get("has_category_b_items", False),
+                "files_modified": [],
+            }
     except Exception:
-        _save_epic_phase(state, "epic_category_a")
-        return {"category_a_fixes_applied": False}
+        logger.exception("Failed to read Category A plan at %s", cat_a_path)
+        return {
+            "category_a_fixes_applied": False,
+            "has_category_b_items": state.get("has_category_b_items", False),
+            "files_modified": [],
+        }
 
-    prompt = (
-        f"You are a dev agent applying pre-approved code fixes.\n\n"
-        f"CRITICAL FIRST STEP: Read CLAUDE.md and "
-        f"_bmad-output/planning-artifacts/coding-standards.md.\n\n"
-        f"FILE EDITING RULES:\n"
-        f"- Use the Edit tool for all file modifications. It handles every "
-        f"path, including paths with brackets like `[projectId]`.\n"
-        f"- If Edit returns an error (e.g. old_string not found or not "
-        f"unique), the file has likely changed since you last read it. "
-        f"Re-Read the file, then retry Edit with the fresh content.\n"
-        f"- Never shell out to edit files (no sed/tee/cat/powershell/node "
-        f"writes). Always Edit or Write.\n\n"
-        f"1. Read the fix plan at `{cat_a_path}`\n"
-        f"2. Apply each fix precisely as described\n"
-        f"3. If any fix CANNOT be applied cleanly (ambiguous, file changed, "
-        f"multiple valid approaches), DO NOT attempt it — instead append it "
-        f"to `{cat_b_path}` for architect review\n"
-        f"4. Verify by running ONLY the specific test files you changed "
-        f"(e.g. `npx vitest run src/path/to/file.test.ts`). Do NOT run "
-        f"the full test suite — the pipeline runs full CI separately. "
-        f"If a test times out, report it and move on.\n"
-        f"5. Write an execution log to `{done_path}` listing each fix "
-        f"attempted and its outcome (applied/skipped)\n"
-    )
-
-    result = invoke_claude_cli(
-        prompt=prompt,
+    result = invoke_bmad_agent(
+        bmad_agent="bmad-agent-dev",
+        command=(
+            f"Apply Category A code review fixes as follows:\n"
+            f"1. Read the fix plan at `{cat_a_path}`\n"
+            f"2. Apply each fix precisely as described\n"
+            f"3. If any fix CANNOT be applied cleanly (ambiguous, file "
+            f"changed, multiple valid approaches), DO NOT attempt it — "
+            f"instead append it to `{cat_b_path}` for architect review\n"
+            f"4. Verify by running the specific test files you changed\n"
+            f"5. Write an execution log to `{done_path}` listing each fix "
+            f"attempted and its outcome (applied/skipped)"
+        ),
         tools=TOOLS_DEV,
         working_dir=working_dir,
         timeout=TIMEOUT_LONG,
-        model=_epic_model_for("epic_fix_cat_a"),
-        label="fix-cat-a",
+        model=_epic_model_for(model_key),
     )
 
-    logger.info("Category A fixes completed: success=%s", result.get("success"))
+    logger.info(
+        "%s Category A fixes completed: success=%s",
+        scope.prose_label, result.get("success"),
+    )
 
-    # Re-check if Category B items changed (fixes may have been appended)
     has_cat_b = state.get("has_category_b_items", False)
     if os.path.exists(cat_b_path):
         try:
@@ -1333,11 +1621,45 @@ def fix_category_a_node(state: EpicState) -> dict[str, Any]:
         except Exception:
             pass
 
-    _save_epic_phase(state, "epic_category_a")
     return {
         "category_a_fixes_applied": True,
         "has_category_b_items": has_cat_b,
-        "epic_files_modified": result.get("files_modified", []),
+        "files_modified": result.get("files_modified", []),
+    }
+
+
+def fix_category_a_node(state: EpicState) -> dict[str, Any]:
+    """Apply Category A (obvious) fixes immediately via dev agent.
+
+    Any fix that can't be applied cleanly gets appended to the
+    Category B file for architect review.
+    """
+    epic_num = state.get("epic_num", "")
+    scope = ReviewScope(epic_num=epic_num)
+    result = _fix_category_a(scope, state, model_key="epic_fix_cat_a")
+    _save_epic_phase(state, "epic_category_a")
+    if not result["category_a_fixes_applied"]:
+        return {"category_a_fixes_applied": False}
+    return {
+        "category_a_fixes_applied": True,
+        "has_category_b_items": result["has_category_b_items"],
+        "epic_files_modified": result["files_modified"],
+    }
+
+
+def fix_batch_category_a_node(state: EpicState) -> dict[str, Any]:
+    """Apply Category A fixes for the current mid-epic batch."""
+    epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    scope = ReviewScope(epic_num=epic_num, batch_num=batch_num)
+    result = _fix_category_a(scope, state, model_key="epic_batch_fix_cat_a")
+    _save_batch_phase(state, "fix_batch_category_a")
+    if not result["category_a_fixes_applied"]:
+        return {"category_a_fixes_applied": False}
+    return {
+        "category_a_fixes_applied": True,
+        "has_category_b_items": result["has_category_b_items"],
+        "epic_files_modified": result["files_modified"],
     }
 
 
@@ -1348,28 +1670,31 @@ def route_after_category_a(state: EpicState) -> str:
     return "no_category_b"
 
 
-def epic_architect_node(state: EpicState) -> dict[str, Any]:
-    """Architect reviews Category B items and produces fix plan.
+def _run_architect(
+    scope: ReviewScope,
+    state: EpicState,
+    *,
+    cat_b_path: str,
+    review_scope_label: str,
+    model_key: str,
+) -> dict[str, Any]:
+    """Architect reviews Category B items and produces a fix plan.
 
-    Invoked via Claude CLI with --model for explicit model control.
-    Also performs recurring pattern detection and CLAUDE.md updates.
+    Generic-keys helper. Returns ``{"fix_plan_path", "fixes_needed"}``;
+    wrappers translate to scope-specific state keys.
+
+    ``review_scope_label`` is the literal value placed in the YAML
+    front-matter ``review_scope`` field — ``"epic"`` for epic-end and
+    ``"batch"`` for mid-epic batch reviews.
     """
-    epic_num = state.get("epic_num", "")
     epic_name = state.get("epic_name", "")
-    cat_b_path = state.get(
-        "category_b_review_path",
-        _epic_artifact_path(
-            CATEGORY_B_REVIEW_FILENAME_TEMPLATE, epic_num, state.get("target_dir"),
-        ),
-    )
     working_dir = state.get("target_dir") or None
     timestamp = datetime.now(UTC).isoformat()
-
-    task_id = f"epic-{epic_num}-architect"
-    fix_plan_full = _epic_fix_plan_path(epic_num, working_dir)
+    task_id = f"{scope.label}-architect"
+    fix_plan_full = scope.artifact_path(FIX_PLAN_FILENAME_TEMPLATE, working_dir)
 
     prompt = (
-        f"You are the architect for Epic {epic_num} ({epic_name}).\n\n"
+        f"You are the architect for {scope.prose_label} ({epic_name}).\n\n"
         f"CRITICAL FIRST STEP: Read the project coding rules before evaluating:\n"
         f"- CLAUDE.md (project root)\n"
         f"- _bmad-output/planning-artifacts/coding-standards.md\n"
@@ -1391,7 +1716,7 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
         f"task_id: {task_id}\n"
         f"timestamp: {timestamp}\n"
         f"input_files: [{cat_b_path}]\n"
-        f"review_scope: epic\n"
+        f"review_scope: {review_scope_label}\n"
         f"fixes_needed: true/false\n"
         f"---\n\n"
         f"# Epic Fix Plan\n\n"
@@ -1422,7 +1747,6 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
         f"existing rules in CLAUDE.md or coding-standards.md.\n"
     )
 
-    # Architect tools: can read everything, write fix plan + CLAUDE.md
     architect_tools = "Read,Write,Edit,Glob,Grep,Task,TodoWrite"
 
     result = invoke_claude_cli(
@@ -1430,11 +1754,14 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
         tools=architect_tools,
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
-        model=_epic_model_for("epic_architect"),
+        model=_epic_model_for(model_key),
         label="architect",
     )
 
-    logger.info("Epic Architect completed: success=%s", result.get("success"))
+    logger.info(
+        "%s Architect completed: success=%s",
+        scope.prose_label, result.get("success"),
+    )
 
     # Decide whether the fix node should run. Skip only if BOTH signals
     # agree there's nothing to do: the front-matter flag AND the approved
@@ -1447,19 +1774,69 @@ def epic_architect_node(state: EpicState) -> dict[str, Any]:
             flag, approved_count = _parse_fix_plan(content)
             fixes_needed = flag and approved_count > 0
             logger.info(
-                "Epic %s fix plan parsed: flag=%s approved_fixes=%d -> fixes_needed=%s",
-                epic_num, flag, approved_count, fixes_needed,
+                "%s fix plan parsed: flag=%s approved_fixes=%d -> fixes_needed=%s",
+                scope.prose_label, flag, approved_count, fixes_needed,
             )
         except Exception:
             logger.exception("Failed to parse fix plan at %s", fix_plan_full)
     else:
         logger.warning("Architect did not write fix plan at %s", fix_plan_full)
 
+    return {"fix_plan_path": fix_plan_full, "fixes_needed": fixes_needed}
+
+
+def epic_architect_node(state: EpicState) -> dict[str, Any]:
+    """Architect reviews Category B items and produces fix plan.
+
+    Invoked via Claude CLI with --model for explicit model control.
+    Also performs recurring pattern detection and CLAUDE.md updates.
+    """
+    epic_num = state.get("epic_num", "")
+    scope = ReviewScope(epic_num=epic_num)
+    cat_b_path = state.get(
+        "category_b_review_path",
+        scope.artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, state.get("target_dir")),
+    )
+    result = _run_architect(
+        scope, state,
+        cat_b_path=cat_b_path,
+        review_scope_label="epic",
+        model_key="epic_architect",
+    )
     _save_epic_phase(state, "epic_architect")
     return {
-        "epic_fix_plan_path": fix_plan_full,
-        "epic_fixes_needed": fixes_needed,
+        "epic_fix_plan_path": result["fix_plan_path"],
+        "epic_fixes_needed": result["fixes_needed"],
     }
+
+
+def batch_architect_node(state: EpicState) -> dict[str, Any]:
+    """Architect reviews mid-epic batch Category B items and produces fix plan."""
+    epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    scope = ReviewScope(epic_num=epic_num, batch_num=batch_num)
+    cat_b_path = state.get(
+        "category_b_review_path",
+        scope.artifact_path(CATEGORY_B_REVIEW_FILENAME_TEMPLATE, state.get("target_dir")),
+    )
+    result = _run_architect(
+        scope, state,
+        cat_b_path=cat_b_path,
+        review_scope_label="batch",
+        model_key="epic_batch_architect",
+    )
+    _save_batch_phase(state, "batch_architect")
+    return {
+        "batch_fix_plan_path": result["fix_plan_path"],
+        "batch_fixes_needed": result["fixes_needed"],
+    }
+
+
+def route_after_batch_architect(state: EpicState) -> str:
+    """Route after the batch architect: skip fix step if no approved fixes."""
+    if state.get("batch_fixes_needed", False):
+        return "needs_fix"
+    return "no_fix"
 
 
 def route_after_epic_architect(state: EpicState) -> str:
@@ -1469,59 +1846,126 @@ def route_after_epic_architect(state: EpicState) -> str:
     return "no_fix"
 
 
-def epic_fix_node(state: EpicState) -> dict[str, Any]:
-    """Apply architect-approved fixes via dev agent (Claude CLI)."""
-    epic_num = state.get("epic_num", "")
+def _apply_architect_fix(
+    scope: ReviewScope,
+    state: EpicState,
+    *,
+    fix_plan_path: str,
+    model_key: str,
+) -> dict[str, Any]:
+    """Apply architect-approved fixes via BMAD dev agent.
+
+    Generic-keys helper. Returns ``{"files_modified"}``; wrappers
+    translate to scope-specific state keys.
+    """
     working_dir = state.get("target_dir") or None
-    fix_plan_path = (
-        state.get("epic_fix_plan_path")
-        or _epic_fix_plan_path(epic_num, working_dir)
-    )
-    epic_fix_cycle = state.get("epic_fix_cycle", 0)
-    last_output = state.get("epic_last_ci_output", "")
-
-    prompt = (
-        f"You are a dev agent applying architect-approved fixes.\n\n"
-        f"CRITICAL FIRST STEP: Read CLAUDE.md and "
-        f"_bmad-output/planning-artifacts/coding-standards.md.\n\n"
-        f"FILE EDITING RULES:\n"
-        f"- Use the Edit tool for all file modifications. It handles every "
-        f"path, including paths with brackets like `[projectId]`.\n"
-        f"- If Edit returns an error (e.g. old_string not found or not "
-        f"unique), the file has likely changed since you last read it. "
-        f"Re-Read the file, then retry Edit with the fresh content.\n"
-        f"- Never shell out to edit files (no sed/tee/cat/powershell/node "
-        f"writes). Always Edit or Write.\n\n"
-        f"1. Read the fix plan at `{fix_plan_path}`\n"
-        f"2. For each approved fix: read the target file, make the surgical edit, verify\n"
-        f"3. Do NOT attempt any fixes not in the plan — scope discipline is critical\n"
-        f"4. Verify by running ONLY the specific test files you changed "
-        f"(e.g. `npx vitest run src/path/to/file.test.ts`). Do NOT run "
-        f"the full test suite — the pipeline runs full CI separately. "
-        f"If a test times out, report it and move on.\n"
+    deferred_path = os.path.join(
+        working_dir or ".", DEFERRED_WORK_RELATIVE_PATH,
     )
 
-    if epic_fix_cycle > 0 and last_output:
-        prompt += (
-            f"\nThis is fix cycle {epic_fix_cycle + 1}. Previous CI output:\n"
-            f"```\n{last_output[:3000]}\n```\n"
-            f"Focus on fixing the failures.\n"
-        )
-
-    result = invoke_claude_cli(
-        prompt=prompt,
+    result = invoke_bmad_agent(
+        bmad_agent="bmad-agent-dev",
+        command=(
+            f"Apply architect-approved fixes as follows:\n"
+            f"1. Read the fix plan at `{fix_plan_path}`\n"
+            f"2. For each approved fix: read the target file, make the "
+            f"surgical edit, verify\n"
+            f"3. If a fix CANNOT be applied cleanly (ambiguous, file changed "
+            f"under you, multiple valid approaches, or you discover a reason "
+            f"the architect's approach won't work), DO NOT force it. Append "
+            f"an entry to `{deferred_path}` describing the fix you were "
+            f"asked to make, why you couldn't apply it, and any partial "
+            f"context that would help the next reviewer. Use the existing "
+            f"BMAD format: `## Deferred from: {scope.label} fix-architect "
+            f"(YYYY-MM-DD)` header, then `- **<short title>**: <explanation>` "
+            f"bullet for each deferred item.\n"
+            f"4. Do NOT attempt any fixes not in the plan — scope discipline "
+            f"is critical\n"
+            f"5. Verify by running the specific test files you changed"
+        ),
         tools=TOOLS_DEV,
         working_dir=working_dir,
         timeout=TIMEOUT_LONG,
-        model=_epic_model_for("epic_fix_dev"),
-        label="fix-architect",
+        model=_epic_model_for(model_key),
     )
 
-    logger.info("Epic Fix Dev completed: success=%s", result.get("success"))
+    logger.info(
+        "%s Fix Dev completed: success=%s",
+        scope.prose_label, result.get("success"),
+    )
+    return {"files_modified": result.get("files_modified", [])}
 
+
+def epic_fix_node(state: EpicState) -> dict[str, Any]:
+    """Apply architect-approved fixes via BMAD dev agent."""
+    epic_num = state.get("epic_num", "")
+    scope = ReviewScope(epic_num=epic_num)
+    working_dir = state.get("target_dir") or None
+    fix_plan_path = (
+        state.get("epic_fix_plan_path")
+        or scope.artifact_path(FIX_PLAN_FILENAME_TEMPLATE, working_dir)
+    )
+    result = _apply_architect_fix(
+        scope, state, fix_plan_path=fix_plan_path, model_key="epic_fix_dev",
+    )
     _save_epic_phase(state, "epic_fix")
+    return {"epic_files_modified": result["files_modified"]}
+
+
+def batch_fix_node(state: EpicState) -> dict[str, Any]:
+    """Apply architect-approved fixes for the current mid-epic batch."""
+    epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    scope = ReviewScope(epic_num=epic_num, batch_num=batch_num)
+    working_dir = state.get("target_dir") or None
+    fix_plan_path = (
+        state.get("batch_fix_plan_path")
+        or scope.artifact_path(FIX_PLAN_FILENAME_TEMPLATE, working_dir)
+    )
+    result = _apply_architect_fix(
+        scope, state,
+        fix_plan_path=fix_plan_path,
+        model_key="epic_batch_fix_dev",
+    )
+    _save_batch_phase(state, "batch_fix")
+    return {"epic_files_modified": result["files_modified"]}
+
+
+def _run_full_ci(
+    state: EpicState, *, scope_hint: str, audit_label: str,
+) -> dict[str, Any]:
+    """Run full CI with auto-fix retry loop. Generic-keys helper.
+
+    Returns ``{"test_passed", "last_ci_output", "files_modified"}``.
+    Wrappers translate to scope-prefixed state keys.
+    """
+    working_dir = state.get("target_dir") or None
+    session_id = state.get("session_id", "")
+
+    _ensure_migrations(working_dir)
+    ci_command = resolve_ci_command(working_dir, story_id=None)
+
+    result = invoke_ci_with_fix(
+        ci_command=ci_command,
+        working_dir=working_dir,
+        max_attempts=4,
+        scope_hint=scope_hint,
+        fix_pre_existing=get_fix_pre_existing(),
+        bash_timeout=get_epic_ci_bash_timeout(),
+    )
+
+    passed = result.get("passed", False)
+    audit = get_logger(session_id)
+    if audit:
+        audit.log_bash(
+            f"{audit_label} ({result.get('attempts', 0)} attempts)",
+            "PASS" if passed else "FAIL",
+        )
+
     return {
-        "epic_files_modified": result.get("files_modified", []),
+        "test_passed": passed,
+        "last_ci_output": result.get("ci_output", ""),
+        "files_modified": result.get("files_modified", []),
     }
 
 
@@ -1531,50 +1975,67 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
     Uses resolve_ci_command() with no story_id so the full CI pipeline
     runs (lint + typecheck + all tests), not just the test suite.
     """
-    working_dir = state.get("target_dir") or None
-    session_id = state.get("session_id", "")
-
-    # Pre-CI: ensure migrations are up to date
-    _ensure_migrations(working_dir)
-
-    # Full CI (no story scoping) via the same fallback chain as per-story
-    ci_command = resolve_ci_command(working_dir, story_id=None)
-
     epic_num = state.get("epic_num", "")
-    result = invoke_ci_with_fix(
-        ci_command=ci_command,
-        working_dir=working_dir,
-        max_attempts=4,
-        scope_hint=f"epic {epic_num}" if epic_num else "",
-        fix_pre_existing=get_fix_pre_existing(),
-        bash_timeout=get_epic_ci_bash_timeout(),
+    scope = ReviewScope(epic_num=epic_num)
+    # scope_hint and audit_label kept in legacy form (``epic {N}``,
+    # ``epic CI``) to preserve byte-identical CI-fix prompts and
+    # audit log entries for the epic-end pipeline.
+    result = _run_full_ci(
+        state,
+        scope_hint=f"epic {scope.epic_num}" if scope.epic_num else "",
+        audit_label="epic CI",
     )
-
-    passed = result.get("passed", False)
-    audit = get_logger(session_id)
-    if audit:
-        audit.log_bash(
-            f"epic CI ({result.get('attempts', 0)} attempts)",
-            "PASS" if passed else "FAIL",
-        )
-
-    if passed:
+    if result["test_passed"]:
         _save_epic_phase(state, "epic_ci")
-
     return {
-        "epic_test_passed": passed,
-        "epic_last_ci_output": result.get("ci_output", ""),
-        "epic_files_modified": result.get("files_modified", []),
+        "epic_test_passed": result["test_passed"],
+        "epic_last_ci_output": result["last_ci_output"],
+        "epic_files_modified": result["files_modified"],
     }
 
 
-def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
-    """Git add + commit for the completed epic."""
+def batch_ci_node(state: EpicState) -> dict[str, Any]:
+    """Run full CI for the current mid-epic batch."""
     epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    scope = ReviewScope(epic_num=epic_num, batch_num=batch_num)
+    result = _run_full_ci(
+        state,
+        scope_hint=scope.prose_label,
+        audit_label=f"{scope.label} CI",
+    )
+    updates: dict[str, Any] = {
+        "batch_test_passed": result["test_passed"],
+        "batch_last_ci_output": result["last_ci_output"],
+        "epic_files_modified": result["files_modified"],
+    }
+    # On failure, signal the halt path. ``epic_halt_node`` keys off
+    # ``current_story_failed_phase`` to render a scope-specific halt
+    # message; setting it to ``batch_ci`` lets the operator-facing
+    # message read "Epic 6 batch 2 CI failed" instead of the generic
+    # story-level "phase=run_ci failed".
+    if not result["test_passed"]:
+        updates["current_story_failed_phase"] = "batch_ci"
+        updates["current_story_error"] = (
+            result["last_ci_output"][-2000:] if result["last_ci_output"] else ""
+        )
+    else:
+        _save_batch_phase(state, "batch_ci")
+    return updates
+
+
+def _commit_review_fixes(
+    state: EpicState, *, commit_message: str, audit_label: str,
+) -> bool:
+    """Stage and commit review-driven changes. Returns True on success.
+
+    Shared by both the epic-end and mid-epic-batch commit nodes. The
+    ``commit_message`` and ``audit_label`` are scope-specific and
+    chosen by the caller — the helper stays format-agnostic so each
+    wrapper can preserve its own byte-level conventions.
+    """
     working_dir = state.get("target_dir") or None
     session_id = state.get("session_id", "")
-    message = f"epic {epic_num} code review fixes"
-
     cwd = working_dir or "."
 
     # Remove stale index.lock
@@ -1589,7 +2050,7 @@ def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
             ["npx", "prettier", "--write", "."], cwd=working_dir, timeout=120,
         )
         if fmt_ok:
-            print("    [epic_git_commit] prettier --write applied")
+            print(f"    [{audit_label}] prettier --write applied")
         else:
             logger.warning("prettier --write failed (non-blocking): %s", fmt_out[:200])
 
@@ -1598,20 +2059,76 @@ def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
         # --no-verify skips target-repo pre-commit hooks; factory's run_ci with
         # fix_ci retry is the enforcement layer. Hooks exist for human/IDE commits.
         commit_ok, commit_out = _run_bash(
-            ["git", "commit", "--no-verify", "-m", message], cwd=working_dir
+            ["git", "commit", "--no-verify", "-m", commit_message], cwd=working_dir,
         )
 
     audit = get_logger(session_id)
     if audit:
-        audit.log_bash("git commit (epic)", "PASS" if commit_ok else "FAIL")
+        audit.log_bash(audit_label, "PASS" if commit_ok else "FAIL")
 
     if not commit_ok:
-        logger.warning("Epic git commit failed: %s", commit_out[:200])
+        logger.warning("%s failed: %s", audit_label, commit_out[:200])
 
+    return commit_ok
+
+
+def epic_git_commit_node(state: EpicState) -> dict[str, Any]:
+    """Git add + commit for the completed epic."""
+    epic_num = state.get("epic_num", "")
+    scope = ReviewScope(epic_num=epic_num)
+    # Commit message kept as ``epic {N} code review fixes`` (lowercase,
+    # space-separated) to preserve byte-identical git history for the
+    # epic-end pipeline.
+    commit_ok = _commit_review_fixes(
+        state,
+        commit_message=f"epic {scope.epic_num} code review fixes",
+        audit_label="git commit (epic)",
+    )
     if commit_ok:
         _save_epic_phase(state, "epic_git_commit")
-
     return {}
+
+
+def batch_commit_node(state: EpicState) -> dict[str, Any]:
+    """Git add + commit for a completed mid-epic batch.
+
+    Resets ``stories_in_current_batch`` and ``current_batch_story_ids``
+    so the next batch starts counting fresh. ``batch_num`` keeps its
+    monotonic value so subsequent batch artifacts get unique
+    ``epic-{N}-batch-{B+1}`` labels. Clears ``batch-phase.json`` so the
+    next resume after a clean batch doesn't try to re-enter the batch
+    pipeline.
+    """
+    epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    scope = ReviewScope(epic_num=epic_num, batch_num=batch_num)
+    working_dir = state.get("target_dir") or "."
+    _commit_review_fixes(
+        state,
+        commit_message=f"{scope.label} code review fixes",
+        audit_label=f"git commit ({scope.label})",
+    )
+    clear_batch_phase_checkpoint(working_dir)
+    return {
+        "stories_in_current_batch": 0,
+        "current_batch_story_ids": [],
+    }
+
+
+def route_after_batch_ci(state: EpicState) -> str:
+    """Route after batch CI: pass → batch_commit, fail → halt the epic.
+
+    A batch-level CI failure means the architect-driven fixes for this
+    batch couldn't get the codebase green even after retries. The
+    operator gets the same halt-and-resume semantics as story-level
+    halt: the working tree's uncommitted batch-fix attempts stay in
+    place, and resume re-enters at ``batch_ci`` to verify a manual fix
+    landed. Step 12 in Group 4 will refine the halt message; for now
+    we route to the existing ``epic_halt`` node.
+    """
+    if state.get("batch_test_passed", False):
+        return "pass"
+    return "halt"
 
 
 def route_after_epic_ci(state: EpicState) -> str:
@@ -1637,6 +2154,21 @@ _EPIC_RESUME_TARGETS = {
     "epic_git_commit": "epic_git_commit",
 }
 
+# Map of batch-phase next-step name (from batch-phase.json's
+# ``next_phase`` field) → target node in the epic graph. ``batch_review``
+# is deliberately absent — like ``epic_reviews`` above, the review
+# step's atomic recovery is "re-run the batch from prepare_batch_review".
+# After ``batch_review`` completes, every later phase is recoverable
+# in place.
+_BATCH_RESUME_TARGETS = {
+    "analyze_batch_review": "analyze_batch_review",
+    "fix_batch_category_a": "fix_batch_category_a",
+    "batch_architect": "batch_architect",
+    "batch_fix": "batch_fix",
+    "batch_ci": "batch_ci",
+    "batch_commit": "batch_commit",
+}
+
 
 def _save_epic_phase(state: EpicState, phase: str) -> None:
     """Save an epic phase-level checkpoint after successful completion."""
@@ -1647,26 +2179,45 @@ def _save_epic_phase(state: EpicState, phase: str) -> None:
         save_epic_phase_checkpoint(session_id, working_dir, epic_num, phase)
 
 
+def _save_batch_phase(state: EpicState, phase: str) -> None:
+    """Save a mid-epic batch phase checkpoint after successful completion."""
+    session_id = state.get("session_id", "")
+    epic_num = state.get("epic_num", "")
+    batch_num = state.get("batch_num", 0)
+    working_dir = state.get("target_dir") or "."
+    if session_id and epic_num and batch_num:
+        save_batch_phase_checkpoint(
+            session_id, working_dir, epic_num, batch_num, phase,
+        )
+
+
 def route_on_epic_entry(state: EpicState) -> str:
-    """Route from START based on any epic-phase resume hint.
+    """Route from START based on any phase-resume hint.
 
-    When run_epic_node loaded a matching epic-phase.json, it sets
-    resume_from_epic_phase to the next phase to run. Jump directly
-    to the corresponding node, bypassing the story loop and any
-    earlier post-processing phases.
-
-    When no phase hint is present, check whether the incoming
-    story_index is already past the end of the stories list — the
-    save-side writes ``story_index + 1`` after every story, so a
-    session paused immediately after the last story of an epic
-    comes back with story_index == len(stories). Entering
-    select_story in that state crashes on ``stories[story_index]``
-    (IndexError). Route to prepare_epic_reviews instead: the story
-    loop is already complete, post-processing either never started
-    or wasn't saved, and re-running it is the correct recovery.
-
-    Fall through to select_story for the normal entry.
+    Resolution order:
+      1. Mid-epic batch resume (``resume_from_batch_phase``): a halt
+         inside a batch must finish that batch before the epic-end
+         review runs. Takes precedence over the epic-phase resume.
+      2. Epic-end resume (``resume_from_epic_phase``): jump past the
+         story loop and earlier post-processing phases.
+      3. Story-loop boundary check: if the incoming story_index is
+         already past the end of the stories list (the save-side writes
+         ``story_index + 1`` after every story, so a session paused
+         immediately after the last story of an epic comes back with
+         story_index == len(stories)), route to prepare_epic_reviews —
+         the story loop is already complete and re-running
+         post-processing is the correct recovery.
+      4. Fall through to ``select_story`` for the normal entry.
     """
+    batch_phase = state.get("resume_from_batch_phase", "")
+    batch_target = _BATCH_RESUME_TARGETS.get(batch_phase)
+    if batch_target:
+        print(
+            f"\n>>> [route_on_epic_entry] Batch phase-resume: "
+            f"jumping to {batch_target}",
+        )
+        return batch_target
+
     phase = state.get("resume_from_epic_phase", "")
     target = _EPIC_RESUME_TARGETS.get(phase)
     if target:
@@ -1725,7 +2276,18 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
         → (failed) → END (aborted)
         → (success) → advance_story → route
             → more_stories → select_story
+            → batch_boundary → prepare_batch_review (mid-epic batch path)
             → epic_done → prepare_epic_reviews
+
+    Mid-epic batch path (Group 3):
+    prepare_batch_review → batch_review (single BMAD reviewer) →
+    analyze_batch_review → fix_batch_category_a → route
+        → has_category_b → batch_architect → route
+            → needs_fix → batch_fix → batch_ci → route
+                → pass → batch_commit → select_story (resume loop)
+                → halt → epic_halt → END
+            → no_fix → batch_ci
+        → no_category_b → batch_ci
 
     Epic post-processing (after all stories):
     prepare_epic_reviews → epic_review (×2 parallel, BMAD + Claude) →
@@ -1763,6 +2325,16 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_node("epic_error", epic_error_node)
     graph.add_node("epic_complete", epic_complete_node)
 
+    # --- Mid-epic batch nodes (Group 3) ---
+    graph.add_node("prepare_batch_review", prepare_batch_review_node)
+    graph.add_node("batch_review", batch_review_node)
+    graph.add_node("analyze_batch_review", analyze_batch_review_node)
+    graph.add_node("fix_batch_category_a", fix_batch_category_a_node)
+    graph.add_node("batch_architect", batch_architect_node)
+    graph.add_node("batch_fix", batch_fix_node)
+    graph.add_node("batch_ci", batch_ci_node)
+    graph.add_node("batch_commit", batch_commit_node)
+
     # --- Story loop edges ---
     # Entry: if run_epic_node loaded a matching epic-phase.json, jump
     # directly to the next unfinished post-processing phase, skipping
@@ -1784,6 +2356,13 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
             "epic_fix": "epic_fix",
             "epic_ci": "epic_ci",
             "epic_git_commit": "epic_git_commit",
+            # Batch-pipeline resume targets (Group 4 / Step 11)
+            "analyze_batch_review": "analyze_batch_review",
+            "fix_batch_category_a": "fix_batch_category_a",
+            "batch_architect": "batch_architect",
+            "batch_fix": "batch_fix",
+            "batch_ci": "batch_ci",
+            "batch_commit": "batch_commit",
         },
     )
     graph.add_edge("select_story", "run_story")
@@ -1801,6 +2380,7 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
         route_next_story,
         {
             "more_stories": "select_story",
+            "batch_boundary": "prepare_batch_review",
             "epic_done": "prepare_epic_reviews",
             "paused": "epic_paused",
         },
@@ -1843,6 +2423,40 @@ def build_epic_graph() -> StateGraph:  # type: ignore[type-arg]
     graph.add_edge("epic_git_commit", "epic_complete")
     graph.add_edge("epic_complete", END)
     graph.add_edge("epic_error", END)
+
+    # --- Mid-epic batch edges (Group 3) ---
+    graph.add_edge("prepare_batch_review", "batch_review")
+    graph.add_edge("batch_review", "analyze_batch_review")
+    graph.add_edge("analyze_batch_review", "fix_batch_category_a")
+
+    # Same router shape as epic-end (returns "has_category_b" /
+    # "no_category_b"), but the edge map points at the batch-pipeline
+    # counterparts.
+    graph.add_conditional_edges(
+        "fix_batch_category_a",
+        route_after_category_a,
+        {"has_category_b": "batch_architect", "no_category_b": "batch_ci"},
+    )
+
+    graph.add_conditional_edges(
+        "batch_architect",
+        route_after_batch_architect,
+        {"needs_fix": "batch_fix", "no_fix": "batch_ci"},
+    )
+
+    graph.add_edge("batch_fix", "batch_ci")
+
+    # Pass → commit and resume the story loop. Halt → epic_halt
+    # (Step 12 in Group 4 will refine the halt message to read "Epic 6
+    # batch 2 CI failed" instead of "Epic 6 run_ci failed").
+    graph.add_conditional_edges(
+        "batch_ci",
+        route_after_batch_ci,
+        {"pass": "batch_commit", "halt": "epic_halt"},
+    )
+
+    # After committing the batch, resume the story loop.
+    graph.add_edge("batch_commit", "select_story")
 
     return graph
 

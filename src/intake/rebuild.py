@@ -233,11 +233,23 @@ def _run_rebuild_core(
             initial_state["resume_story_results"] = resume_data.get(
                 "resume_story_results", [],
             )
+            initial_state["resume_stories_in_current_batch"] = resume_data.get(
+                "resume_stories_in_current_batch", 0,
+            )
+            initial_state["resume_current_batch_story_ids"] = resume_data.get(
+                "resume_current_batch_story_ids", [],
+            )
+            initial_state["resume_batch_num"] = resume_data.get(
+                "resume_batch_num", 0,
+            )
             logger.info(
-                "Resume state loaded: starting at epic %d, story %d, %d stories already done",
+                "Resume state loaded: starting at epic %d, story %d, "
+                "%d stories already done, batch_num=%d, batch_count=%d",
                 initial_state["resume_epic_index"] + 1,
                 initial_state["resume_story_index"] + 1,
                 initial_state["resume_stories_completed"],
+                initial_state["resume_batch_num"],
+                initial_state["resume_stories_in_current_batch"],
             )
         else:
             logger.info("No resume state found — starting from the beginning.")
