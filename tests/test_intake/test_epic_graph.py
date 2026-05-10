@@ -9,6 +9,7 @@ import pytest
 
 from src.intake.epic_graph import (
     EpicState,
+    _compose_task_id,
     advance_story_node,
     analyze_reviews_node,
     batch_commit_node,
@@ -92,10 +93,13 @@ class TestProcessStoryResultNode:
     def test_completed_story_increments_batch_counter(self) -> None:
         # Only completed stories count toward the batch trigger — failed
         # stories' work is uncommitted, so there's nothing to review.
+        # ``story_id`` is in the realistic ``load_backlog`` form (already
+        # epic-prefixed) — the _compose_task_id helper detects this and
+        # avoids the doubled-prefix "6-6-3" bug.
         state: EpicState = {
             "epic_num": "6",
             "epic_name": "Auth",
-            "stories": [{"story_id": "3", "story_name": "Login"}],
+            "stories": [{"story_id": "6-3", "story_name": "Login"}],
             "story_index": 0,
             "current_story_status": "completed",
             "stories_completed": 0,
@@ -136,6 +140,37 @@ class TestAdvanceStoryNode:
 # ---------------------------------------------------------------------------
 # Routing tests
 # ---------------------------------------------------------------------------
+
+
+class TestComposeTaskId:
+    """_compose_task_id idempotently combines epic_num + story_id.
+
+    Regression: load_backlog stores story_id as ``"7-1"`` (already
+    epic-prefixed), so a naive ``f"{epic_num}-{story_id}"`` produced
+    ``"7-7-1"`` in the BMAD reviewer's input_stories list during the
+    first PawprintRecipes batch review on 2026-05-09.
+    """
+
+    def test_already_prefixed_returns_unchanged(self) -> None:
+        # The realistic load_backlog case
+        assert _compose_task_id("7", "7-1") == "7-1"
+        assert _compose_task_id("11", "11-3") == "11-3"
+
+    def test_unprefixed_gets_prefix(self) -> None:
+        # Defensive: if a caller hands a bare story_id, still works
+        assert _compose_task_id("7", "1") == "7-1"
+        assert _compose_task_id("6", "3") == "6-3"
+
+    def test_empty_epic_num_returns_story_id(self) -> None:
+        assert _compose_task_id("", "1") == "1"
+        assert _compose_task_id("", "7-1") == "7-1"
+
+    def test_does_not_match_partial_epic_prefix(self) -> None:
+        # Epic 1 should NOT match a story_id starting with "11-" — the
+        # check is `startswith(f"{epic_num}-")` so the trailing dash
+        # disambiguates "1-" vs "11-".
+        assert _compose_task_id("1", "11-3") == "1-11-3"
+        assert _compose_task_id("11", "1-3") == "11-1-3"
 
 
 class TestRouteAfterStoryResult:

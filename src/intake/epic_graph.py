@@ -532,7 +532,7 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
     # the task_ids of completed stories pending review; both fields are
     # reset in ``batch_commit_node`` after a batch fires.
     if status == "completed":
-        task_id = f"{epic_num}-{story_id}" if epic_num else story_id
+        task_id = _compose_task_id(epic_num, story_id)
         prior_count = state.get("stories_in_current_batch", 0)
         prior_ids = state.get("current_batch_story_ids", [])
         updates["stories_in_current_batch"] = prior_count + 1
@@ -561,7 +561,7 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
         post_batch_count = state.get("stories_in_current_batch", 0)
         post_batch_ids = list(state.get("current_batch_story_ids", []))
         if status == "completed":
-            task_id = f"{epic_num}-{story_id}" if epic_num else story_id
+            task_id = _compose_task_id(epic_num, story_id)
             post_batch_count += 1
             post_batch_ids.append(task_id)
 
@@ -699,6 +699,26 @@ def route_after_story_result(state: EpicState) -> str:
     return "next_story"
 
 
+def _compose_task_id(epic_num: str, story_id: str) -> str:
+    """Canonicalize ``{epic_num}-{story_id}`` while staying idempotent.
+
+    ``load_backlog`` (in :mod:`src.intake.backlog`) already stores
+    ``story_id`` in dotted ``{epic}-{N}`` form (e.g. ``"7-1"``), so a
+    naive ``f"{epic_num}-{story_id}"`` produces ``"7-7-1"`` — visible
+    in the BMAD reviewer's ``input_stories:`` YAML frontmatter as
+    duplicated epic prefixes.
+
+    Detect the already-prefixed case and return ``story_id`` unchanged
+    in that case. Empty ``epic_num`` falls through to ``story_id`` as
+    well, preserving the prior behavior of every call site.
+    """
+    if not epic_num:
+        return story_id
+    if story_id.startswith(f"{epic_num}-"):
+        return story_id
+    return f"{epic_num}-{story_id}"
+
+
 def route_next_story(state: EpicState) -> str:
     """Route to next story, epic post-processing, batch review, or pause.
 
@@ -829,7 +849,7 @@ def _doc_only_task_ids(
         if _SPIKE_TITLE_RE.search(name) or _POLISH_TITLE_RE.search(name):
             sid = s.get("story_id", "")
             if sid:
-                excluded.add(f"{epic_num}-{sid}")
+                excluded.add(_compose_task_id(epic_num, sid))
     return excluded
 
 
@@ -861,7 +881,7 @@ def prepare_epic_reviews_node(state: EpicState) -> dict[str, Any]:
         sid = s.get("story_id", "")
         if not sid:
             continue
-        task_id = f"{scope.epic_num}-{sid}"
+        task_id = _compose_task_id(scope.epic_num, sid)
         if task_id in excluded:
             continue
         in_scope.append({
@@ -915,7 +935,7 @@ def prepare_batch_review_node(state: EpicState) -> dict[str, Any]:
         sid = s.get("story_id", "")
         if not sid:
             continue
-        task_id = f"{epic_num}-{sid}" if epic_num else sid
+        task_id = _compose_task_id(epic_num, sid)
         by_task_id[task_id] = {
             "story_id": sid,
             "story_name": s.get("story_name", ""),
