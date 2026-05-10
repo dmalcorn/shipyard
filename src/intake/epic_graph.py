@@ -443,6 +443,19 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
     story_id = story_entry.get("story_id", "")
     story_name = story_entry.get("story_name", "")
 
+    # Spike (doc-only first story) and integration-polish (last story)
+    # do NOT count toward the batch trigger. Their inclusion in the
+    # batch reviewer's input set risks framing the entire review as a
+    # documentation pass rather than a code-diff pass — observed Epic 7
+    # batch-1 on 2026-05-09: spike's `safety-conventions.md` was the
+    # first file the reviewer loaded, all 11 findings landed on the
+    # spec, zero on actual code. Same exclusion regex used by
+    # ``_doc_only_task_ids`` for the epic-end reviewer.
+    is_doc_only = bool(
+        _SPIKE_TITLE_RE.search(story_name)
+        or _POLISH_TITLE_RE.search(story_name)
+    )
+
     stories_completed = state.get("stories_completed", 0)
     stories_failed = state.get("stories_failed", 0)
 
@@ -528,10 +541,12 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
 
     # Batch counter: only completed stories count toward a batch. A
     # failed story's dev work is uncommitted, so there's nothing for a
-    # batch reviewer to look at. ``current_batch_story_ids`` accumulates
-    # the task_ids of completed stories pending review; both fields are
+    # batch reviewer to look at. Spike/polish stories (``is_doc_only``)
+    # also don't count — see the ``is_doc_only`` definition above for
+    # rationale. ``current_batch_story_ids`` accumulates the task_ids
+    # of countable completed stories pending review; both fields are
     # reset in ``batch_commit_node`` after a batch fires.
-    if status == "completed":
+    if status == "completed" and not is_doc_only:
         task_id = _compose_task_id(epic_num, story_id)
         prior_count = state.get("stories_in_current_batch", 0)
         prior_ids = state.get("current_batch_story_ids", [])
@@ -560,7 +575,7 @@ def process_story_result_node(state: EpicState) -> dict[str, Any]:
         # to avoid double-counting on resume.
         post_batch_count = state.get("stories_in_current_batch", 0)
         post_batch_ids = list(state.get("current_batch_story_ids", []))
-        if status == "completed":
+        if status == "completed" and not is_doc_only:
             task_id = _compose_task_id(epic_num, story_id)
             post_batch_count += 1
             post_batch_ids.append(task_id)

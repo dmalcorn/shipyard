@@ -161,7 +161,7 @@ This keeps the existing bucket names internal (no churn in `analyze_reviews_node
 
 A batch boundary is detected after a story completes successfully (in `process_story_result_node`):
 
-- Increment `stories_in_current_batch` and append to `current_batch_story_ids` only when `current_story_status == "completed"`. Failed stories don't count toward the batch (their dev work is uncommitted; nothing to review).
+- Increment `stories_in_current_batch` and append to `current_batch_story_ids` only when `current_story_status == "completed"` AND the story is not a doc-only spike or integration-polish (regex match on `story_name` against `\bspike\b` / `\bintegration polish\b`, case-insensitive — same exclusion regex used by `_doc_only_task_ids` for epic-end review). Failed stories don't count (their dev work is uncommitted; nothing to review). Spike/polish don't count (they're documentation; including them in the batch reviewer's input set was observed to mis-frame the entire review as a documentation pass — see `prepare_batch_review_node` rationale below).
 - Fire the batch review when `stories_in_current_batch >= review.story_batch_size` AND there are stories remaining in the epic (i.e. don't fire a batch immediately before epic-end review — let the epic-end review cover the leftover stories).
 - Reset `stories_in_current_batch = 0` and `current_batch_story_ids = []` after the batch review pipeline completes.
 
@@ -279,7 +279,9 @@ Each per-node section below references its model key. The clone-and-rename topol
 
 #### `prepare_batch_review_node` (new function, reuses `prepare_epic_reviews_node` logic with scope)
 
-Builds the in-scope story list for the batch from `current_batch_story_ids`. **Does not** apply the doc-only / polish-story exclusion that epic-end uses — every story in the batch gets reviewed. The exclusion at epic-end exists because BMAD methodology marks first/last stories as spike + polish; that's an epic-shape concern, not a batch-shape one.
+Builds the in-scope story list for the batch from `current_batch_story_ids`. The exclusion of doc-only spike + integration-polish stories now happens **upstream** in `process_story_result_node` (see "Trigger logic" section): completed spike/polish stories don't bump the batch counter and don't enter `current_batch_story_ids` in the first place, so the list this node receives is already filtered.
+
+**Revised rationale (2026-05-09 post-Epic-7-batch-1 revision)** — the original design said batch reviews would NOT exclude spike/polish, on the grounds that "a batch is just N consecutive completed stories and has no special structural roles." That rationale was wrong. When Epic 7 batch-1 included Story 7-1 (the spike), the BMAD reviewer's first action was to load `safety-conventions.md` (the spike's own deliverable, a doc-only file), which framed the entire review as a documentation pass — all 11 findings landed on the spec, zero on actual code, no Hunter subagents spawned. Excluding doc-only stories from the batch counter sharpens the reviewer's frame to "code in stories N-M" and matches the proven epic-end behavior.
 
 Outputs: populates `batch_review_stories` (list of `{story_id, story_name, task_id}` dicts) on state.
 

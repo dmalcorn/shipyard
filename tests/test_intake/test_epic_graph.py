@@ -127,6 +127,73 @@ class TestProcessStoryResultNode:
         assert "stories_in_current_batch" not in result
         assert "current_batch_story_ids" not in result
 
+    def test_spike_completion_does_not_increment_batch_counter(self) -> None:
+        # Doc-only spike stories shouldn't count toward the batch
+        # trigger — including their task_ids in current_batch_story_ids
+        # mis-frames the batch reviewer (observed Epic 7 batch-1 on
+        # 2026-05-09: spike's `safety-conventions.md` was the first
+        # file the reviewer loaded, all 11 findings landed on the spec).
+        state: EpicState = {
+            "epic_num": "7",
+            "epic_name": "Safety & Toxic Ingredient Guardrails",
+            "stories": [{"story_id": "7-1", "story_name": "Safety Patterns Spike"}],
+            "story_index": 0,
+            "current_story_status": "completed",
+            "stories_completed": 0,
+            "stories_failed": 0,
+            "stories_in_current_batch": 0,
+            "current_batch_story_ids": [],
+        }
+        result = process_story_result_node(state)
+        # stories_completed still bumps (the global counter cares about
+        # all completions, not just countable ones)
+        assert result["stories_completed"] == 1
+        # But the batch counter does NOT bump
+        assert "stories_in_current_batch" not in result
+        assert "current_batch_story_ids" not in result
+
+    def test_polish_completion_does_not_increment_batch_counter(self) -> None:
+        state: EpicState = {
+            "epic_num": "7",
+            "epic_name": "Safety & Toxic Ingredient Guardrails",
+            "stories": [
+                {
+                    "story_id": "7-8",
+                    "story_name": "Integration Polish for safety browse + detail flow",
+                },
+            ],
+            "story_index": 0,
+            "current_story_status": "completed",
+            "stories_completed": 7,
+            "stories_failed": 0,
+            "stories_in_current_batch": 1,
+            "current_batch_story_ids": ["7-7"],
+        }
+        result = process_story_result_node(state)
+        assert result["stories_completed"] == 8
+        # Polish is the last story by convention; it doesn't increment
+        # the batch counter (route_next_story will see story_index >=
+        # len(stories) and route to epic_done before any batch fires).
+        assert "stories_in_current_batch" not in result
+        assert "current_batch_story_ids" not in result
+
+    def test_spike_match_is_case_insensitive(self) -> None:
+        # _SPIKE_TITLE_RE uses re.IGNORECASE, so "spike", "Spike",
+        # "SPIKE" all match. Sanity-check the path.
+        state: EpicState = {
+            "epic_num": "7",
+            "epic_name": "x",
+            "stories": [{"story_id": "7-1", "story_name": "Architecture spike outcomes"}],
+            "story_index": 0,
+            "current_story_status": "completed",
+            "stories_completed": 0,
+            "stories_failed": 0,
+            "stories_in_current_batch": 0,
+            "current_batch_story_ids": [],
+        }
+        result = process_story_result_node(state)
+        assert "stories_in_current_batch" not in result
+
 
 class TestAdvanceStoryNode:
     """advance_story_node increments index."""
