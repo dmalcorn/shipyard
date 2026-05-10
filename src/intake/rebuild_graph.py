@@ -830,9 +830,31 @@ def run_epic_node(state: RebuildState) -> dict[str, Any]:
             epic.get("epic_num", "?"),
             e,
         )
+        # An unhandled exception here means a crash inside the epic
+        # graph (e.g. a UnicodeEncodeError in select_story_node, an
+        # OSError on a checkpoint write, a langgraph internal error).
+        # The legacy behavior was to mark the epic ``failed`` and
+        # advance to the next epic — which on 2026-05-09 cascaded a
+        # single tee-induced encoding crash through 11 epics in 17
+        # seconds, advancing session.json to resume_epic_index=17 and
+        # silently destroying recoverable state.
+        #
+        # ``epic_status="paused"`` makes ``route_after_epic`` (in this
+        # same module) terminate the run cleanly so the operator gets a
+        # chance to investigate before any more state mutates. The
+        # halt message is printed prominently so it stands out among
+        # the captured stack trace above.
+        epic_num = epic.get("epic_num", "?")
+        halt_message = (
+            f"Epic {epic_num} graph crashed with an unhandled exception. "
+            f"Run halted to preserve state. Investigate the traceback "
+            f"above, fix the underlying issue, and resume."
+        )
+        print(f"\n*** HALT: {halt_message}")
+        print(f"    Exception: {type(e).__name__}: {str(e)[:500]}")
         result = {
-            "epic_status": "failed",
-            "error": str(e),
+            "epic_status": "paused",
+            "error": halt_message,
             "story_results": [],
             "stories_completed": 0,
             "stories_failed": 0,

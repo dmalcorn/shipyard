@@ -36,6 +36,15 @@ Write-Host "Resuming target: $Target"
 Write-Host "Console log:    $Log"
 Write-Host '------------------------------------------------------------'
 
+# Force Python's stdout/stderr to UTF-8 regardless of host locale. Without
+# this, when Tee-Object sits in the pipeline the Python interpreter sees a
+# non-TTY stdout and falls back to the system locale (cp1252 on Windows
+# English), which crashes on any non-ASCII output (box-drawing rules,
+# em-dashes, smart quotes). PYTHONUTF8=1 enables UTF-8 mode for the
+# whole interpreter; PYTHONIOENCODING=utf-8 is belt-and-suspenders.
+$env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONUTF8 = '1'
+
 # `2>&1` merges Python's stderr (logging) into stdout so Tee-Object captures
 # both streams. PowerShell 5.1 wraps native-exe stderr lines in
 # NativeCommandError, but Tee-Object still writes them to the file and

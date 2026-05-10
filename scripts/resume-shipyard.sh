@@ -47,6 +47,15 @@ echo "Resuming target: $TARGET"
 echo "Console log:    $LOG"
 echo "------------------------------------------------------------"
 
+# Force Python's stdout/stderr to UTF-8 regardless of the host locale.
+# Without this, on Windows + Git Bash the `tee` pipe demotes Python's
+# stdout encoding to cp1252 (the system locale), and any non-ASCII
+# character — box-drawing rules, em-dashes, smart quotes — crashes
+# the run with UnicodeEncodeError. PYTHONUTF8=1 forces UTF-8 mode for
+# the whole interpreter; PYTHONIOENCODING=utf-8 belt-and-suspenders.
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
+
 # `2>&1` merges stderr (Python logging) into stdout so the tee'd file has
 # the same chronological stream the operator sees in their terminal.
 # `set -o pipefail` makes the script's exit code reflect Python's, not tee's.

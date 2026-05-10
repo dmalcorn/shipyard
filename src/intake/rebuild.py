@@ -53,7 +53,23 @@ class _RelayWriter(io.TextIOBase):
         self._original = original
 
     def write(self, text: str) -> int:
-        self._original.write(text)
+        # Encode-safe forward to original stdout. On Windows when Python
+        # is invoked with a piped stdout (under `tee`, redirection, or
+        # subprocess capture), the underlying stream's encoding falls
+        # back to the locale codec (cp1252 on English Windows), which
+        # raises UnicodeEncodeError on em-dashes / box-drawing chars /
+        # smart quotes. The wrapper scripts (run/resume-shipyard.{sh,ps1})
+        # set PYTHONIOENCODING=utf-8 to avoid this entirely; this
+        # try/except is the second layer — if a non-wrapper invocation
+        # ever hits the codec, we replace offending chars with `?`
+        # instead of crashing the entire pipeline (which on 2026-05-09
+        # cascaded a single encoding crash through 11 epics in 17
+        # seconds, advancing session.json well past anything recoverable).
+        try:
+            self._original.write(text)
+        except UnicodeEncodeError:
+            enc = getattr(self._original, "encoding", "ascii") or "ascii"
+            self._original.write(text.encode(enc, errors="replace").decode(enc))
         relay = get_relay()
         if relay and text.strip():
             relay.push(text.rstrip("\n"))

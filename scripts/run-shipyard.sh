@@ -37,4 +37,10 @@ echo "Target:      $TARGET"
 echo "Console log: $LOG"
 echo "------------------------------------------------------------"
 
+# Force UTF-8 stdout — see resume-shipyard.sh for the full rationale.
+# Short version: `tee` demotes Python's pipe encoding to the locale
+# default (cp1252 on Windows), which crashes on non-ASCII output.
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
+
 python -m src.main --rebuild "$TARGET" "$@" 2>&1 | tee "$LOG"

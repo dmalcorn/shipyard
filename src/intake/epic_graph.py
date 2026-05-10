@@ -300,9 +300,16 @@ def select_story_node(state: EpicState) -> dict[str, Any]:
     if retry_instruction:
         task_description += f"\n\nINTERVENTION FIX INSTRUCTION:\n{retry_instruction}"
 
-    print(f"\n{'─'*60}")
+    # ASCII-only divider — the wrapper scripts now force PYTHONUTF8=1
+    # so stdout handles non-ASCII fine, but defense in depth keeps the
+    # banner readable when shipyard is invoked from a less-prepared
+    # environment (raw `python -m src.main` on a host where Python's
+    # stdout codec is the system locale). The cp1252-vs-tee encoding
+    # crash on 2026-05-09 took out 11 epics in 17 seconds; this and
+    # the wrapper-side env vars are the two layers of guard.
+    print(f"\n{'-'*60}")
     print(f"STORY {story_id}: {story_name} (Epic {epic_num})")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
 
     update_story_progress(state.get("session_id", ""),
         epic=f"Epic {epic_num}: {epic_name}",
