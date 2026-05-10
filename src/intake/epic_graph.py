@@ -58,6 +58,7 @@ from src.multi_agent.bmad_invoke import (
 from src.multi_agent.orchestrator import (
     OrchestratorState,
     _detect_project_type,
+    _ensure_dev_stack_up,
     _ensure_migrations,
     _run_bash,
     build_orchestrator,
@@ -1942,6 +1943,7 @@ def _run_full_ci(
     working_dir = state.get("target_dir") or None
     session_id = state.get("session_id", "")
 
+    _ensure_dev_stack_up(working_dir)
     _ensure_migrations(working_dir)
     ci_command = resolve_ci_command(working_dir, story_id=None)
 

@@ -959,6 +959,46 @@ def _apply_pending_migrations(
     )
 
 
+def _ensure_dev_stack_up(working_dir: str | None) -> None:
+    """Bring up the full target dev compose stack (``docker compose up -d``).
+
+    Run once before migrations + CI so every service in the dev compose
+    file is started, including standalone services with no ``depends_on``
+    linking them to anything ``_ensure_migrations`` brings up. The
+    motivating case: a multi-stack monorepo with a ``backend`` Django
+    service and a ``web`` Next.js service in the same compose file. The
+    factory's per-Django ``_ensure_migrations`` only walks each Django
+    stack's dependency chain (postgres/redis/mailpit/backend/staff), so
+    the standalone ``web`` service stays stopped and Phase 4 e2e tests
+    fail with ECONNREFUSED on its dev port.
+
+    Idempotent: a no-op when the stack is already running. Failures log
+    a warning and continue — the downstream CI gate is authoritative.
+    Skipped cleanly when no dev compose file is found (non-Dockerized
+    targets), or when docker isn't available on the host.
+    """
+    if not working_dir:
+        return
+    compose_path = find_dev_compose_file(working_dir)
+    if not compose_path:
+        return
+    print(f"    [dev-stack] Bringing up dev compose stack via {compose_path}")
+    passed, output = _run_bash(
+        ["docker", "compose", "-f", compose_path, "up", "-d"],
+        cwd=working_dir,
+    )
+    if passed:
+        print("    [dev-stack] All services up")
+    else:
+        print(
+            f"    [dev-stack] WARNING: docker compose up -d failed — "
+            f"{output[:200]}",
+        )
+        logger.warning(
+            "Dev stack bring-up failed for %s: %s", compose_path, output[:500],
+        )
+
+
 def _ensure_migrations(working_dir: str | None) -> None:
     """Validate migration files-on-disk AND apply pending ones to the dev DB.
 
@@ -1576,6 +1616,7 @@ def run_ci_node(state: OrchestratorState) -> dict[str, Any]:
     print(f"\n>>> [run_ci] Running CI (cycle={ci_cycle})")
 
     _ensure_dependencies(working_dir)
+    _ensure_dev_stack_up(working_dir)
     _ensure_migrations(working_dir)
 
     # Resolve CI command via fallback chain (script → Makefile → scaffold)
