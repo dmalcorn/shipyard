@@ -55,6 +55,12 @@ echo "------------------------------------------------------------"
 # the whole interpreter; PYTHONIOENCODING=utf-8 belt-and-suspenders.
 export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
+# Disable Python's stdout block-buffering. When stdout is a pipe (which
+# `tee` makes it), Python switches from line-buffering (TTY default) to
+# 4KB block-buffering — print() output sits in a buffer until flush,
+# arriving in the captured log out of chronological order with stderr
+# logger output. PYTHONUNBUFFERED=1 keeps both streams flushing per line.
+export PYTHONUNBUFFERED=1
 
 # `2>&1` merges stderr (Python logging) into stdout so the tee'd file has
 # the same chronological stream the operator sees in their terminal.

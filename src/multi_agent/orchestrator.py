@@ -944,10 +944,27 @@ def _apply_pending_migrations(
 
     Idempotent: a no-op when the dev DB is already up to date. Failures
     log a warning and return — the downstream CI gate is authoritative.
+
+    UI-only Django services (e.g. a staff panel that proxies to a
+    backend API) have no DATABASES setting, so ``manage.py migrate``
+    crashes on startup with ImproperlyConfigured. The mirror guard in
+    ``_process_migration_project`` catches the same condition for the
+    files-on-disk check, but only fires when the check itself errors —
+    when the check passes (no model changes detected), the apply step
+    runs anyway and crashes. This guard catches the apply-side case
+    and skips quietly with the same message shape, eliminating false-
+    alarm "Migration apply failed for ...\\staff" warnings on
+    multi-stack monorepos.
     """
     passed, output = _run_bash(apply_cmd_full, cwd=run_cwd)
     if passed:
         print(f"    [migrations] {label} apply completed for {search_dir}")
+        return
+    if "ImproperlyConfigured" in output and "DATABASES" in output:
+        print(
+            f"    [migrations] {search_dir} has no DATABASES configured "
+            f"(UI-only service?) — skipping apply",
+        )
         return
     print(
         f"    [migrations] WARNING: {label} apply failed for {search_dir} — "

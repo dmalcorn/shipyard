@@ -42,5 +42,6 @@ echo "------------------------------------------------------------"
 # default (cp1252 on Windows), which crashes on non-ASCII output.
 export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
+export PYTHONUNBUFFERED=1  # see resume-shipyard.sh for rationale
 
 python -m src.main --rebuild "$TARGET" "$@" 2>&1 | tee "$LOG"

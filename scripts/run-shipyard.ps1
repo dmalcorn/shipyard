@@ -31,6 +31,7 @@ Write-Host '------------------------------------------------------------'
 # Force UTF-8 stdout — see resume-shipyard.ps1 for full rationale.
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
+$env:PYTHONUNBUFFERED = '1'  # see resume-shipyard.ps1 for rationale
 
 python -m src.main --rebuild $Target @Extra 2>&1 | Tee-Object -FilePath $Log
 exit $LASTEXITCODE

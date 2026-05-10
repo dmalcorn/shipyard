@@ -44,6 +44,12 @@ Write-Host '------------------------------------------------------------'
 # whole interpreter; PYTHONIOENCODING=utf-8 is belt-and-suspenders.
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
+# Disable Python's stdout block-buffering. When stdout is piped through
+# Tee-Object, Python switches from line-buffering (TTY default) to 4KB
+# block-buffering — print() output sits in a buffer until flush, arriving
+# in the captured log out of chronological order with stderr logger
+# output. PYTHONUNBUFFERED=1 keeps both streams flushing per line.
+$env:PYTHONUNBUFFERED = '1'
 
 # `2>&1` merges Python's stderr (logging) into stdout so Tee-Object captures
 # both streams. PowerShell 5.1 wraps native-exe stderr lines in
