@@ -2071,6 +2071,24 @@ def _commit_review_fixes(
     if not commit_ok:
         logger.warning("%s failed: %s", audit_label, commit_out[:200])
 
+    # Surface agent edits to the target's CI script — see git_commit_node
+    # (story-level) for rationale. Same check applies to epic-end and
+    # mid-epic-batch commits because both can sweep up agent CI fixes
+    # made during their respective fix loops.
+    if commit_ok:
+        _, files_in_commit = _run_bash(
+            ["git", "show", "--pretty=format:", "--name-only", "HEAD"],
+            cwd=cwd,
+        )
+        sensitive_files = {"scripts/ci.sh", "scripts/local_ci.sh"}
+        touched = sorted(sensitive_files.intersection(files_in_commit.splitlines()))
+        if touched:
+            print(
+                f"    *** [{audit_label}] AGENT EDITED CI SCRIPT: "
+                f"{', '.join(touched)} — review with "
+                f"`git show HEAD -- {' '.join(touched)}`",
+            )
+
     return commit_ok
 
 

@@ -1850,6 +1850,24 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
 
     print(f"    [git_commit] SUCCESS: committed {task_id}")
 
+    # Surface agent edits to the target's CI script. ``scripts/ci.sh`` is
+    # the test-gate contract; agents have write access via TOOLS_CI_FIX
+    # and CAN edit it (sometimes correctly — Turbopack-EIO recovery,
+    # missing service bring-up — but those edits accumulate and warrant
+    # operator review). Console warning here makes drift visible
+    # in real time; ``git log scripts/ci.sh`` is the durable audit trail.
+    _, files_in_commit = _run_bash(
+        ["git", "show", "--pretty=format:", "--name-only", "HEAD"],
+        cwd=cwd,
+    )
+    sensitive_files = {"scripts/ci.sh", "scripts/local_ci.sh"}
+    touched = sorted(sensitive_files.intersection(files_in_commit.splitlines()))
+    if touched:
+        print(
+            f"    *** [git_commit] AGENT EDITED CI SCRIPT: {', '.join(touched)} "
+            f"— review with `git show HEAD -- {' '.join(touched)}`",
+        )
+
     # Story complete — clear phase checkpoint
     working_dir = _get_working_dir(state) or "."
     clear_phase_checkpoint(working_dir)
