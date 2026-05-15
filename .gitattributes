@@ -1,0 +1,31 @@
+# Normalize all text files to LF in the repo and working tree. Overrides
+# any local core.autocrlf setting; new clones don't need platform-specific
+# git config to behave consistently.
+* text=auto eol=lf
+
+# Shell scripts MUST stay LF — they run inside Linux containers and on
+# macOS, where CRLF endings break `#!/usr/bin/env bash` shebang parsing.
+*.sh text eol=lf
+
+# PowerShell / cmd scripts MUST stay CRLF — Windows-native tooling
+# expects it, and the wrapper scripts here are only used on Windows.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Common binary types — never apply line-ending or text conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.sqlite binary
+*.db binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.whl binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
