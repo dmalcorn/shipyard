@@ -87,7 +87,8 @@ def load_phase_checkpoint(target_dir: str) -> dict[str, Any] | None:
         return None
     try:
         with open(phase_file, encoding="utf-8") as f:
-            return json.load(f)
+            data: dict[str, Any] = json.load(f)
+        return data
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to read phase checkpoint %s: %s", phase_file, e)
         return None
@@ -174,7 +175,8 @@ def load_epic_phase_checkpoint(target_dir: str) -> dict[str, Any] | None:
         return None
     try:
         with open(phase_file, encoding="utf-8") as f:
-            return json.load(f)
+            data: dict[str, Any] = json.load(f)
+        return data
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to read epic phase checkpoint %s: %s", phase_file, e)
         return None
@@ -265,7 +267,8 @@ def load_batch_phase_checkpoint(target_dir: str) -> dict[str, Any] | None:
         return None
     try:
         with open(phase_file, encoding="utf-8") as f:
-            return json.load(f)
+            data: dict[str, Any] = json.load(f)
+        return data
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to read batch phase checkpoint %s: %s", phase_file, e)
         return None

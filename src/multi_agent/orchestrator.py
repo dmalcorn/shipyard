@@ -489,7 +489,7 @@ def check_story_exists_node(state: OrchestratorState) -> dict[str, Any]:
     - Story exists with review/done → skip dev_story entirely
     """
     task_id = state.get("task_id", "")
-    working_dir = _get_working_dir(state)
+    working_dir = _get_working_dir(state) or "."
     status = _find_story_status(working_dir, task_id)
 
     if status in ("review", "done"):
@@ -879,7 +879,9 @@ def _process_migration_project(
             f"    [migrations] {label} detected in {search_dir}; "
             f"running inside container '{service}' via {compose_path}"
         )
-        if not ensure_docker_service_up(compose_path, service, working_dir, log_prefix="migrations"):
+        if not ensure_docker_service_up(
+            compose_path, service, working_dir, log_prefix="migrations",
+        ):
             print(
                 f"    [migrations] WARNING: could not start '{service}' — "
                 f"skipping {search_dir} (fix the container, then re-run)"
@@ -1695,7 +1697,7 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
     """Git add + commit after all gates pass. No LLM call."""
     task_id = state.get("task_id", "")
     session_id = state.get("session_id", "")
-    cwd = _get_working_dir(state)
+    cwd = _get_working_dir(state) or "."
     message = f"story {task_id} complete"
     print(f"\n>>> [git_commit] Committing: {message}")
 
@@ -1731,7 +1733,11 @@ def git_commit_node(state: OrchestratorState) -> dict[str, Any]:
         # directly so resume-after-manual-fix-up advances cleanly.
         manifest_status = _find_story_status(cwd, task_id)
         if state.get("dev_complete") or manifest_status in ("review", "done"):
-            source = "state.dev_complete=True" if state.get("dev_complete") else f"manifest status='{manifest_status}'"
+            source = (
+                "state.dev_complete=True"
+                if state.get("dev_complete")
+                else f"manifest status='{manifest_status}'"
+            )
             print(
                 f"    [git_commit] Tree is clean and {source} "
                 f"— advancing without commit",

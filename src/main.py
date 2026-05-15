@@ -29,7 +29,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from src.audit_log.audit import AuditLogger
 from src.intake.intervention_log import (
     InterventionLogger,
     cli_intervention_prompt,
@@ -46,11 +45,7 @@ from src.log_relay import (
     store_events,
 )
 from src.pipeline_tracker import (
-    advance_stage,
-    complete_pipeline,
-    fail_pipeline,
     get_stage,
-    start_pipeline,
 )
 
 logger = logging.getLogger(__name__)
@@ -368,7 +363,8 @@ def _load_session(target_dir: str) -> dict[str, str] | None:
         return None
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            data: dict[str, str] = json.load(f)
+        return data
     except (json.JSONDecodeError, OSError):
         return None
 

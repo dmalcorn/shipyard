@@ -1802,13 +1802,13 @@ def _run_architect(
 
     architect_tools = "Read,Write,Edit,Glob,Grep,Task,TodoWrite"
 
-    result = invoke_claude_cli(
-        prompt=prompt,
+    result = invoke_bmad_agent(
+        bmad_agent="bmad-agent-architect",
+        command=prompt,
         tools=architect_tools,
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
         model=_epic_model_for(model_key),
-        label="architect",
     )
 
     logger.info(
@@ -1984,6 +1984,43 @@ def batch_fix_node(state: EpicState) -> dict[str, Any]:
     return {"epic_files_modified": result["files_modified"]}
 
 
+# Test-runner failure summary anchors (Playwright "3 failed", pytest
+# "1 failed, 102 passed", vitest "Tests  3 failed | ..."). Used to find
+# the *actual* failure context in CI logs whose tails are polluted by
+# late-flushed React act() warnings, pip upgrade notices, or compose
+# teardown output. ``[1-9]\d*`` excludes "0 failed" passing summaries.
+_CI_FAILURE_ANCHOR = re.compile(r"\b[1-9]\d*\s+failed\b", re.IGNORECASE)
+
+
+def _extract_ci_failure_excerpt(output: str, max_chars: int = 2000) -> str:
+    """Return the most operator-relevant slice of a captured CI run.
+
+    A blind ``output[-max_chars:]`` slice picks whatever stderr drained
+    last — often React act() warnings or pip notices that postdate the
+    real test-runner failure summary. This helper anchors on the last
+    ``\\d+ failed`` marker and returns context centred on it; falls back
+    to the tail when no marker is found.
+    """
+    if not output:
+        return ""
+    if len(output) <= max_chars:
+        return output
+
+    matches = list(_CI_FAILURE_ANCHOR.finditer(output))
+    if not matches:
+        return output[-max_chars:]
+
+    # Bias toward lead-in: failure details (test names, stack frames)
+    # appear before the summary line, not after.
+    anchor = matches[-1].start()
+    lead = int(max_chars * 0.75)
+    start = max(0, anchor - lead)
+    end = min(len(output), start + max_chars)
+    prefix = "[...truncated]\n" if start > 0 else ""
+    suffix = "\n[...truncated]" if end < len(output) else ""
+    return f"{prefix}{output[start:end]}{suffix}"
+
+
 def _run_full_ci(
     state: EpicState, *, scope_hint: str, audit_label: str,
 ) -> dict[str, Any]:
@@ -2057,8 +2094,8 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
         _save_epic_phase(state, "epic_ci")
     else:
         updates["current_story_failed_phase"] = "epic_ci"
-        updates["current_story_error"] = (
-            result["last_ci_output"][-2000:] if result["last_ci_output"] else ""
+        updates["current_story_error"] = _extract_ci_failure_excerpt(
+            result["last_ci_output"],
         )
     return updates
 
@@ -2085,8 +2122,8 @@ def batch_ci_node(state: EpicState) -> dict[str, Any]:
     # story-level "phase=run_ci failed".
     if not result["test_passed"]:
         updates["current_story_failed_phase"] = "batch_ci"
-        updates["current_story_error"] = (
-            result["last_ci_output"][-2000:] if result["last_ci_output"] else ""
+        updates["current_story_error"] = _extract_ci_failure_excerpt(
+            result["last_ci_output"],
         )
     else:
         _save_batch_phase(state, "batch_ci")

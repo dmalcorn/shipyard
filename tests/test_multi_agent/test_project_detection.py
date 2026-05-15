@@ -18,7 +18,6 @@ import pytest
 
 from src.multi_agent.orchestrator import (
     _detect_project_type,
-    _detect_type_from_architecture_md,
 )
 
 

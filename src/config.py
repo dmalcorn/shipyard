@@ -48,7 +48,8 @@ def get_target_dir(config: dict[str, Any], fallback: str = "./target/") -> str:
     """Extract target.dir from config, with fallback."""
     target = config.get("target", {})
     if isinstance(target, dict):
-        return target.get("dir", fallback)
+        value = target.get("dir", fallback)
+        return str(value) if value is not None else fallback
     return fallback
 
 

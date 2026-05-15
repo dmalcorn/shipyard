@@ -78,16 +78,19 @@ class _RelayWriter(io.TextIOBase):
     def flush(self) -> None:
         self._original.flush()
 
-    # Forward attributes so logging/subprocess still work
+    # Forward attributes so logging/subprocess still work. The ``encoding``
+    # override is intentional: TextIOBase declares it as a writeable
+    # attribute, but we delegate read-only to the wrapped stream so the
+    # interceptor doesn't need its own backing field.
     @property
-    def encoding(self) -> str:
-        return getattr(self._original, "encoding", "utf-8")
+    def encoding(self) -> str:  # type: ignore[override]
+        return str(getattr(self._original, "encoding", "utf-8"))
 
     def fileno(self) -> int:
-        return self._original.fileno()
+        return int(self._original.fileno())
 
     def isatty(self) -> bool:
-        return self._original.isatty()
+        return bool(self._original.isatty())
 
 
 class _RelayLoggingHandler(logging.Handler):
@@ -139,7 +142,7 @@ def run_rebuild(
     original_stdout = sys.stdout
     relay_handler: _RelayLoggingHandler | None = None
     if relay:
-        sys.stdout = _RelayWriter(original_stdout)  # type: ignore[assignment]
+        sys.stdout = _RelayWriter(original_stdout)
         relay_handler = _RelayLoggingHandler()
         fmt = logging.Formatter("%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S")
         relay_handler.setFormatter(fmt)
@@ -163,7 +166,7 @@ def _load_resume_state(target_dir: str) -> dict[str, Any] | None:
         return None
     try:
         with open(session_file, encoding="utf-8") as f:
-            data = json.load(f)
+            data: dict[str, Any] = json.load(f)
         # Valid if it has any resume progress (epic or story level)
         has_epic_progress = data.get("resume_epic_index", 0) > 0
         has_story_progress = data.get("resume_story_index", 0) > 0
