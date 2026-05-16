@@ -19,6 +19,28 @@ import re
 _CI_FAILURE_ANCHOR = re.compile(r"\b[1-9]\d*\s+failed\b", re.IGNORECASE)
 
 
+def extract_ci_summary_block(output: str) -> str:
+    """Return the ``=== CI Summary ===`` phase-status table, or ``""``.
+
+    ``scripts/ci.sh`` always emits a per-phase PASS/FAIL/skipped table
+    bracketed by ``=== CI Summary ===`` and ``=== Summary end ===``.
+    Streaming this short block to the operator's console after every
+    run_ci cycle removes the "did CI even run?" ambiguity caused by
+    capture_output=True on the bash subprocess swallowing the actual
+    output. Returns the LAST summary block in ``output`` so multi-cycle
+    captures surface the most recent run.
+    """
+    start_marker = "=== CI Summary ==="
+    end_marker = "=== Summary end ==="
+    start = output.rfind(start_marker)
+    if start < 0:
+        return ""
+    end = output.find(end_marker, start)
+    if end < 0:
+        return output[start:].rstrip()
+    return output[start:end + len(end_marker)]
+
+
 def extract_ci_failure_excerpt(output: str, max_chars: int = 2000) -> str:
     """Return the most operator-relevant slice of a captured CI run.
 

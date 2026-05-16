@@ -51,7 +51,10 @@ from src.dev_container import (
     find_dev_compose_file,
 )
 from src.intake.checkpoint import clear_phase_checkpoint, save_phase_checkpoint
-from src.intake.ci_excerpt import extract_ci_failure_excerpt
+from src.intake.ci_excerpt import (
+    extract_ci_failure_excerpt,
+    extract_ci_summary_block,
+)
 from src.multi_agent.bmad_invoke import (
     TIMEOUT_LONG,
     TIMEOUT_MEDIUM,
@@ -1682,6 +1685,16 @@ def run_ci_node(state: OrchestratorState) -> dict[str, Any]:
     _log_bash_to_audit(session_id, "ci", "PASS" if passed else "FAIL")
 
     print(f"    [run_ci] Result: {'PASS' if passed else 'FAIL'} (cycle={ci_cycle})")
+
+    # Stream the CI Summary phase table (PASS/FAIL/skipped per phase) to
+    # console so the operator can distinguish "CI passed quickly" from
+    # "CI never actually ran" — _run_bash captures bash output with
+    # capture_output=True, so without this print the only console signal
+    # from run_ci is the one-line Result above and the captured detail
+    # lives only in checkpoints/ci-<task>-cycle-N.log.
+    summary = extract_ci_summary_block(output)
+    if summary:
+        print(summary)
 
     if passed:
         _save_phase(state, "run_ci")

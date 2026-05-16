@@ -2,7 +2,66 @@
 
 from __future__ import annotations
 
-from src.intake.ci_excerpt import extract_ci_failure_excerpt
+from src.intake.ci_excerpt import (
+    extract_ci_failure_excerpt,
+    extract_ci_summary_block,
+)
+
+_SAMPLE_SUMMARY = (
+    "=== CI Summary ===\n"
+    "  Phase 0     doc-short-circuit          skipped     0s\n"
+    "  Phase fmt   auto-format                done       11s\n"
+    "  Phase 1a    backend-lint               PASS        1s\n"
+    "  Phase 1b    backend-typecheck          PASS        6s\n"
+    "  Phase 4     e2e                        skipped     0s\n"
+    "=== Summary end ==="
+)
+
+
+class TestExtractCiSummaryBlock:
+    """extract_ci_summary_block surfaces the ci.sh phase table to console.
+
+    Regression coverage for the 2026-05-16 "did CI even run?" symptom:
+    run_ci_node's subprocess capture swallowed the bash output, leaving
+    the operator with only ``[run_ci] Result: PASS`` and no way to tell
+    a real CI run from a no-op.
+    """
+
+    def test_empty_returns_empty(self) -> None:
+        assert extract_ci_summary_block("") == ""
+
+    def test_missing_marker_returns_empty(self) -> None:
+        assert extract_ci_summary_block("no summary block in this output") == ""
+
+    def test_extracts_complete_block(self) -> None:
+        out = f"some preamble\n{_SAMPLE_SUMMARY}\ntrailing noise\n"
+        block = extract_ci_summary_block(out)
+        assert block.startswith("=== CI Summary ===")
+        assert block.endswith("=== Summary end ===")
+        assert "Phase 1a    backend-lint               PASS" in block
+        # Trailing noise outside the block must NOT be included.
+        assert "trailing noise" not in block
+
+    def test_returns_last_when_multiple_blocks_present(self) -> None:
+        # Multi-cycle CI logs (rare but possible) — prefer the most
+        # recent summary so the operator sees the run they care about.
+        out = (
+            _SAMPLE_SUMMARY.replace("PASS", "FAIL")
+            + "\n[cycle 2 begins]\n"
+            + _SAMPLE_SUMMARY
+        )
+        block = extract_ci_summary_block(out)
+        # The last block should be the PASS variant, not the earlier FAIL.
+        assert "FAIL" not in block
+        assert "PASS        1s" in block
+
+    def test_missing_end_marker_returns_from_start(self) -> None:
+        # Defensive: if the CI script is interrupted before printing
+        # ``=== Summary end ===``, still return the partial block.
+        out = "=== CI Summary ===\n  Phase 1a    backend-lint    PASS\n"
+        block = extract_ci_summary_block(out)
+        assert block.startswith("=== CI Summary ===")
+        assert "Phase 1a" in block
 
 
 class TestExtractCiFailureExcerpt:
