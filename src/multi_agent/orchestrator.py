@@ -51,6 +51,7 @@ from src.dev_container import (
     find_dev_compose_file,
 )
 from src.intake.checkpoint import clear_phase_checkpoint, save_phase_checkpoint
+from src.intake.ci_excerpt import extract_ci_failure_excerpt
 from src.multi_agent.bmad_invoke import (
     TIMEOUT_LONG,
     TIMEOUT_MEDIUM,
@@ -1913,6 +1914,7 @@ def error_handler_node(state: OrchestratorState) -> dict[str, Any]:
     test_cycles = state.get("test_cycle_count", 0)
     ci_cycles = state.get("ci_cycle_count", 0)
     error_log = state.get("error_log", [])
+    last_ci_output = state.get("last_ci_output", "")
     files_modified = state.get("files_modified", [])
     session_id = state.get("session_id", "")
 
@@ -1925,9 +1927,18 @@ def error_handler_node(state: OrchestratorState) -> dict[str, Any]:
         f"## Error Log:\n"
     )
 
+    # error_log is the structured-entry path, but no node currently
+    # appends to it — run_ci/fix_ci only write last_ci_output. Fall back
+    # to the captured CI output so the operator-facing halt message
+    # actually contains the test-runner failure summary instead of
+    # "No errors captured" (Epic 8 story 8-6, 2026-05-15).
     if error_log:
         for entry in error_log:
             report += f"- {entry}\n"
+    elif last_ci_output:
+        report += "```\n"
+        report += extract_ci_failure_excerpt(last_ci_output)
+        report += "\n```\n"
     else:
         report += "- No errors captured\n"
 
