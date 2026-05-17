@@ -121,7 +121,7 @@ def set_batch_reviews_enabled(enabled: bool) -> None:
 
 _STORY_CI_ENABLED: bool = True
 _FIX_PRE_EXISTING: bool = True
-_CI_BASH_TIMEOUT: int = 300
+_CI_BASH_TIMEOUT: int = 900
 _EPIC_CI_BASH_TIMEOUT: int = 1800
 
 

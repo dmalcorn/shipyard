@@ -434,8 +434,12 @@ def _run_rebuild_cli(
         set_story_ci_enabled(False)
         print("  Story-level CI runs: DISABLED (commits proceed without CI gate)")
 
-    # CI bash timeouts (story = single-story scope; epic = full consolidated suite)
-    story_ci_timeout = int(ci_config.get("bash_timeout_seconds", 300))
+    # CI bash timeouts (story = single-story scope; epic = full consolidated suite).
+    # story default bumped 300s → 900s on 2026-05-16: PawprintRecipes Epic 9 story 9-1
+    # (spike) hit 4× consecutive 5-min timeouts when Phase 3a/3b fell back to the full
+    # suite. Underlying fallback is fixed in scripts/ci.sh, but 900s gives 3× headroom
+    # for legitimately slow story-mode runs as a safety net.
+    story_ci_timeout = int(ci_config.get("bash_timeout_seconds", 900))
     epic_ci_timeout = int(ci_config.get("epic_bash_timeout_seconds", 1800))
     set_ci_bash_timeout(story_ci_timeout)
     set_epic_ci_bash_timeout(epic_ci_timeout)
