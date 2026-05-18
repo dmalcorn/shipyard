@@ -30,6 +30,17 @@ shift
 
 cd "$(dirname "$0")/.."
 
+# Resolve the venv python so the script works from a fresh shell where the
+# venv isn't activated yet (e.g. VS Code terminal that didn't auto-activate
+# after a Python: Select Interpreter cache miss — see resume-shipyard.sh).
+if [ -x ".venv/Scripts/python" ]; then
+    PYTHON=".venv/Scripts/python"
+elif [ -x ".venv/bin/python" ]; then
+    PYTHON=".venv/bin/python"
+else
+    PYTHON="python"
+fi
+
 mkdir -p logs/console
 LOG="logs/console/run-$(date -u +%Y%m%d-%H%M%S).log"
 
@@ -44,4 +55,4 @@ export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
 export PYTHONUNBUFFERED=1  # see resume-shipyard.sh for rationale
 
-python -m src.main --rebuild "$TARGET" "$@" 2>&1 | tee "$LOG"
+"$PYTHON" -m src.main --rebuild "$TARGET" "$@" 2>&1 | tee "$LOG"

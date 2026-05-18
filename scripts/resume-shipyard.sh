@@ -30,10 +30,24 @@ if [ ! -f factory.yaml ]; then
     exit 2
 fi
 
+# Resolve the venv python so the script works even when the operator
+# launches it from a fresh shell where the venv isn't activated yet.
+# PyYAML and the rest of shipyard's deps live there; bare `python` on
+# Windows resolves to the system installer-Python which doesn't have
+# them — observed 2026-05-18 when VS Code's terminal didn't auto-activate
+# the venv and the script failed at the yaml import below.
+if [ -x ".venv/Scripts/python" ]; then
+    PYTHON=".venv/Scripts/python"
+elif [ -x ".venv/bin/python" ]; then
+    PYTHON=".venv/bin/python"
+else
+    PYTHON="python"
+fi
+
 # Use Python + PyYAML rather than grep/sed so quoted paths with backslashes
 # (Windows: "C:\\alcorn\\...") parse correctly. PyYAML is a hard dependency
 # of shipyard (see src/config.py); failure here means the venv isn't set up.
-TARGET=$(python -c "import yaml; print(yaml.safe_load(open('factory.yaml'))['target']['dir'])")
+TARGET=$("$PYTHON" -c "import yaml; print(yaml.safe_load(open('factory.yaml'))['target']['dir'])")
 
 if [ -z "$TARGET" ]; then
     echo "ERROR: factory.yaml has no target.dir set." >&2
@@ -65,4 +79,4 @@ export PYTHONUNBUFFERED=1
 # `2>&1` merges stderr (Python logging) into stdout so the tee'd file has
 # the same chronological stream the operator sees in their terminal.
 # `set -o pipefail` makes the script's exit code reflect Python's, not tee's.
-python -m src.main --rebuild "$TARGET" --resume "$@" 2>&1 | tee "$LOG"
+"$PYTHON" -m src.main --rebuild "$TARGET" --resume "$@" 2>&1 | tee "$LOG"
