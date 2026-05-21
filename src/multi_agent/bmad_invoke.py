@@ -953,7 +953,15 @@ def invoke_ci_with_fix(
                 f"Fix all errors reported by the CI pipeline — this may "
                 f"include lint errors, type-check errors, security scan "
                 f"findings, and test failures. Read the output carefully "
-                f"to determine which tools reported issues."
+                f"to determine which tools reported issues.\n\n"
+                f"Do NOT run `git add` or `git commit`. Any file you "
+                f"modify, create, or leave untracked in the working tree "
+                f"is auto-staged by a downstream commit step. Spending "
+                f"cycles trying to stage files yourself is wasted work — "
+                f"the factory observed an Epic 11 batch 1 halt where the "
+                f"fix agent burned an attempt retrying `git add` for an "
+                f"untracked Playwright snapshot that the next CI run "
+                f"would have picked up from disk automatically."
                 f"{scope_constraint}"
             )
 
