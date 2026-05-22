@@ -101,6 +101,13 @@ _EPIC_MODEL_CONFIG: dict[str, str | None] = {
     "epic_fix_cat_a": "claude-sonnet-4-6",
     "epic_architect": "claude-opus-4-6",
     "epic_fix_dev": "claude-sonnet-4-6",
+    # CI auto-fix loop at the epic-end gate. Runs bmad-agent-dev on a
+    # fresh failing CI report and asks it to diagnose+fix. Opus because
+    # the diagnoses span unfamiliar code (any story in the epic can be
+    # the source) and a wrong-but-confident fix wastes the next cycle.
+    # Previously this path passed no `model=` and silently used the CLI
+    # default (claude-opus-4-5-20251101 on this host) — now pinned.
+    "epic_fix_ci": "claude-opus-4-6",
     # Mid-epic batch pipeline. Mirrors the epic-end defaults so behavior
     # is identical out of the box; the parallel keys exist so operators
     # can tune batch independently of epic-end (e.g. drop batch review
@@ -110,6 +117,7 @@ _EPIC_MODEL_CONFIG: dict[str, str | None] = {
     "epic_batch_fix_cat_a": "claude-sonnet-4-6",
     "epic_batch_architect": "claude-opus-4-6",
     "epic_batch_fix_dev": "claude-sonnet-4-6",
+    "epic_batch_fix_ci": "claude-opus-4-6",
 }
 
 
@@ -1987,11 +1995,19 @@ def batch_fix_node(state: EpicState) -> dict[str, Any]:
 
 def _run_full_ci(
     state: EpicState, *, scope_hint: str, audit_label: str,
+    fix_model_key: str,
 ) -> dict[str, Any]:
     """Run full CI with auto-fix retry loop. Generic-keys helper.
 
     Returns ``{"test_passed", "last_ci_output", "files_modified"}``.
     Wrappers translate to scope-prefixed state keys.
+
+    Args:
+        fix_model_key: Key in ``_EPIC_MODEL_CONFIG`` whose value is
+            passed as the bmad-agent-dev model override for the fix
+            cycles (e.g. ``"epic_fix_ci"`` or ``"epic_batch_fix_ci"``).
+            Previously this path passed no model at all and silently
+            fell through to the Claude CLI default.
     """
     working_dir = state.get("target_dir") or None
     session_id = state.get("session_id", "")
@@ -2013,6 +2029,7 @@ def _run_full_ci(
         scope_hint=scope_hint,
         fix_pre_existing=get_fix_pre_existing(),
         bash_timeout=get_epic_ci_bash_timeout(),
+        fix_model=_epic_model_for(fix_model_key),
     )
 
     passed = result.get("passed", False)
@@ -2054,6 +2071,7 @@ def epic_ci_node(state: EpicState) -> dict[str, Any]:
         state,
         scope_hint=f"epic {scope.epic_num}" if scope.epic_num else "",
         audit_label="epic CI",
+        fix_model_key="epic_fix_ci",
     )
     updates: dict[str, Any] = {
         "epic_test_passed": result["test_passed"],
@@ -2079,6 +2097,7 @@ def batch_ci_node(state: EpicState) -> dict[str, Any]:
         state,
         scope_hint=scope.prose_label,
         audit_label=f"{scope.label} CI",
+        fix_model_key="epic_batch_fix_ci",
     )
     updates: dict[str, Any] = {
         "batch_test_passed": result["test_passed"],

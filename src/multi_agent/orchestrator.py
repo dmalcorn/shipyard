@@ -84,6 +84,10 @@ MAX_CI_CYCLES = 4
 _MODEL_CONFIG: dict[str, str | None] = {
     "dev_story": "claude-sonnet-4-6",
     "fix_ci": "claude-sonnet-4-6",
+    # CI script generation (architect builds the target's scripts/ci.sh).
+    # Was previously a hardcoded ``model="sonnet"`` literal at the call
+    # site; centralised here so operators can tune via factory.yaml.
+    "ci_generation": "claude-sonnet-4-6",
 }
 
 
@@ -1511,7 +1515,7 @@ def generate_ci_script(working_dir: str | None) -> str:
         tools=TOOLS_CI_GENERATE,
         working_dir=working_dir,
         timeout=TIMEOUT_MEDIUM,
-        model="sonnet",
+        model=_model_for("ci_generation"),
     )
 
     if not result.get("success"):

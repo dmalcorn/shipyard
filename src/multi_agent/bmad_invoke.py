@@ -869,6 +869,7 @@ def invoke_ci_with_fix(
     scope_hint: str = "",
     fix_pre_existing: bool = True,
     bash_timeout: int = 300,
+    fix_model: str | None = None,
 ) -> dict[str, Any]:
     """Run CI via bash, invoking BMAD dev agent only on failure.
 
@@ -897,6 +898,12 @@ def invoke_ci_with_fix(
         bash_timeout: Wall-clock seconds before the CI subprocess is
             killed. Per-attempt; the retry loop runs up to
             ``max_attempts`` of these.
+        fix_model: Optional model override for the bmad-agent-dev fix
+            cycles (e.g. ``"claude-opus-4-6"`` or ``"sonnet"``). When
+            None, the Claude CLI's default model is used. Callers
+            normally pass the project's per-node config value here:
+            ``_epic_model_for("epic_fix_ci")`` for the epic-end gate,
+            ``_epic_model_for("epic_batch_fix_ci")`` for batch CI.
 
     Returns:
         Dict with keys: passed (bool), ci_output (str), ci_output_path (str),
@@ -1050,6 +1057,7 @@ def invoke_ci_with_fix(
                 working_dir=working_dir,
                 timeout=fix_timeout,
                 extra_context=fix_context,
+                model=fix_model,
             )
             all_files_modified.extend(fix_result.get("files_modified", []))
 
