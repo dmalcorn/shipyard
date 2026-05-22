@@ -1005,6 +1005,17 @@ def _ensure_dev_stack_up(working_dir: str | None) -> None:
     compose_path = find_dev_compose_file(working_dir)
     if not compose_path:
         return
+
+    # Drift detection: if the compose file's mtime is newer than the
+    # running containers' StartedAt, the architect added an env var or
+    # service config that the running containers haven't picked up. Force-
+    # recreate before the plain `up -d` so the new env reaches the runtime.
+    # Without this, the architect's working-tree fix to docker-compose.dev.yml
+    # silently does nothing for the rest of the run — observed at Epic 11
+    # batch 1 halt 2026-05-22 (STRIPE_WEBHOOK_SECRET added to &django-env,
+    # backend container still ran without it for 4 CI attempts).
+    _recreate_drifted_services(compose_path, working_dir)
+
     print(f"    [dev-stack] Bringing up dev compose stack via {compose_path}")
     passed, output = _run_bash(
         ["docker", "compose", "-f", compose_path, "up", "-d"],
@@ -1020,6 +1031,85 @@ def _ensure_dev_stack_up(working_dir: str | None) -> None:
         logger.warning(
             "Dev stack bring-up failed for %s: %s", compose_path, output[:500],
         )
+
+
+def _recreate_drifted_services(compose_path: str, working_dir: str) -> None:
+    """Recreate containers whose StartedAt is older than the compose file's mtime.
+
+    A `docker compose up -d` is idempotent on a running service — it does
+    NOT pick up env-var changes in the compose file. Architects routinely
+    edit docker-compose.dev.yml mid-run (new env var for a new dep, new
+    volume mount, new shared anchor entry). Without forced recreate, those
+    edits don't reach the runtime and downstream tests fail in confusing
+    ways. Detects drift by comparing file mtime to each container's
+    StartedAt; only recreates services that are actually stale.
+    """
+    try:
+        compose_mtime = os.path.getmtime(compose_path)
+    except OSError:
+        return
+
+    # List service names from the compose file. `docker compose config
+    # --services` is the cheapest way; it parses the file once.
+    passed, services_out = _run_bash(
+        ["docker", "compose", "-f", compose_path, "config", "--services"],
+        cwd=working_dir,
+    )
+    if not passed:
+        return
+    services = [s.strip() for s in services_out.splitlines() if s.strip()]
+    if not services:
+        return
+
+    drifted: list[str] = []
+    for svc in services:
+        # Get the container ID for this service (empty if not running).
+        ok, cid = _run_bash(
+            ["docker", "compose", "-f", compose_path, "ps", "-q", svc],
+            cwd=working_dir,
+        )
+        cid = cid.strip()
+        if not ok or not cid:
+            continue  # service not running — `up -d` below will start it
+        # Get the container's StartedAt timestamp in epoch seconds.
+        ok, started = _run_bash(
+            [
+                "docker", "inspect", "-f",
+                "{{.State.StartedAt}}", cid.splitlines()[0],
+            ],
+            cwd=working_dir,
+        )
+        if not ok or not started.strip():
+            continue
+        # Parse RFC3339 timestamp to epoch seconds for comparison.
+        from datetime import datetime
+        ts = started.strip()
+        # Truncate fractional seconds to 6 digits (Python datetime limit)
+        # and normalise trailing Z to +00:00 for fromisoformat.
+        if "." in ts:
+            head, frac = ts.split(".", 1)
+            frac = frac.rstrip("Z").rstrip("+00:00")[:6]
+            ts = f"{head}.{frac}+00:00"
+        else:
+            ts = ts.replace("Z", "+00:00")
+        try:
+            started_epoch = datetime.fromisoformat(ts).timestamp()
+        except ValueError:
+            continue
+        if compose_mtime > started_epoch:
+            drifted.append(svc)
+
+    if not drifted:
+        return
+    print(
+        f"    [dev-stack] Compose file edited after these containers "
+        f"started — recreating to pick up changes: {', '.join(drifted)}",
+    )
+    _run_bash(
+        ["docker", "compose", "-f", compose_path, "up", "-d",
+         "--no-deps", "--force-recreate", *drifted],
+        cwd=working_dir,
+    )
 
 
 def _ensure_migrations(working_dir: str | None) -> None:
