@@ -98,6 +98,37 @@ _BASH_GIT_READONLY = ",".join([
     "Bash(git rev-parse *)",
 ])
 
+# Docker / dev-stack inspection + targeted mutation for the CI-fix agent.
+#
+# Read-only first: ps / logs / exec for inspecting container state and env vars.
+# Mutation second: restart and `up -d --force-recreate <svc>` so the agent can
+# action an env-drift diagnosis instead of declining ("I see the CI restarts
+# pawprint-web but not pawprint-backend. Actually, I should focus on fixing
+# the issue at hand, not modifying CI." — observed Epic 11 batch 1 halt
+# 2026-05-22 where the agent correctly diagnosed STRIPE_WEBHOOK_SECRET was
+# missing from the running container but had no permission to recreate it,
+# burning 4 CI cycles).
+#
+# Notably absent: `docker compose down`, `docker rm`, `docker volume rm`,
+# `docker compose build` — destructive or expensive operations the agent
+# should not be making unilaterally.
+_BASH_DOCKER = ",".join([
+    "Bash(docker compose ps *)", "Bash(docker compose ps)",
+    "Bash(docker compose logs *)",
+    "Bash(docker compose exec *)",  # callers must pass -T; agent's exec is
+                                    # for read-style introspection (printenv,
+                                    # ls, cat, manage.py shell -c). The same
+                                    # entry covers both reads and shells —
+                                    # we'd rather give the agent the same
+                                    # exec surface a human operator has than
+                                    # try to police argument suffixes.
+    "Bash(docker compose restart *)",
+    "Bash(docker compose up -d *)",  # covers --force-recreate <svc> form
+    "Bash(docker logs *)",
+    "Bash(docker ps *)", "Bash(docker ps)",
+    "Bash(docker inspect *)",
+])
+
 _BASE_TOOLS = "Read,Edit,Write,Glob,Grep,Task,TodoWrite"
 
 TOOLS_TEA = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
@@ -106,7 +137,7 @@ TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},Bash(git *),Skill"
 TOOLS_CODE_REVIEW = f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},Skill"
 TOOLS_CI_FIX = (
     f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},"
-    f"{_BASH_GIT_READONLY},Bash(bash *),Skill"
+    f"{_BASH_GIT_READONLY},{_BASH_DOCKER},Bash(bash *),Skill"
 )
 TOOLS_REVIEW_READONLY = "Read,Glob,Grep,Task,TodoWrite,Skill"
 TOOLS_CI_GENERATE = f"{_BASE_TOOLS},Skill"
@@ -833,7 +864,7 @@ def invoke_ci_with_fix(
     ci_command: list[str],
     fix_tools: str = TOOLS_CI_FIX,
     working_dir: str | None = None,
-    max_attempts: int = 4,
+    max_attempts: int = 2,
     fix_timeout: int = TIMEOUT_LONG,
     scope_hint: str = "",
     fix_pre_existing: bool = True,
@@ -848,7 +879,12 @@ def invoke_ci_with_fix(
         ci_command: Command to run CI (e.g. ["pytest", "tests/", "-v"]).
         fix_tools: Tool permissions for the fix agent.
         working_dir: Working directory for commands.
-        max_attempts: Maximum CI+fix cycles before giving up.
+        max_attempts: Maximum CI+fix cycles before giving up. Defaults to
+            2 — observation across 2026-05-21/22 was that cycles 3-4
+            rediscovered cycle 1-2's diagnoses without acting differently,
+            burning $20-40 per halt with no progress. The carry-forward
+            prompt below replaces the previous "cap at 4 and hope" loop
+            with "cap at 2 and tell cycle 2 what cycle 1 already tried."
         fix_timeout: Timeout for the LLM fix call.
         scope_hint: Label used for ci-output filename and (when
             ``fix_pre_existing`` is False) for the scope-constraint
@@ -868,6 +904,10 @@ def invoke_ci_with_fix(
     """
     cwd = working_dir or os.getcwd()
     all_files_modified: list[str] = []
+    # Track per-cycle bmad output files so cycle N+1 can read cycle N's
+    # full analysis on demand (kept on disk, not stuffed verbatim into
+    # the prompt — preserves the agent's "read the whole thing" freedom).
+    prior_cycle_paths: list[str] = []
 
     for attempt in range(1, max_attempts + 1):
         logger.info("CI attempt %d of %d", attempt, max_attempts)
@@ -946,14 +986,51 @@ def invoke_ci_with_fix(
                 f.write(ci_output)
             ci_rel_path = os.path.join("checkpoints", ci_out_file)
 
+            # Prior-cycle context: cycle N+1 reads cycle N's full bmad output
+            # on disk. Verbatim text is NOT pasted into the prompt — keeps
+            # the prompt small and lets the agent skim/grep the full report
+            # itself. Single-cycle (first attempt) has no prior context.
+            prior_cycle_context = ""
+            if prior_cycle_paths:
+                prior_lines = "\n".join(
+                    f"  - `{p}` (cycle {i + 1})"
+                    for i, p in enumerate(prior_cycle_paths)
+                )
+                prior_cycle_context = (
+                    f"\n\n## Prior fix attempt(s)\n\n"
+                    f"CI failed AGAIN after the previous fix attempt(s). "
+                    f"The full bmad-agent-dev output from each prior cycle "
+                    f"is on disk — READ IT before attempting a different "
+                    f"fix:\n{prior_lines}\n\n"
+                    f"Each file contains the previous cycle's full reasoning, "
+                    f"the files it changed, and (often) the diagnosis it "
+                    f"reached. If the prior cycle correctly diagnosed the "
+                    f"root cause but couldn't action it (e.g. a permission "
+                    f"denial, or it explicitly declined as out-of-scope), "
+                    f"act on that diagnosis now. If the prior diagnosis was "
+                    f"wrong, try a different angle — do NOT repeat the same "
+                    f"investigation."
+                )
+
             fix_context = (
-                f"CI failed. The full CI output is saved at "
-                f"`{ci_rel_path}`. Read that file to understand "
-                f"the errors.\n\n"
+                f"CI failed (attempt {attempt} of {max_attempts}). The full "
+                f"CI output is saved at `{ci_rel_path}`. Read that file to "
+                f"understand the errors — it may exceed 2000 lines, so "
+                f"navigate with grep + offset Reads rather than assuming "
+                f"a single Read returns everything.\n\n"
                 f"Fix all errors reported by the CI pipeline — this may "
                 f"include lint errors, type-check errors, security scan "
                 f"findings, and test failures. Read the output carefully "
-                f"to determine which tools reported issues.\n\n"
+                f"to determine which tools reported issues. You have "
+                f"`bash scripts/ci.sh` available and may re-run CI yourself "
+                f"to verify a fix locally before declaring done.\n\n"
+                f"You ALSO have docker-compose tools: `docker compose ps`, "
+                f"`docker compose exec -T <svc> printenv <VAR>`, "
+                f"`docker compose logs <svc>`, and "
+                f"`docker compose up -d --force-recreate <svc>`. Use these "
+                f"when a diagnosis points at running-container state "
+                f"(stale env var, missing volume, stale image). Recreate "
+                f"the specific service rather than declining the fix.\n\n"
                 f"Do NOT run `git add` or `git commit`. Any file you "
                 f"modify, create, or leave untracked in the working tree "
                 f"is auto-staged by a downstream commit step. Spending "
@@ -962,6 +1039,7 @@ def invoke_ci_with_fix(
                 f"fix agent burned an attempt retrying `git add` for an "
                 f"untracked Playwright snapshot that the next CI run "
                 f"would have picked up from disk automatically."
+                f"{prior_cycle_context}"
                 f"{scope_constraint}"
             )
 
@@ -974,6 +1052,35 @@ def invoke_ci_with_fix(
                 extra_context=fix_context,
             )
             all_files_modified.extend(fix_result.get("files_modified", []))
+
+            # Persist this cycle's bmad output so the next cycle can read it
+            # on demand. Stored under checkpoints/fix-ci-<scope>-cycle-N.md
+            # so the path is greppable by operators reviewing a halt later.
+            cycle_out_file = (
+                f"fix-ci-{safe_hint}-cycle-{attempt}.md"
+            )
+            cycle_out_path = os.path.join(ci_out_dir, cycle_out_file)
+            cycle_out_rel = os.path.join("checkpoints", cycle_out_file)
+            try:
+                with open(cycle_out_path, "w", encoding="utf-8") as f:
+                    files_modified_block = "\n".join(
+                        f"- `{p}`" for p in fix_result.get("files_modified", [])
+                    ) or "(none reported)"
+                    f.write(
+                        f"# Fix-CI cycle {attempt} bmad-agent-dev output "
+                        f"({scope_hint or 'ci'})\n\n"
+                        f"**Exit code:** {fix_result.get('exit_code')}\n"
+                        f"**Files modified (per agent self-report):**\n"
+                        f"{files_modified_block}\n\n"
+                        f"---\n\n## Full agent stream output\n\n"
+                        f"{fix_result.get('output', '')}\n"
+                    )
+                prior_cycle_paths.append(cycle_out_rel)
+            except OSError as exc:
+                # Non-fatal — the next cycle just won't have prior context.
+                logger.warning(
+                    "Could not write %s: %s", cycle_out_path, exc,
+                )
 
     logger.error("CI failed after %d attempts", max_attempts)
     # Write final failure output to file for downstream consumers

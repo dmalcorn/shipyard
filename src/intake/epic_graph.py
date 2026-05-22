@@ -2003,7 +2003,13 @@ def _run_full_ci(
     result = invoke_ci_with_fix(
         ci_command=ci_command,
         working_dir=working_dir,
-        max_attempts=4,
+        # max_attempts intentionally omitted — uses invoke_ci_with_fix's
+        # default of 2. Was previously hardcoded to 4 here. The 2026-05-21/22
+        # Epic 11 halts showed cycles 3-4 just rediscovered cycles 1-2's
+        # diagnoses without acting on them, burning $20-40 per halt. With
+        # the diagnosis carry-forward (cycle N+1 reads cycle N's bmad output
+        # from disk), 2 cycles gives the same diagnostic depth at half the
+        # cost.
         scope_hint=scope_hint,
         fix_pre_existing=get_fix_pre_existing(),
         bash_timeout=get_epic_ci_bash_timeout(),
