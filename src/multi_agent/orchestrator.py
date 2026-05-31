@@ -1089,11 +1089,20 @@ def _recreate_drifted_services(compose_path: str, working_dir: str) -> None:
         from datetime import datetime
         ts = started.strip()
         # Truncate fractional seconds to 6 digits (Python datetime limit)
-        # and normalise trailing Z to +00:00 for fromisoformat.
+        # and normalise trailing Z to +00:00 for fromisoformat. docker inspect
+        # emits e.g. "2026-05-21T17:33:12.923456789Z". Take only the leading
+        # digits of the fractional part — do NOT use rstrip() with a
+        # multi-char arg (it strips a *character set*, not a suffix, and would
+        # eat legitimate trailing zeros from the fraction).
         if "." in ts:
             head, frac = ts.split(".", 1)
-            frac = frac.rstrip("Z").rstrip("+00:00")[:6]
-            ts = f"{head}.{frac}+00:00"
+            frac_digits = ""
+            for ch in frac:
+                if ch.isdigit():
+                    frac_digits += ch
+                else:
+                    break
+            ts = f"{head}.{frac_digits[:6]}+00:00"
         else:
             ts = ts.replace("Z", "+00:00")
         try:
