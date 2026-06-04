@@ -133,7 +133,14 @@ _BASE_TOOLS = "Read,Edit,Write,Glob,Grep,Task,TodoWrite"
 
 TOOLS_TEA = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
 TOOLS_TEA_FIX = f"{_BASE_TOOLS},{_BASH_BUILD},Skill"
-TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},Bash(git *),Skill"
+# dev_story uses the same narrow read-only git surface as the CI-fix agent.
+# A prior wildcard Bash(git *) let an agent fall back to git plumbing
+# (`git hash-object -w`, `git fast-import`, …) as a write primitive when the
+# Write tool returned "Read before Write"; the agent then spent 2h45m
+# constructing a Kotlin file byte-by-byte through base64-aligned blob writes
+# (Epic 16 story 16-5 halt 2026-05-31). Reads only here — file writes belong
+# to the Write/Edit tools, not to git plumbing.
+TOOLS_DEV = f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},{_BASH_GIT_READONLY},Skill"
 TOOLS_CODE_REVIEW = f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},Skill"
 TOOLS_CI_FIX = (
     f"{_BASE_TOOLS},{_BASH_BUILD},{_BASH_INSPECT},"
@@ -523,6 +530,40 @@ def invoke_bmad_agent(
         watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
         watchdog_thread.start()
 
+        # Wall-clock timeout watchdog: kill the subprocess after `timeout`
+        # seconds REGARDLESS of activity. The streaming stdout loop below has
+        # no built-in timeout — as long as Claude CLI keeps emitting events
+        # (e.g. an agent stuck in a degenerate Bash-call loop) the loop runs
+        # forever. Story-16-5 burned 2h45m past the 45-minute budget this way.
+        wallclock_timed_out = threading.Event()
+
+        def _wallclock_watchdog() -> None:
+            # Sleep until the deadline, then kill if still alive. Returns
+            # early if the process exits cleanly (force_quit_event isn't
+            # signaled by normal exit, so we poll instead).
+            deadline = start_time + timeout
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    return  # exited normally
+                time.sleep(2)
+            if proc.poll() is None:
+                wallclock_timed_out.set()
+                print(
+                    f"\n      [bmad] WALL-CLOCK TIMEOUT after {timeout}s: "
+                    f"killing {bmad_agent} subprocess..."
+                )
+                try:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                except OSError:
+                    pass
+
+        wallclock_thread = threading.Thread(target=_wallclock_watchdog, daemon=True)
+        wallclock_thread.start()
+
         # Stream stderr in a background thread so it doesn't block
         def _drain_stderr() -> None:
             assert proc.stderr is not None
@@ -559,7 +600,17 @@ def invoke_bmad_agent(
         unregister(proc)
 
         exit_code = proc.returncode
-        success = exit_code == 0
+        # If the wall-clock watchdog killed the process, report it as a
+        # timeout regardless of the kill's signal exit code.
+        if wallclock_timed_out.is_set():
+            output_chunks.append(
+                f"TIMEOUT: wall-clock budget of {timeout}s exhausted; "
+                f"subprocess was killed."
+            )
+            success = False
+            exit_code = 124
+        else:
+            success = exit_code == 0
 
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
@@ -784,6 +835,33 @@ def invoke_claude_cli(
         watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
         watchdog_thread.start()
 
+        # Wall-clock timeout watchdog — see note in _invoke_bmad_streaming.
+        wallclock_timed_out = threading.Event()
+
+        def _wallclock_watchdog() -> None:
+            deadline = start_time + timeout
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    return
+                time.sleep(2)
+            if proc.poll() is None:
+                wallclock_timed_out.set()
+                print(
+                    f"\n      [{label}] WALL-CLOCK TIMEOUT after {timeout}s: "
+                    f"killing subprocess..."
+                )
+                try:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                except OSError:
+                    pass
+
+        wallclock_thread = threading.Thread(target=_wallclock_watchdog, daemon=True)
+        wallclock_thread.start()
+
         def _drain_stderr() -> None:
             assert proc.stderr is not None
             for line in proc.stderr:
@@ -815,7 +893,15 @@ def invoke_claude_cli(
         unregister(proc)
 
         exit_code = proc.returncode
-        success = exit_code == 0
+        if wallclock_timed_out.is_set():
+            output_chunks.append(
+                f"TIMEOUT: wall-clock budget of {timeout}s exhausted; "
+                f"subprocess was killed."
+            )
+            success = False
+            exit_code = 124
+        else:
+            success = exit_code == 0
 
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
