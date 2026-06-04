@@ -47,7 +47,12 @@ def _subprocess_env() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 TIMEOUT_SHORT = 15 * 60   # 15 min — story creation, test review
 TIMEOUT_MEDIUM = 25 * 60  # 25 min — code review, test automation
-TIMEOUT_LONG = 45 * 60    # 45 min — implementation, CI fix
+TIMEOUT_LONG = 55 * 60    # 55 min — implementation, CI fix.
+                          # Bumped from 45 → 55 after Epic 16 stories 16-9
+                          # and 16-11 (Android, ~30 files each across kotlin
+                          # main + test + factories + UI tests) hit the
+                          # wall-clock at 45 min mid-edit. Android dev_story
+                          # bodies are bigger than the original budget.
 
 # ---------------------------------------------------------------------------
 # Scoped tool permissions per phase

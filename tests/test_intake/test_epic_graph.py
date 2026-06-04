@@ -255,11 +255,22 @@ class TestRouteAfterStoryResult:
         }
         assert route_after_story_result(state) == "halt"
 
-    def test_failed_dev_story_continues(self) -> None:
-        # Transient failures in non-tree-mutating phases still advance.
+    def test_failed_dev_story_halts(self) -> None:
+        # dev_story failure (typically wall-clock timeout) leaves the working
+        # tree dirty mid-edit; halt so the next story doesn't silently absorb
+        # the partial work into its "complete" commit (Epic 16 2026-06-04).
         state: EpicState = {
             "current_story_status": "failed",
             "current_story_failed_phase": "dev_story",
+        }
+        assert route_after_story_result(state) == "halt"
+
+    def test_failed_code_review_continues(self) -> None:
+        # Code review failures are informational — the code still works,
+        # the reviewer just flagged issues. Continue to the next story.
+        state: EpicState = {
+            "current_story_status": "failed",
+            "current_story_failed_phase": "code_review",
         }
         assert route_after_story_result(state) == "next_story"
 
